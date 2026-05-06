@@ -89,6 +89,7 @@ func (server *Server) Routes() stdhttp.Handler {
 			admin.Post("/submissions/batch-approve", server.approveSubmissions)
 			admin.Post("/submissions/batch-delete", server.deleteSubmissions)
 			admin.Put("/photos/{id}", server.updatePhoto)
+			admin.Delete("/photos/{id}", server.deletePhoto)
 			admin.Get("/settings", server.getSettings)
 			admin.Put("/settings/storage", server.updateStorageSettings)
 			admin.Put("/settings/oidc", server.updateOIDCSettings)
@@ -310,14 +311,19 @@ func (server *Server) listPublicPhotos(w stdhttp.ResponseWriter, r *stdhttp.Requ
 		return
 	}
 
-	photos, err := server.galleryService.ListForEvent(r.Context(), id, false, r.URL.Query().Get("password"))
+	page, pageSize := parsePagination(r)
+	result, err := server.galleryService.ListForEventPage(r.Context(), id, false, r.URL.Query().Get("password"), page, pageSize)
 	if err != nil {
 		writeError(w, stdhttp.StatusInternalServerError, "failed to list photos")
 		return
 	}
 
 	writeJSON(w, stdhttp.StatusOK, map[string]any{
-		"photos": photos,
+		"photos":     result.Items,
+		"total":      result.Total,
+		"page":       result.Page,
+		"pageSize":   result.PageSize,
+		"totalPages": result.TotalPages,
 	})
 }
 
@@ -444,12 +450,19 @@ func (server *Server) listAdminPhotos(w stdhttp.ResponseWriter, r *stdhttp.Reque
 	if !ok {
 		return
 	}
-	photos, err := server.galleryService.ListForEvent(r.Context(), id, true, "")
+	page, pageSize := parsePagination(r)
+	result, err := server.galleryService.ListForEventPage(r.Context(), id, true, "", page, pageSize)
 	if err != nil {
 		writeError(w, stdhttp.StatusInternalServerError, "failed to list photos")
 		return
 	}
-	writeJSON(w, stdhttp.StatusOK, map[string]any{"photos": photos})
+	writeJSON(w, stdhttp.StatusOK, map[string]any{
+		"photos":     result.Items,
+		"total":      result.Total,
+		"page":       result.Page,
+		"pageSize":   result.PageSize,
+		"totalPages": result.TotalPages,
+	})
 }
 
 func (server *Server) listPendingSubmissions(w stdhttp.ResponseWriter, r *stdhttp.Request) {
@@ -512,6 +525,30 @@ func (server *Server) updatePhoto(w stdhttp.ResponseWriter, r *stdhttp.Request) 
 		return
 	}
 	writeJSON(w, stdhttp.StatusOK, map[string]any{"photo": photo})
+}
+
+func (server *Server) deletePhoto(w stdhttp.ResponseWriter, r *stdhttp.Request) {
+	id, ok := parseIDParam(w, r, "id")
+	if !ok {
+		return
+	}
+	deleted, objects, err := server.galleryService.DeletePhoto(r.Context(), id)
+	if err != nil {
+		writeError(w, stdhttp.StatusInternalServerError, err.Error())
+		return
+	}
+	if !deleted {
+		writeError(w, stdhttp.StatusNotFound, "photo not found")
+		return
+	}
+	for _, object := range objects {
+		store, err := server.storageManager.StoreForPolicy(object.PolicyID)
+		if err != nil {
+			continue
+		}
+		_ = store.Delete(r.Context(), object.Key)
+	}
+	writeJSON(w, stdhttp.StatusOK, map[string]any{"message": "photo deleted", "deletedObjects": len(objects)})
 }
 
 func (server *Server) adminDashboard(w stdhttp.ResponseWriter, r *stdhttp.Request) {
@@ -790,6 +827,21 @@ func parseIDParam(w stdhttp.ResponseWriter, r *stdhttp.Request, name string) (in
 	}
 
 	return id, true
+}
+
+func parsePagination(r *stdhttp.Request) (int, int) {
+	page, err := strconv.Atoi(r.URL.Query().Get("page"))
+	if err != nil || page < 1 {
+		page = 1
+	}
+	pageSize, err := strconv.Atoi(r.URL.Query().Get("pageSize"))
+	if err != nil || pageSize < 1 {
+		pageSize = 24
+	}
+	if pageSize > 100 {
+		pageSize = 100
+	}
+	return page, pageSize
 }
 
 func parseTagsValue(value string) []string {

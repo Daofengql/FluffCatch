@@ -2,12 +2,14 @@ import { Refresh } from '@mui/icons-material';
 import { Alert, Box, Button, IconButton, Paper, Stack, TextField, Typography } from '@mui/material';
 import { type FormEvent, useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { getCaptcha, getMe, login, type CaptchaChallenge } from '../../api/client';
+import { getCaptcha, type CaptchaChallenge } from '../../api/client';
+import { getCachedMe, loginAdmin, refreshMe } from '../../api/authState';
 
 export function LoginPage() {
   const navigate = useNavigate();
   const [error, setError] = useState('');
   const [captcha, setCaptcha] = useState<CaptchaChallenge | null>(null);
+  const [submitting, setSubmitting] = useState(false);
 
   async function refreshCaptcha() {
     setCaptcha(await getCaptcha());
@@ -16,7 +18,14 @@ export function LoginPage() {
   useEffect(() => {
     let cancelled = false;
 
-    getMe()
+    if (getCachedMe().authenticated) {
+      navigate('/admin/dashboard', { replace: true });
+      return () => {
+        cancelled = true;
+      };
+    }
+
+    refreshMe()
       .then((payload) => {
         if (cancelled) return;
         if (payload.authenticated) {
@@ -38,10 +47,12 @@ export function LoginPage() {
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
+    if (submitting) return;
     setError('');
+    setSubmitting(true);
     const formData = new FormData(event.currentTarget);
     try {
-      await login(
+      await loginAdmin(
         String(formData.get('username') || ''),
         String(formData.get('password') || ''),
         captcha?.id || '',
@@ -51,6 +62,8 @@ export function LoginPage() {
     } catch (err) {
       setError(err instanceof Error ? err.message : '登录失败');
       refreshCaptcha().catch(() => undefined);
+    } finally {
+      setSubmitting(false);
     }
   }
 
@@ -89,8 +102,8 @@ export function LoginPage() {
               <Refresh />
             </IconButton>
           </Stack>
-          <Button disabled={!captcha} size="large" type="submit" variant="contained">
-            登录
+          <Button disabled={!captcha || submitting} size="large" type="submit" variant="contained">
+            {submitting ? '登录中...' : '登录'}
           </Button>
         </Stack>
       </Paper>

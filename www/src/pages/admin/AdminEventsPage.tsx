@@ -10,8 +10,12 @@ import {
   DialogActions,
   DialogContent,
   DialogTitle,
+  FormControl,
   Grid,
+  InputLabel,
+  MenuItem,
   Paper,
+  Select,
   Stack,
   Switch,
   Table,
@@ -23,14 +27,17 @@ import {
   TextField,
   Typography
 } from '@mui/material';
-import { type FormEvent, useEffect, useMemo, useState } from 'react';
-import { deleteEvent, getEvents, saveEvent, uploadEventCover, type EventCard } from '../../api/client';
+import type { SelectChangeEvent } from '@mui/material/Select';
+import { type ChangeEvent, type FormEvent, useEffect, useMemo, useState } from 'react';
+import { useLocation } from 'react-router-dom';
+import { deleteEvent, deletePhoto, getEvents, getPhotos, saveEvent, updatePhoto, uploadEventCover, type EventCard, type Photo, type PhotoPage } from '../../api/client';
 import { PageHeader } from '../../components/common/PageHeader';
+import { ImagePreviewDialog } from '../../components/ImagePreviewDialog';
 
 type EditorMode = 'create' | 'edit' | null;
+type ViewMode = 'card' | 'list';
 
 const emptyEvent: Partial<EventCard> = {
-  slug: '',
   title: '',
   description: '',
   location: '',
@@ -41,38 +48,80 @@ const emptyEvent: Partial<EventCard> = {
 };
 
 export function AdminEventsPage() {
+  const location = useLocation();
   const [events, setEvents] = useState<EventCard[]>([]);
   const [selectedId, setSelectedId] = useState<number | null>(null);
   const [mode, setMode] = useState<EditorMode>(null);
   const [error, setError] = useState('');
   const [message, setMessage] = useState('');
+  const [coverFile, setCoverFile] = useState<File | null>(null);
+  const [coverPreviewUrl, setCoverPreviewUrl] = useState('');
+  const [saving, setSaving] = useState(false);
+  const [photosEvent, setPhotosEvent] = useState<EventCard | null>(null);
+  const [photoPage, setPhotoPage] = useState<PhotoPage>({ page: 1, pageSize: 12, photos: [], total: 0, totalPages: 0 });
+  const [photoLoading, setPhotoLoading] = useState(false);
+  const [previewPhotoIndex, setPreviewPhotoIndex] = useState<number | null>(null);
+  const [photoViewMode, setPhotoViewMode] = useState<ViewMode>('card');
+  const [editingPhoto, setEditingPhoto] = useState<Photo | null>(null);
+  const [photoForm, setPhotoForm] = useState({ accessPassword: '', photographerName: '', tags: '', visibility: 'public' as Photo['visibility'] });
 
   const selectedEvent = useMemo(() => events.find((event) => event.id === selectedId) ?? null, [events, selectedId]);
   const editorEvent = mode === 'edit' && selectedEvent ? selectedEvent : emptyEvent;
   const editorOpen = mode !== null;
+  const activeCoverUrl = coverPreviewUrl || (mode === 'edit' ? selectedEvent?.coverUrl ?? '' : '');
+  const photoPreviewItems = useMemo(
+    () =>
+      photoPage.photos.map((photo) => ({
+        src: photo.url,
+        subtitle: photo.photographerName ? `摄影师：${photo.photographerName}` : photo.visibility,
+        title: `${photosEvent?.title || '图片'} #${photo.id}`
+      })),
+    [photoPage.photos, photosEvent?.title]
+  );
 
   function refresh(nextSelectedId = selectedId) {
     getEvents(true)
       .then((items) => {
-      setEvents(items);
-      if (nextSelectedId && items.some((item) => item.id === nextSelectedId)) {
-        setSelectedId(nextSelectedId);
-        setMode('edit');
-      } else if (mode === 'edit') {
-        setSelectedId(null);
-        setMode(null);
-      }
+        setEvents(items);
+        if (nextSelectedId && items.some((item) => item.id === nextSelectedId)) {
+          setSelectedId(nextSelectedId);
+        } else if (mode === 'edit') {
+          setSelectedId(null);
+          setMode(null);
+        }
       })
       .catch((err) => setError(err instanceof Error ? err.message : '加载失败'));
   }
 
   useEffect(() => {
     refresh(null);
-  }, []);
+  }, [location.key]);
+
+  useEffect(() => {
+    return () => {
+      if (coverPreviewUrl) {
+        URL.revokeObjectURL(coverPreviewUrl);
+      }
+    };
+  }, [coverPreviewUrl]);
+
+  function clearCoverSelection() {
+    if (coverPreviewUrl) {
+      URL.revokeObjectURL(coverPreviewUrl);
+    }
+    setCoverFile(null);
+    setCoverPreviewUrl('');
+  }
+
+  function closeEditor() {
+    setMode(null);
+    clearCoverSelection();
+  }
 
   function startCreate() {
     setMode('create');
     setSelectedId(null);
+    clearCoverSelection();
     setError('');
     setMessage('');
   }
@@ -80,21 +129,84 @@ export function AdminEventsPage() {
   function startEdit(event: EventCard) {
     setMode('edit');
     setSelectedId(event.id);
+    clearCoverSelection();
     setError('');
     setMessage('');
   }
 
+  function openPhotos(event: EventCard, page = 1) {
+    setPhotosEvent(event);
+    setPreviewPhotoIndex(null);
+    setPhotoLoading(true);
+    getPhotos(event.id, true, page, 12)
+      .then(setPhotoPage)
+      .catch((err) => setError(err instanceof Error ? err.message : '加载图片失败'))
+      .finally(() => setPhotoLoading(false));
+  }
+
+  function startEditPhoto(photo: Photo) {
+    setEditingPhoto(photo);
+    setPhotoForm({
+      accessPassword: '',
+      photographerName: photo.photographerName || '',
+      tags: (photo.tags ?? []).map((tag) => tag.name).join(' '),
+      visibility: photo.visibility
+    });
+  }
+
+  async function handlePhotoFormSubmit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!editingPhoto || !photosEvent) return;
+    setError('');
+    try {
+      await updatePhoto(editingPhoto.id, {
+        accessPassword: photoForm.accessPassword,
+        photographerName: photoForm.photographerName,
+        tags: photoForm.tags.split(/[\s,，]+/).filter(Boolean),
+        visibility: photoForm.visibility
+      });
+      setEditingPhoto(null);
+      openPhotos(photosEvent, photoPage.page);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : '保存图片属性失败');
+    }
+  }
+
+  async function handleDeletePhoto(photo: Photo) {
+    if (!photosEvent) return;
+    if (!window.confirm(`确定删除图片 #${photo.id} 吗？这个操作会删除原图和缩略图。`)) return;
+    setError('');
+    try {
+      await deletePhoto(photo.id);
+      openPhotos(photosEvent, photoPage.page);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : '删除图片失败');
+    }
+  }
+
+  function handleCoverSelect(event: ChangeEvent<HTMLInputElement>) {
+    const file = event.target.files?.[0] ?? null;
+    if (coverPreviewUrl) {
+      URL.revokeObjectURL(coverPreviewUrl);
+    }
+    setCoverFile(file);
+    setCoverPreviewUrl(file ? URL.createObjectURL(file) : '');
+    event.target.value = '';
+  }
+
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
+    if (saving) return;
     setError('');
     setMessage('');
+    setSaving(true);
     const formData = new FormData(event.currentTarget);
-    const cover = formData.get('cover');
+    const selectedCoverFile = coverFile;
+    const currentMode = mode;
 
     try {
       const result = await saveEvent({
-        id: mode === 'edit' ? selectedEvent?.id : undefined,
-        slug: String(formData.get('slug') || ''),
+        id: currentMode === 'edit' ? selectedEvent?.id : undefined,
         title: String(formData.get('title') || ''),
         description: String(formData.get('description') || ''),
         location: String(formData.get('location') || ''),
@@ -105,17 +217,19 @@ export function AdminEventsPage() {
         submissionPassword: String(formData.get('submissionPassword') || '')
       });
 
-      if (cover instanceof File && cover.size > 0) {
-        await uploadEventCover(result.event.id, cover);
+      if (selectedCoverFile && selectedCoverFile.size > 0) {
+        await uploadEventCover(result.event.id, selectedCoverFile);
       }
 
-      setMessage(mode === 'edit' ? '兽聚已更新。' : '兽聚已创建。');
-      event.currentTarget.reset();
+      setMessage(currentMode === 'edit' ? '兽聚已更新。' : '兽聚已创建。');
+      clearCoverSelection();
       setMode(null);
       setSelectedId(null);
       refresh(result.event.id);
     } catch (err) {
       setError(err instanceof Error ? err.message : '保存失败');
+    } finally {
+      setSaving(false);
     }
   }
 
@@ -131,23 +245,10 @@ export function AdminEventsPage() {
       await deleteEvent(selectedEvent.id);
       setMessage('兽聚已删除。');
       setSelectedId(null);
-      setMode(null);
+      closeEditor();
       refresh(null);
     } catch (err) {
       setError(err instanceof Error ? err.message : '删除失败');
-    }
-  }
-
-  async function handleCoverUpload(eventId: number, file: File | null) {
-    if (!file) return;
-    setError('');
-    setMessage('');
-    try {
-      await uploadEventCover(eventId, file);
-      setMessage('海报已更新。');
-      refresh(eventId);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : '海报上传失败');
     }
   }
 
@@ -168,7 +269,6 @@ export function AdminEventsPage() {
               <TableHead>
                 <TableRow>
                   <TableCell>标题</TableCell>
-                  <TableCell>URL 标识</TableCell>
                   <TableCell>地点</TableCell>
                   <TableCell>状态</TableCell>
                   <TableCell align="right">操作</TableCell>
@@ -190,7 +290,6 @@ export function AdminEventsPage() {
                         </Box>
                       </Stack>
                     </TableCell>
-                    <TableCell>{event.slug}</TableCell>
                     <TableCell>{event.location || '未填写'}</TableCell>
                     <TableCell>
                       <Stack direction="row" sx={{ gap: 1 }}>
@@ -199,15 +298,20 @@ export function AdminEventsPage() {
                       </Stack>
                     </TableCell>
                     <TableCell align="right">
-                      <Button onClick={() => startEdit(event)} size="small" variant="outlined">
-                        编辑
-                      </Button>
+                      <Stack direction="row" sx={{ gap: 1, justifyContent: 'flex-end' }}>
+                        <Button onClick={() => openPhotos(event)} size="small" variant="outlined">
+                          图片管理
+                        </Button>
+                        <Button onClick={() => startEdit(event)} size="small" variant="outlined">
+                          编辑
+                        </Button>
+                      </Stack>
                     </TableCell>
                   </TableRow>
                 ))}
                 {!events.length && (
                   <TableRow>
-                    <TableCell align="center" colSpan={5}>
+                    <TableCell align="center" colSpan={4}>
                       <Typography color="text.secondary" sx={{ py: 4 }}>
                         还没有兽聚，点击右上角新建一个吧。
                       </Typography>
@@ -221,22 +325,72 @@ export function AdminEventsPage() {
 
       </Grid>
 
-      <Dialog fullWidth maxWidth="md" onClose={() => setMode(null)} open={editorOpen}>
+      <Dialog fullWidth maxWidth="md" onClose={closeEditor} open={editorOpen}>
         <DialogTitle>{mode === 'edit' ? '编辑兽聚' : '新建兽聚'}</DialogTitle>
         <DialogContent dividers>
           <Card elevation={0} sx={{ border: '1px solid', borderColor: 'divider' }}>
-            {mode === 'edit' && selectedEvent?.coverUrl && (
-              <CardMedia component="img" image={selectedEvent.coverUrl} sx={{ aspectRatio: '16 / 7', objectFit: 'cover' }} />
+            {activeCoverUrl ? (
+              <Box sx={{ position: 'relative' }}>
+                <CardMedia component="img" image={activeCoverUrl} sx={{ aspectRatio: '16 / 7', objectFit: 'cover' }} />
+                <Chip
+                  color={coverFile ? 'primary' : 'default'}
+                  label={coverFile ? `已选择：${coverFile.name}` : '当前海报'}
+                  size="small"
+                  sx={{
+                    '& .MuiChip-label': { overflow: 'hidden', textOverflow: 'ellipsis' },
+                    bgcolor: coverFile ? undefined : 'rgba(255,255,255,0.9)',
+                    bottom: 12,
+                    maxWidth: { xs: 220, sm: 360 },
+                    position: 'absolute',
+                    right: 12
+                  }}
+                />
+                <Button
+                  component="label"
+                  sx={{
+                    backdropFilter: 'blur(8px)',
+                    bgcolor: 'rgba(255,255,255,0.92)',
+                    bottom: 12,
+                    left: 12,
+                    position: 'absolute',
+                    '&:hover': { bgcolor: 'rgba(255,255,255,1)' }
+                  }}
+                  variant="outlined"
+                >
+                  {coverFile ? '重新选择海报' : '更换海报'}
+                  <input accept="image/*" hidden onChange={handleCoverSelect} type="file" />
+                </Button>
+              </Box>
+            ) : (
+              <Box
+                component="label"
+                sx={{
+                  alignItems: 'center',
+                  aspectRatio: '16 / 7',
+                  bgcolor: 'grey.100',
+                  borderBottom: '1px dashed',
+                  borderColor: 'divider',
+                  color: 'text.secondary',
+                  cursor: 'pointer',
+                  display: 'flex',
+                  justifyContent: 'center',
+                  px: 2,
+                  textAlign: 'center',
+                  transition: 'background-color 160ms ease, color 160ms ease',
+                  '&:hover': { bgcolor: 'grey.200', color: 'primary.main' }
+                }}
+              >
+                <Stack sx={{ alignItems: 'center', gap: 1 }}>
+                  <Button component="span" variant="outlined">
+                    选择海报缩略图
+                  </Button>
+                  <Typography variant="body2">点击这里选择图片，选择后会立即预览</Typography>
+                </Stack>
+                <input accept="image/*" hidden onChange={handleCoverSelect} type="file" />
+              </Box>
             )}
             <CardContent>
               <Stack component="form" id="event-editor-form" key={`${mode}-${selectedEvent?.id ?? 'new'}`} onSubmit={handleSubmit} sx={{ gap: 2 }}>
-                <Box>
-                  <Typography color="text.secondary" variant="body2">
-                    URL 标识可留空；重复时后端会自动追加后缀。
-                  </Typography>
-                </Box>
-
-                <TextField defaultValue={editorEvent.slug ?? ''} fullWidth helperText="用于公开链接和内部标识" label="URL 标识" name="slug" />
                 <TextField defaultValue={editorEvent.title ?? ''} fullWidth label="标题" name="title" required />
                 <TextField defaultValue={editorEvent.location ?? ''} fullWidth label="地点" name="location" />
                 <TextField defaultValue={editorEvent.description ?? ''} fullWidth label="简介" multiline name="description" rows={3} />
@@ -265,25 +419,10 @@ export function AdminEventsPage() {
                   </Grid>
                 </Grid>
 
-                <Button component="label" variant="outlined">
-                  {mode === 'edit' ? '选择新海报缩略图' : '选择海报缩略图'}
-                  <input accept="image/*" hidden name="cover" type="file" />
-                </Button>
-
-                {mode === 'edit' && selectedEvent && (
-                  <Button component="label" variant="outlined">
-                    仅更换海报
-                    <input
-                      accept="image/*"
-                      hidden
-                      type="file"
-                      onChange={(changeEvent) => {
-                        const file = changeEvent.target.files?.[0] ?? null;
-                        void handleCoverUpload(selectedEvent.id, file);
-                        changeEvent.target.value = '';
-                      }}
-                    />
-                  </Button>
+                {coverFile && (
+                  <Typography color="text.secondary" variant="caption">
+                    海报会在点击「{mode === 'edit' ? '保存修改' : '创建兽聚'}」时上传。
+                  </Typography>
                 )}
               </Stack>
             </CardContent>
@@ -298,13 +437,185 @@ export function AdminEventsPage() {
             )}
           </Box>
           <Stack direction="row" sx={{ gap: 1 }}>
-            <Button onClick={() => setMode(null)}>取消</Button>
-            <Button form="event-editor-form" type="submit" variant="contained">
-              {mode === 'edit' ? '保存修改' : '创建兽聚'}
+            <Button onClick={closeEditor}>取消</Button>
+            <Button disabled={saving} form="event-editor-form" type="submit" variant="contained">
+              {saving ? '保存中...' : mode === 'edit' ? '保存修改' : '创建兽聚'}
             </Button>
           </Stack>
         </DialogActions>
       </Dialog>
+
+      <Dialog fullWidth maxWidth="lg" onClose={() => setPhotosEvent(null)} open={Boolean(photosEvent)}>
+        <DialogTitle>
+          <Stack direction="row" sx={{ alignItems: 'center', justifyContent: 'space-between', gap: 2 }}>
+            <span>{photosEvent?.title} / 图片管理</span>
+            <Stack direction="row" sx={{ gap: 1 }}>
+              <Button onClick={() => setPhotoViewMode('card')} size="small" variant={photoViewMode === 'card' ? 'contained' : 'outlined'}>
+                卡片
+              </Button>
+              <Button onClick={() => setPhotoViewMode('list')} size="small" variant={photoViewMode === 'list' ? 'contained' : 'outlined'}>
+                列表
+              </Button>
+            </Stack>
+          </Stack>
+        </DialogTitle>
+        <DialogContent dividers>
+          {photoLoading ? (
+            <Typography color="text.secondary">图片加载中...</Typography>
+          ) : photoViewMode === 'list' ? (
+            <TableContainer component={Paper}>
+              <Table size="small">
+                <TableHead>
+                  <TableRow>
+                    <TableCell>图片</TableCell>
+                    <TableCell>ID</TableCell>
+                    <TableCell>摄影师</TableCell>
+                    <TableCell>可见性</TableCell>
+                    <TableCell>标签</TableCell>
+                    <TableCell>Hash</TableCell>
+                    <TableCell align="right">操作</TableCell>
+                  </TableRow>
+                </TableHead>
+                <TableBody>
+                  {photoPage.photos.map((photo, index) => (
+                    <TableRow hover key={photo.id}>
+                      <TableCell>
+                        <Box
+                          component="img"
+                          onClick={() => setPreviewPhotoIndex(index)}
+                          src={photo.thumbnailUrl || photo.url}
+                          sx={{ borderRadius: 1, cursor: 'zoom-in', height: 56, objectFit: 'cover', width: 76 }}
+                        />
+                      </TableCell>
+                      <TableCell>#{photo.id}</TableCell>
+                      <TableCell>{photo.photographerName || '匿名'}</TableCell>
+                      <TableCell>{photo.visibility}</TableCell>
+                      <TableCell>{(photo.tags ?? []).map((tag) => tag.name).join(' ') || '无'}</TableCell>
+                      <TableCell>{photo.contentHash.slice(0, 16)}</TableCell>
+                      <TableCell align="right">
+                        <Stack direction="row" sx={{ gap: 1, justifyContent: 'flex-end' }}>
+                          <Button onClick={() => startEditPhoto(photo)} size="small">属性</Button>
+                          <Button color="error" onClick={() => void handleDeletePhoto(photo)} size="small">删除</Button>
+                        </Stack>
+                      </TableCell>
+                    </TableRow>
+                  ))}
+                  {!photoPage.photos.length && (
+                    <TableRow>
+                      <TableCell align="center" colSpan={7}>
+                        <Typography color="text.secondary" sx={{ py: 4 }}>
+                          这个兽聚还没有正式图片。
+                        </Typography>
+                      </TableCell>
+                    </TableRow>
+                  )}
+                </TableBody>
+              </Table>
+            </TableContainer>
+          ) : (
+            <Grid container spacing={2}>
+              {photoPage.photos.map((photo, index) => (
+                <Grid key={photo.id} size={{ xs: 6, md: 3 }}>
+                  <Card>
+                    <CardMedia
+                      component="img"
+                      image={photo.thumbnailUrl || photo.url}
+                      onClick={() => setPreviewPhotoIndex(index)}
+                      sx={{ aspectRatio: '1 / 1', cursor: 'zoom-in', objectFit: 'cover' }}
+                    />
+                    <CardContent sx={{ p: 1.5 }}>
+                      <Typography noWrap sx={{ fontWeight: 800 }} variant="body2">
+                        #{photo.id}
+                      </Typography>
+                      <Typography color="text.secondary" noWrap variant="caption">
+                        {photo.visibility} / {photo.contentHash.slice(0, 10)}
+                      </Typography>
+                      <Stack direction="row" sx={{ gap: 1, mt: 1 }}>
+                        <Button onClick={() => startEditPhoto(photo)} size="small">属性</Button>
+                        <Button color="error" onClick={() => void handleDeletePhoto(photo)} size="small">删除</Button>
+                      </Stack>
+                    </CardContent>
+                  </Card>
+                </Grid>
+              ))}
+              {!photoPage.photos.length && (
+                <Grid size={{ xs: 12 }}>
+                  <Typography color="text.secondary" sx={{ py: 4, textAlign: 'center' }}>
+                    这个兽聚还没有正式图片。
+                  </Typography>
+                </Grid>
+              )}
+            </Grid>
+          )}
+        </DialogContent>
+        <DialogActions sx={{ justifyContent: 'space-between', px: 3 }}>
+          <Typography color="text.secondary" variant="body2">
+            共 {photoPage.total} 张，当前第 {photoPage.page} / {photoPage.totalPages || 1} 页
+          </Typography>
+          <Stack direction="row" sx={{ gap: 1 }}>
+            <Button disabled={photoPage.page <= 1 || !photosEvent} onClick={() => photosEvent && openPhotos(photosEvent, photoPage.page - 1)}>
+              上一页
+            </Button>
+            <Button disabled={!photosEvent || photoPage.page >= photoPage.totalPages} onClick={() => photosEvent && openPhotos(photosEvent, photoPage.page + 1)}>
+              下一页
+            </Button>
+            <Button onClick={() => setPhotosEvent(null)}>关闭</Button>
+          </Stack>
+        </DialogActions>
+      </Dialog>
+
+      <Dialog fullWidth maxWidth="sm" onClose={() => setEditingPhoto(null)} open={Boolean(editingPhoto)}>
+        <DialogTitle>图片属性 #{editingPhoto?.id}</DialogTitle>
+        <DialogContent dividers>
+          <Stack component="form" id="photo-editor-form" onSubmit={handlePhotoFormSubmit} sx={{ gap: 2, pt: 1 }}>
+            <TextField
+              fullWidth
+              label="摄影师署名"
+              onChange={(event) => setPhotoForm((prev) => ({ ...prev, photographerName: event.target.value }))}
+              value={photoForm.photographerName}
+            />
+            <FormControl fullWidth>
+              <InputLabel>可见性</InputLabel>
+              <Select
+                label="可见性"
+                onChange={(event: SelectChangeEvent) => setPhotoForm((prev) => ({ ...prev, visibility: event.target.value as Photo['visibility'] }))}
+                value={photoForm.visibility}
+              >
+                <MenuItem value="public">公开</MenuItem>
+                <MenuItem value="protected">密码访问</MenuItem>
+                <MenuItem value="private">仅管理员</MenuItem>
+              </Select>
+            </FormControl>
+            <TextField
+              fullWidth
+              helperText="留空则不修改访问密码"
+              label="访问密码"
+              onChange={(event) => setPhotoForm((prev) => ({ ...prev, accessPassword: event.target.value }))}
+              type="password"
+              value={photoForm.accessPassword}
+            />
+            <TextField
+              fullWidth
+              helperText="空格或逗号分隔，例如 #合照 #舞台"
+              label="标签"
+              onChange={(event) => setPhotoForm((prev) => ({ ...prev, tags: event.target.value }))}
+              value={photoForm.tags}
+            />
+          </Stack>
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setEditingPhoto(null)}>取消</Button>
+          <Button form="photo-editor-form" type="submit" variant="contained">保存</Button>
+        </DialogActions>
+      </Dialog>
+
+      <ImagePreviewDialog
+        images={photoPreviewItems}
+        index={previewPhotoIndex ?? 0}
+        onClose={() => setPreviewPhotoIndex(null)}
+        onIndexChange={setPreviewPhotoIndex}
+        open={previewPhotoIndex !== null}
+      />
     </Stack>
   );
 }

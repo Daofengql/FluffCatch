@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"math"
 	"strings"
 
 	"fluffcatch/internal/auth"
@@ -23,25 +24,52 @@ func NewService(dbConn *sql.DB, storageManager *storage.Manager) *Service {
 }
 
 func (service *Service) ListForEvent(ctx context.Context, eventID int64, admin bool, password string) ([]Photo, error) {
+	page, err := service.ListForEventPage(ctx, eventID, admin, password, 1, 500)
+	if err != nil {
+		return nil, err
+	}
+	return page.Items, nil
+}
+
+func (service *Service) ListForEventPage(ctx context.Context, eventID int64, admin bool, password string, page int, pageSize int) (Page, error) {
 	if service.db == nil {
-		return []Photo{}, nil
+		return Page{Items: []Photo{}, Page: 1, PageSize: pageSize}, nil
+	}
+	if page < 1 {
+		page = 1
+	}
+	if pageSize < 1 {
+		pageSize = 24
+	}
+	if pageSize > 100 {
+		pageSize = 100
+	}
+
+	where := "WHERE event_id = ?"
+	args := []any{eventID}
+	if !admin {
+		where += " AND visibility = 'public'"
+	}
+
+	var total int64
+	if err := service.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM photos "+where, args...).Scan(&total); err != nil {
+		return Page{}, fmt.Errorf("count photos: %w", err)
 	}
 
 	query := `
 		SELECT id, event_id, storage_policy_id, object_key, COALESCE(thumbnail_key, ''),
-			original_filename, COALESCE(photographer_name, ''), visibility, taken_at, created_at, updated_at
+			content_hash, COALESCE(photographer_name, ''), visibility, taken_at, created_at, updated_at
 		FROM photos
-		WHERE event_id = ?
+		` + where + `
+		ORDER BY COALESCE(taken_at, created_at) DESC, id DESC
+		LIMIT ? OFFSET ?
 	`
-	args := []any{eventID}
-	if !admin {
-		query += " AND visibility = 'public'"
-	}
-	query += " ORDER BY COALESCE(taken_at, created_at) DESC, id DESC"
+	offset := (page - 1) * pageSize
+	queryArgs := append(args, pageSize, offset)
 
-	rows, err := service.db.QueryContext(ctx, query, args...)
+	rows, err := service.db.QueryContext(ctx, query, queryArgs...)
 	if err != nil {
-		return nil, fmt.Errorf("list photos: %w", err)
+		return Page{}, fmt.Errorf("list photos: %w", err)
 	}
 	defer rows.Close()
 
@@ -49,19 +77,23 @@ func (service *Service) ListForEvent(ctx context.Context, eventID int64, admin b
 	for rows.Next() {
 		photo, err := service.scanPhoto(rows)
 		if err != nil {
-			return nil, err
+			return Page{}, err
 		}
 		photos = append(photos, photo)
 	}
 	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("iterate photos: %w", err)
+		return Page{}, fmt.Errorf("iterate photos: %w", err)
 	}
 
 	if err := service.attachTags(ctx, photos); err != nil {
-		return nil, err
+		return Page{}, err
 	}
 
-	return photos, nil
+	totalPages := 0
+	if total > 0 {
+		totalPages = int(math.Ceil(float64(total) / float64(pageSize)))
+	}
+	return Page{Items: photos, Total: total, Page: page, PageSize: pageSize, TotalPages: totalPages}, nil
 }
 
 func (service *Service) UpdatePhoto(ctx context.Context, photoID int64, req UpdatePhotoRequest) (Photo, error) {
@@ -90,9 +122,9 @@ func (service *Service) UpdatePhoto(ctx context.Context, photoID int64, req Upda
 	defer tx.Rollback()
 
 	if req.AccessPassword == "" {
-		_, err = tx.ExecContext(ctx, "UPDATE photos SET visibility = ? WHERE id = ?", req.Visibility, photoID)
+		_, err = tx.ExecContext(ctx, "UPDATE photos SET visibility = ?, photographer_name = NULLIF(?, '') WHERE id = ?", req.Visibility, strings.TrimSpace(req.PhotographerName), photoID)
 	} else {
-		_, err = tx.ExecContext(ctx, "UPDATE photos SET visibility = ?, access_password_hash = ? WHERE id = ?", req.Visibility, passwordHash, photoID)
+		_, err = tx.ExecContext(ctx, "UPDATE photos SET visibility = ?, photographer_name = NULLIF(?, ''), access_password_hash = ? WHERE id = ?", req.Visibility, strings.TrimSpace(req.PhotographerName), passwordHash, photoID)
 	}
 	if err != nil {
 		return Photo{}, fmt.Errorf("update photo: %w", err)
@@ -119,10 +151,35 @@ func (service *Service) UpdatePhoto(ctx context.Context, photoID int64, req Upda
 	return photo, nil
 }
 
+func (service *Service) DeletePhoto(ctx context.Context, photoID int64) (bool, []storage.StoredObject, error) {
+	photo, found, err := service.Get(ctx, photoID)
+	if err != nil {
+		return false, nil, err
+	}
+	if !found {
+		return false, nil, nil
+	}
+
+	objects := []storage.StoredObject{{PolicyID: photo.StoragePolicyID, Key: photo.ObjectKey}}
+	if photo.ThumbnailKey != "" {
+		objects = append(objects, storage.StoredObject{PolicyID: photo.StoragePolicyID, Key: photo.ThumbnailKey})
+	}
+
+	result, err := service.db.ExecContext(ctx, "DELETE FROM photos WHERE id = ?", photoID)
+	if err != nil {
+		return false, nil, fmt.Errorf("delete photo: %w", err)
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return true, objects, nil
+	}
+	return affected > 0, objects, nil
+}
+
 func (service *Service) Get(ctx context.Context, photoID int64) (Photo, bool, error) {
 	row := service.db.QueryRowContext(ctx, `
 		SELECT id, event_id, storage_policy_id, object_key, COALESCE(thumbnail_key, ''),
-			original_filename, COALESCE(photographer_name, ''), visibility, taken_at, created_at, updated_at
+			content_hash, COALESCE(photographer_name, ''), visibility, taken_at, created_at, updated_at
 		FROM photos
 		WHERE id = ?
 		LIMIT 1
@@ -157,7 +214,7 @@ func (service *Service) scanPhoto(scanner photoScanner) (Photo, error) {
 		&photo.StoragePolicyID,
 		&photo.ObjectKey,
 		&thumbnailKey,
-		&photo.OriginalFilename,
+		&photo.ContentHash,
 		&photo.PhotographerName,
 		&visibility,
 		&takenAt,

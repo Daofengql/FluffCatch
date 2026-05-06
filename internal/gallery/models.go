@@ -18,7 +18,7 @@ type Photo struct {
 	URL              string     `json:"url"`
 	ThumbnailKey     string     `json:"thumbnailKey,omitempty"`
 	ThumbnailURL     string     `json:"thumbnailUrl,omitempty"`
-	OriginalFilename string     `json:"originalFilename"`
+	ContentHash      string     `json:"contentHash"`
 	PhotographerName string     `json:"photographerName,omitempty"`
 	Visibility       Visibility `json:"visibility"`
 	Tags             []Tag      `json:"tags"`
@@ -33,8 +33,17 @@ type Tag struct {
 	CreatedAt time.Time `json:"createdAt"`
 }
 
+type Page struct {
+	Items      []Photo `json:"photos"`
+	Total      int64   `json:"total"`
+	Page       int     `json:"page"`
+	PageSize   int     `json:"pageSize"`
+	TotalPages int     `json:"totalPages"`
+}
+
 type UpdatePhotoRequest struct {
-	Visibility     Visibility `json:"visibility"`
-	AccessPassword string     `json:"accessPassword"`
-	Tags           []string   `json:"tags"`
+	PhotographerName string     `json:"photographerName"`
+	Visibility       Visibility `json:"visibility"`
+	AccessPassword   string     `json:"accessPassword"`
+	Tags             []string   `json:"tags"`
 }

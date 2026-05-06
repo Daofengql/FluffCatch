@@ -14,8 +14,10 @@ type Submission struct {
 	EventID          int64            `json:"eventId"`
 	StoragePolicyID  string           `json:"storagePolicyId"`
 	ObjectKey        string           `json:"objectKey"`
+	URL              string           `json:"url"`
 	ThumbnailKey     string           `json:"thumbnailKey,omitempty"`
-	OriginalFilename string           `json:"originalFilename"`
+	ThumbnailURL     string           `json:"thumbnailUrl,omitempty"`
+	ContentHash      string           `json:"contentHash"`
 	ContentType      string           `json:"contentType"`
 	SizeBytes        int64            `json:"sizeBytes"`
 	PhotographerName string           `json:"photographerName,omitempty"`

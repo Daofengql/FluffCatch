@@ -1,14 +1,16 @@
 import { Card, CardContent, Grid, Stack, Typography } from '@mui/material';
 import { useEffect, useState } from 'react';
+import { useLocation } from 'react-router-dom';
 import { getAdminDashboard } from '../../api/client';
 import { PageHeader } from '../../components/common/PageHeader';
 
 export function AdminDashboardPage() {
+  const location = useLocation();
   const [stats, setStats] = useState<Record<string, number>>({});
 
   useEffect(() => {
     getAdminDashboard().then((payload) => setStats(payload.stats)).catch(() => setStats({}));
-  }, []);
+  }, [location.key]);
 
   return (
     <Stack sx={{ gap: 3 }}>

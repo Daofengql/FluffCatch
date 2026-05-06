@@ -4,8 +4,6 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
-	"regexp"
-	"strconv"
 	"strings"
 	"time"
 
@@ -46,10 +44,6 @@ func (service *Service) Create(ctx context.Context, req CreateEventRequest) (Eve
 	if err != nil {
 		return Event{}, err
 	}
-	event.Slug, err = service.uniqueSlug(ctx, event.Slug, event.Title, 0)
-	if err != nil {
-		return Event{}, err
-	}
 
 	passwordHash, err := optionalPasswordHash(req.SubmissionPass)
 	if err != nil {
@@ -58,12 +52,12 @@ func (service *Service) Create(ctx context.Context, req CreateEventRequest) (Eve
 
 	result, err := service.db.ExecContext(ctx, `
 		INSERT INTO events (
-			slug, title, description, location, starts_at, ends_at,
+			title, description, location, starts_at, ends_at,
 			cover_storage_policy_id, cover_object_key,
 			is_public, submission_enabled, submission_password_hash
 		)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-	`, event.Slug, event.Title, event.Description, event.Location, nullableTime(event.StartTime), nullableTime(event.EndTime), nullableString(event.CoverPolicyID), nullableString(event.CoverObjectKey), event.IsPublic, event.SubmissionEnabled, nullableString(passwordHash))
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	`, event.Title, event.Description, event.Location, nullableTime(event.StartTime), nullableTime(event.EndTime), nullableString(event.CoverPolicyID), nullableString(event.CoverObjectKey), event.IsPublic, event.SubmissionEnabled, nullableString(passwordHash))
 	if err != nil {
 		return Event{}, friendlySQLError("create event", err)
 	}
@@ -93,10 +87,6 @@ func (service *Service) Update(ctx context.Context, id int64, req CreateEventReq
 	if err != nil {
 		return Event{}, err
 	}
-	event.Slug, err = service.uniqueSlug(ctx, event.Slug, event.Title, id)
-	if err != nil {
-		return Event{}, err
-	}
 
 	passwordHash, err := optionalPasswordHash(req.SubmissionPass)
 	if err != nil {
@@ -106,19 +96,19 @@ func (service *Service) Update(ctx context.Context, id int64, req CreateEventReq
 	if req.SubmissionPass == "" {
 		_, err = service.db.ExecContext(ctx, `
 			UPDATE events
-			SET slug = ?, title = ?, description = ?, location = ?, starts_at = ?, ends_at = ?,
+			SET title = ?, description = ?, location = ?, starts_at = ?, ends_at = ?,
 				cover_storage_policy_id = ?, cover_object_key = ?,
 				is_public = ?, submission_enabled = ?
 			WHERE id = ?
-		`, event.Slug, event.Title, event.Description, event.Location, nullableTime(event.StartTime), nullableTime(event.EndTime), nullableString(event.CoverPolicyID), nullableString(event.CoverObjectKey), event.IsPublic, event.SubmissionEnabled, id)
+		`, event.Title, event.Description, event.Location, nullableTime(event.StartTime), nullableTime(event.EndTime), nullableString(event.CoverPolicyID), nullableString(event.CoverObjectKey), event.IsPublic, event.SubmissionEnabled, id)
 	} else {
 		_, err = service.db.ExecContext(ctx, `
 			UPDATE events
-			SET slug = ?, title = ?, description = ?, location = ?, starts_at = ?, ends_at = ?,
+			SET title = ?, description = ?, location = ?, starts_at = ?, ends_at = ?,
 				cover_storage_policy_id = ?, cover_object_key = ?,
 				is_public = ?, submission_enabled = ?, submission_password_hash = ?
 			WHERE id = ?
-		`, event.Slug, event.Title, event.Description, event.Location, nullableTime(event.StartTime), nullableTime(event.EndTime), nullableString(event.CoverPolicyID), nullableString(event.CoverObjectKey), event.IsPublic, event.SubmissionEnabled, nullableString(passwordHash), id)
+		`, event.Title, event.Description, event.Location, nullableTime(event.StartTime), nullableTime(event.EndTime), nullableString(event.CoverPolicyID), nullableString(event.CoverObjectKey), event.IsPublic, event.SubmissionEnabled, nullableString(passwordHash), id)
 	}
 	if err != nil {
 		return Event{}, friendlySQLError("update event", err)
@@ -177,7 +167,7 @@ func (service *Service) list(ctx context.Context, where string) ([]Event, error)
 	}
 
 	query := `
-		SELECT id, slug, title, description, location, starts_at, ends_at,
+		SELECT id, title, description, location, starts_at, ends_at,
 			cover_storage_policy_id, cover_object_key, is_public, submission_enabled, created_at, updated_at
 		FROM events
 		` + where + `
@@ -211,7 +201,7 @@ func (service *Service) get(ctx context.Context, id int64, onlyPublic bool) (Eve
 	}
 
 	query := `
-		SELECT id, slug, title, description, location, starts_at, ends_at,
+		SELECT id, title, description, location, starts_at, ends_at,
 			cover_storage_policy_id, cover_object_key, is_public, submission_enabled, created_at, updated_at
 		FROM events
 		WHERE id = ?
@@ -301,7 +291,6 @@ func scanEvent(scanner eventScanner) (Event, error) {
 
 	if err := scanner.Scan(
 		&event.ID,
-		&event.Slug,
 		&event.Title,
 		&event.Description,
 		&event.Location,
@@ -351,7 +340,6 @@ func requestToEvent(req CreateEventRequest) (Event, error) {
 	}
 
 	return Event{
-		Slug:              normalizeSlug(req.Slug),
 		Title:             strings.TrimSpace(req.Title),
 		Description:       strings.TrimSpace(req.Description),
 		Location:          strings.TrimSpace(req.Location),
@@ -365,63 +353,7 @@ func requestToEvent(req CreateEventRequest) (Event, error) {
 	}, nil
 }
 
-func (service *Service) uniqueSlug(ctx context.Context, requested string, title string, excludeID int64) (string, error) {
-	base := normalizeSlug(requested)
-	if base == "" {
-		base = normalizeSlug(title)
-	}
-	if base == "" {
-		base = "event"
-	}
-
-	for index := 0; index < 100; index++ {
-		candidate := base
-		if index > 0 {
-			candidate = base + "-" + strconv.Itoa(index+1)
-		}
-
-		available, err := service.slugAvailable(ctx, candidate, excludeID)
-		if err != nil {
-			return "", err
-		}
-		if available {
-			return candidate, nil
-		}
-	}
-
-	return "", fmt.Errorf("could not generate a unique slug")
-}
-
-func (service *Service) slugAvailable(ctx context.Context, slug string, excludeID int64) (bool, error) {
-	var id int64
-	err := service.db.QueryRowContext(ctx, "SELECT id FROM events WHERE slug = ? LIMIT 1", slug).Scan(&id)
-	if err == sql.ErrNoRows {
-		return true, nil
-	}
-	if err != nil {
-		return false, fmt.Errorf("check slug availability: %w", err)
-	}
-	return id == excludeID, nil
-}
-
-var slugSeparators = regexp.MustCompile(`[^a-zA-Z0-9\p{Han}]+`)
-
-func normalizeSlug(value string) string {
-	value = strings.ToLower(strings.TrimSpace(value))
-	value = slugSeparators.ReplaceAllString(value, "-")
-	value = strings.Trim(value, "-")
-	if len([]rune(value)) <= 80 {
-		return value
-	}
-
-	runes := []rune(value)
-	return strings.Trim(string(runes[:80]), "-")
-}
-
 func friendlySQLError(action string, err error) error {
-	if strings.Contains(err.Error(), "events_slug_unique") || strings.Contains(err.Error(), "Duplicate entry") {
-		return fmt.Errorf("%s: slug already exists; please use a different URL identifier", action)
-	}
 	return fmt.Errorf("%s: %w", action, err)
 }
 

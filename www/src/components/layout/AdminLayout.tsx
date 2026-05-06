@@ -13,7 +13,8 @@ import {
 } from '@mui/material';
 import { useEffect, useState } from 'react';
 import { Outlet, useLocation, useNavigate } from 'react-router-dom';
-import { getMe, getSiteSettings, logout, type SiteSettings } from '../../api/client';
+import { getSiteSettings, type SiteSettings } from '../../api/client';
+import { getCachedMe, logoutAdmin, refreshMe, subscribeAuthState } from '../../api/authState';
 import { PublicLayoutHeader } from './PublicLayout';
 
 const drawerWidth = 240;
@@ -34,7 +35,7 @@ export function AdminLayout() {
   const location = useLocation();
   const navigate = useNavigate();
   const [site, setSite] = useState<SiteSettings>(fallbackSite);
-  const [checkingSession, setCheckingSession] = useState(true);
+  const [checkingSession, setCheckingSession] = useState(() => !getCachedMe().authenticated);
 
   useEffect(() => {
     getSiteSettings()
@@ -45,7 +46,15 @@ export function AdminLayout() {
   useEffect(() => {
     let cancelled = false;
 
-    getMe()
+    const unsubscribe = subscribeAuthState((payload) => {
+      if (!payload.authenticated) {
+        navigate('/login', { replace: true });
+        return;
+      }
+      setCheckingSession(false);
+    });
+
+    refreshMe()
       .then((payload) => {
         if (cancelled) return;
         if (!payload.authenticated) {
@@ -62,11 +71,12 @@ export function AdminLayout() {
 
     return () => {
       cancelled = true;
+      unsubscribe();
     };
   }, [navigate]);
 
   async function handleLogout() {
-    await logout().catch(() => undefined);
+    await logoutAdmin().catch(() => undefined);
     navigate('/login', { replace: true });
   }
 

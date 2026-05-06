@@ -1,5 +1,6 @@
 import { Alert, Avatar, Box, Button, Card, CardContent, Chip, Divider, Grid, Paper, Stack, TextField, Typography } from '@mui/material';
 import { type ChangeEvent, type FormEvent, useEffect, useState } from 'react';
+import { useLocation } from 'react-router-dom';
 import { getAdminSettings, updateSiteSettings, type AdminSettingsResponse, type SiteSettings } from '../../api/client';
 import { PageHeader } from '../../components/common/PageHeader';
 
@@ -10,6 +11,7 @@ const fallbackSite: SiteSettings = {
 };
 
 export function AdminSettingsPage() {
+  const location = useLocation();
   const [settings, setSettings] = useState<AdminSettingsResponse | null>(null);
   const [site, setSite] = useState<SiteSettings>(fallbackSite);
   const [message, setMessage] = useState('');
@@ -27,7 +29,7 @@ export function AdminSettingsPage() {
       });
   }
 
-  useEffect(refresh, []);
+  useEffect(refresh, [location.key]);
 
   function handleSiteChange(event: ChangeEvent<HTMLInputElement>) {
     setSite((prev) => ({ ...prev, [event.target.name]: event.target.value }));

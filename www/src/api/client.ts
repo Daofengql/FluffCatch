@@ -1,6 +1,5 @@
 export type EventCard = {
   id: number;
-  slug: string;
   title: string;
   description: string;
   location: string;
@@ -20,7 +19,7 @@ export type Photo = {
   objectKey: string;
   url: string;
   thumbnailUrl?: string;
-  originalFilename: string;
+  contentHash: string;
   photographerName?: string;
   visibility: 'public' | 'protected' | 'private';
   tags: { id: number; name: string }[];
@@ -31,11 +30,21 @@ export type Submission = {
   eventId: number;
   storagePolicyId: string;
   objectKey: string;
-  originalFilename: string;
+  url: string;
+  thumbnailUrl?: string;
+  contentHash: string;
   photographerName?: string;
   tags: string[];
   status: string;
   createdAt: string;
+};
+
+export type PhotoPage = {
+  photos: Photo[];
+  total: number;
+  page: number;
+  pageSize: number;
+  totalPages: number;
 };
 
 export type StoragePolicyUsage = {
@@ -121,8 +130,8 @@ export async function getMe() {
 }
 
 export async function getEvents(admin = false): Promise<EventCard[]> {
-  const payload = await request<{ events: EventCard[] }>(admin ? '/api/v1/admin/events' : '/api/v1/events');
-  return payload.events ?? [];
+  const payload = await request<{ events?: EventCard[] } | null>(admin ? '/api/v1/admin/events' : '/api/v1/events');
+  return Array.isArray(payload?.events) ? payload.events : [];
 }
 
 export async function getEvent(id: number): Promise<EventCard> {
@@ -130,14 +139,25 @@ export async function getEvent(id: number): Promise<EventCard> {
   return payload.event;
 }
 
-export async function getPhotos(eventId: number, admin = false): Promise<Photo[]> {
-  const payload = await request<{ photos: Photo[] }>(admin ? `/api/v1/admin/events/${eventId}/photos` : `/api/v1/events/${eventId}/photos`);
+export async function getPhotos(eventId: number, admin = false, page = 1, pageSize = 24): Promise<PhotoPage> {
+  const query = new URLSearchParams({ page: String(page), pageSize: String(pageSize) });
+  const payload = await request<PhotoPage>(admin ? `/api/v1/admin/events/${eventId}/photos?${query}` : `/api/v1/events/${eventId}/photos?${query}`);
+  return {
+    photos: payload.photos ?? [],
+    total: payload.total ?? 0,
+    page: payload.page ?? page,
+    pageSize: payload.pageSize ?? pageSize,
+    totalPages: payload.totalPages ?? 0
+  };
+}
+
+export async function getPhotoList(eventId: number, admin = false): Promise<Photo[]> {
+  const payload = await getPhotos(eventId, admin, 1, 100);
   return payload.photos ?? [];
 }
 
 export async function saveEvent(event: Partial<EventCard> & { submissionPassword?: string }) {
   const body = JSON.stringify({
-    slug: event.slug,
     title: event.title,
     description: event.description,
     location: event.location,
@@ -170,6 +190,19 @@ export async function deleteEvent(eventId: number) {
   });
 }
 
+export async function updatePhoto(photoId: number, payload: { photographerName?: string; visibility: Photo['visibility']; accessPassword?: string; tags?: string[] }) {
+  return request<{ photo: Photo }>(`/api/v1/admin/photos/${photoId}`, {
+    method: 'PUT',
+    body: JSON.stringify(payload)
+  });
+}
+
+export async function deletePhoto(photoId: number) {
+  return request<{ message: string; deletedObjects: number }>(`/api/v1/admin/photos/${photoId}`, {
+    method: 'DELETE'
+  });
+}
+
 export async function submitPhotos(eventId: number, form: FormData) {
   return request<{ submissions: Submission[] }>(`/api/v1/events/${eventId}/submissions`, {
     method: 'POST',
@@ -177,9 +210,33 @@ export async function submitPhotos(eventId: number, form: FormData) {
   });
 }
 
+export function submitPhotoWithProgress(eventId: number, form: FormData, onProgress: (progress: number) => void) {
+  return new Promise<{ submissions: Submission[] }>((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open('POST', `/api/v1/events/${eventId}/submissions`);
+    xhr.withCredentials = true;
+    xhr.upload.onprogress = (event) => {
+      if (event.lengthComputable && event.total > 0) {
+        onProgress(Math.max(1, Math.min(99, Math.round((event.loaded / event.total) * 100))));
+      }
+    };
+    xhr.onload = () => {
+      const payload = JSON.parse(xhr.responseText || '{}');
+      if (xhr.status >= 200 && xhr.status < 300) {
+        onProgress(100);
+        resolve(payload);
+        return;
+      }
+      reject(new Error(payload.error || xhr.statusText || '上传失败'));
+    };
+    xhr.onerror = () => reject(new Error('网络错误，上传失败'));
+    xhr.send(form);
+  });
+}
+
 export async function getPendingSubmissions(): Promise<Submission[]> {
-  const payload = await request<{ submissions: Submission[] }>('/api/v1/admin/submissions');
-  return payload.submissions ?? [];
+  const payload = await request<{ submissions?: Submission[] } | null>('/api/v1/admin/submissions');
+  return Array.isArray(payload?.submissions) ? payload.submissions : [];
 }
 
 export async function approveSubmissions(submissionIds: number[]) {

@@ -4,7 +4,6 @@ import "time"
 
 type Event struct {
 	ID                 int64      `json:"id"`
-	Slug               string     `json:"slug"`
 	Title              string     `json:"title"`
 	Description        string     `json:"description"`
 	Location           string     `json:"location"`
@@ -21,7 +20,6 @@ type Event struct {
 }
 
 type CreateEventRequest struct {
-	Slug              string `json:"slug"`
 	Title             string `json:"title"`
 	Description       string `json:"description"`
 	Location          string `json:"location"`

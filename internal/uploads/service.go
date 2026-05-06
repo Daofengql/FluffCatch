@@ -1,18 +1,20 @@
 package uploads
 
 import (
+	"bytes"
 	"context"
-	"crypto/rand"
+	"crypto/sha256"
 	"database/sql"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
 	"mime/multipart"
 	"path/filepath"
 	"strings"
-	"time"
 
 	"fluffcatch/internal/auth"
+	appimage "fluffcatch/internal/image"
 	"fluffcatch/internal/storage"
 )
 
@@ -44,25 +46,59 @@ func (service *Service) Create(ctx context.Context, eventID int64, upload FileUp
 	if err := service.verifySubmissionPassword(ctx, eventID, upload.SubmissionPassword); err != nil {
 		return Submission{}, err
 	}
+	content, err := io.ReadAll(upload.File)
+	if err != nil {
+		return Submission{}, fmt.Errorf("read upload file: %w", err)
+	}
+	if len(content) == 0 {
+		return Submission{}, fmt.Errorf("empty file is not allowed")
+	}
+
+	hash := sha256.Sum256(content)
+	contentHash := hex.EncodeToString(hash[:])
+	if exists, err := service.eventHashExists(ctx, eventID, contentHash); err != nil {
+		return Submission{}, err
+	} else if exists {
+		return Submission{}, fmt.Errorf("duplicate image already exists in this event")
+	}
 
 	store, err := service.storageManager.ActiveStore()
 	if err != nil {
 		return Submission{}, err
 	}
 
-	objectKey, err := submissionObjectKey(eventID, upload.Header.Filename)
+	contentType := strings.TrimSpace(upload.Header.Header.Get("Content-Type"))
+	if contentType == "" {
+		contentType = "application/octet-stream"
+	}
+	objectKey := imageObjectKey(eventID, contentHash, upload.Header.Filename)
+	thumbnailKey := thumbnailObjectKey(eventID, contentHash)
+
+	stored, err := store.Put(ctx, storage.Object{
+		Key:         objectKey,
+		Content:     bytes.NewReader(content),
+		ContentType: contentType,
+		Size:        int64(len(content)),
+	})
 	if err != nil {
 		return Submission{}, err
 	}
 
-	stored, err := store.Put(ctx, storage.Object{
-		Key:         objectKey,
-		Content:     upload.File,
-		ContentType: upload.Header.Header.Get("Content-Type"),
-		Size:        upload.Header.Size,
-	})
-	if err != nil {
-		return Submission{}, err
+	var storedThumbnail storage.StoredObject
+	thumbnail, thumbnailContentType, err := appimage.GenerateThumbnailBytes(content, 640)
+	if err == nil && len(thumbnail) > 0 {
+		storedThumbnail, err = store.Put(ctx, storage.Object{
+			Key:         thumbnailKey,
+			Content:     bytes.NewReader(thumbnail),
+			ContentType: thumbnailContentType,
+			Size:        int64(len(thumbnail)),
+		})
+		if err != nil {
+			_ = store.Delete(ctx, stored.Key)
+			return Submission{}, fmt.Errorf("store thumbnail: %w", err)
+		}
+	} else {
+		thumbnailKey = ""
 	}
 
 	tags := normalizeTags(upload.Tags)
@@ -73,13 +109,16 @@ func (service *Service) Create(ctx context.Context, eventID int64, upload FileUp
 
 	result, err := service.db.ExecContext(ctx, `
 		INSERT INTO submissions (
-			event_id, storage_policy_id, object_key, original_filename,
+			event_id, storage_policy_id, object_key, thumbnail_key, content_hash,
 			content_type, size_bytes, photographer_name, tags, status
 		)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending')
-	`, eventID, stored.PolicyID, stored.Key, upload.Header.Filename, upload.Header.Header.Get("Content-Type"), upload.Header.Size, nullableString(upload.PhotographerName), string(tagsJSON))
+		VALUES (?, ?, ?, NULLIF(?, ''), ?, ?, ?, ?, ?, 'pending')
+	`, eventID, stored.PolicyID, stored.Key, thumbnailKey, contentHash, contentType, int64(len(content)), nullableString(upload.PhotographerName), string(tagsJSON))
 	if err != nil {
 		_ = store.Delete(ctx, stored.Key)
+		if storedThumbnail.Key != "" {
+			_ = store.Delete(ctx, storedThumbnail.Key)
+		}
 		return Submission{}, fmt.Errorf("create submission: %w", err)
 	}
 
@@ -99,17 +138,37 @@ func (service *Service) Create(ctx context.Context, eventID int64, upload FileUp
 	return created, nil
 }
 
+func (service *Service) eventHashExists(ctx context.Context, eventID int64, contentHash string) (bool, error) {
+	var exists int
+	err := service.db.QueryRowContext(ctx, `
+		SELECT 1
+		FROM (
+			SELECT content_hash FROM photos WHERE event_id = ? AND content_hash = ?
+			UNION ALL
+			SELECT content_hash FROM submissions WHERE event_id = ? AND content_hash = ?
+		) AS image_hashes
+		LIMIT 1
+	`, eventID, contentHash, eventID, contentHash).Scan(&exists)
+	if err == sql.ErrNoRows {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("check duplicate image: %w", err)
+	}
+	return true, nil
+}
+
 func (service *Service) Get(ctx context.Context, id int64) (Submission, bool, error) {
 	row := service.db.QueryRowContext(ctx, `
 		SELECT id, event_id, storage_policy_id, object_key, COALESCE(thumbnail_key, ''),
-			original_filename, content_type, size_bytes, COALESCE(photographer_name, ''),
+			content_hash, content_type, size_bytes, COALESCE(photographer_name, ''),
 			tags, status, created_at
 		FROM submissions
 		WHERE id = ?
 		LIMIT 1
 	`, id)
 
-	submission, err := scanSubmission(row)
+	submission, err := service.scanSubmission(row)
 	if err == sql.ErrNoRows {
 		return Submission{}, false, nil
 	}
@@ -127,7 +186,7 @@ func (service *Service) ListPending(ctx context.Context) ([]Submission, error) {
 
 	rows, err := service.db.QueryContext(ctx, `
 		SELECT id, event_id, storage_policy_id, object_key, COALESCE(thumbnail_key, ''),
-			original_filename, content_type, size_bytes, COALESCE(photographer_name, ''),
+			content_hash, content_type, size_bytes, COALESCE(photographer_name, ''),
 			tags, status, created_at
 		FROM submissions
 		WHERE status = 'pending'
@@ -140,7 +199,7 @@ func (service *Service) ListPending(ctx context.Context) ([]Submission, error) {
 
 	submissions := []Submission{}
 	for rows.Next() {
-		submission, err := scanSubmission(rows)
+		submission, err := service.scanSubmission(rows)
 		if err != nil {
 			return nil, err
 		}
@@ -230,11 +289,11 @@ func (service *Service) approveOne(ctx context.Context, id int64) (bool, error) 
 
 	result, err := tx.ExecContext(ctx, `
 		INSERT INTO photos (
-			event_id, storage_policy_id, object_key, thumbnail_key, original_filename,
+			event_id, storage_policy_id, object_key, thumbnail_key, content_hash,
 			content_type, size_bytes, photographer_name, visibility
 		)
 		VALUES (?, ?, ?, NULLIF(?, ''), ?, ?, ?, NULLIF(?, ''), 'public')
-	`, submission.EventID, submission.StoragePolicyID, submission.ObjectKey, submission.ThumbnailKey, submission.OriginalFilename, submission.ContentType, submission.SizeBytes, submission.PhotographerName)
+	`, submission.EventID, submission.StoragePolicyID, submission.ObjectKey, submission.ThumbnailKey, submission.ContentHash, submission.ContentType, submission.SizeBytes, submission.PhotographerName)
 	if err != nil {
 		return false, fmt.Errorf("create photo from submission: %w", err)
 	}
@@ -271,6 +330,9 @@ func (service *Service) deleteOne(ctx context.Context, id int64) (bool, error) {
 	store, err := service.storageManager.StoreForPolicy(submission.StoragePolicyID)
 	if err == nil {
 		_ = store.Delete(ctx, submission.ObjectKey)
+		if submission.ThumbnailKey != "" {
+			_ = store.Delete(ctx, submission.ThumbnailKey)
+		}
 	}
 
 	if _, err := service.db.ExecContext(ctx, "DELETE FROM submissions WHERE id = ?", id); err != nil {
@@ -284,7 +346,7 @@ type submissionScanner interface {
 	Scan(dest ...any) error
 }
 
-func scanSubmission(scanner submissionScanner) (Submission, error) {
+func (service *Service) scanSubmission(scanner submissionScanner) (Submission, error) {
 	var submission Submission
 	var tagsRaw []byte
 	var status string
@@ -295,7 +357,7 @@ func scanSubmission(scanner submissionScanner) (Submission, error) {
 		&submission.StoragePolicyID,
 		&submission.ObjectKey,
 		&submission.ThumbnailKey,
-		&submission.OriginalFilename,
+		&submission.ContentHash,
 		&submission.ContentType,
 		&submission.SizeBytes,
 		&submission.PhotographerName,
@@ -307,6 +369,14 @@ func scanSubmission(scanner submissionScanner) (Submission, error) {
 	}
 
 	submission.Status = SubmissionStatus(status)
+	if store, err := service.storageManager.StoreForPolicy(submission.StoragePolicyID); err == nil {
+		submission.URL = store.PublicURL(submission.ObjectKey)
+		if submission.ThumbnailKey != "" {
+			submission.ThumbnailURL = store.PublicURL(submission.ThumbnailKey)
+		}
+	} else {
+		submission.URL = storage.MediaURL(submission.StoragePolicyID, submission.ObjectKey)
+	}
 	if len(tagsRaw) > 0 {
 		_ = json.Unmarshal(tagsRaw, &submission.Tags)
 	}
@@ -336,18 +406,16 @@ func upsertPhotoTags(ctx context.Context, tx *sql.Tx, photoID int64, tags []stri
 	return nil
 }
 
-func submissionObjectKey(eventID int64, filename string) (string, error) {
-	token, err := randomHex(8)
-	if err != nil {
-		return "", err
-	}
-
+func imageObjectKey(eventID int64, contentHash string, filename string) string {
 	ext := strings.ToLower(filepath.Ext(filename))
 	if ext == "" {
 		ext = ".bin"
 	}
+	return fmt.Sprintf("events/%d/images/%s%s", eventID, contentHash, ext)
+}
 
-	return fmt.Sprintf("events/%d/submissions/%d-%s%s", eventID, time.Now().UnixNano(), token, ext), nil
+func thumbnailObjectKey(eventID int64, contentHash string) string {
+	return fmt.Sprintf("events/%d/thumbnails/%s.jpg", eventID, contentHash)
 }
 
 func normalizeTags(tags []string) []string {
@@ -367,14 +435,6 @@ func normalizeTags(tags []string) []string {
 		normalized = append(normalized, tag)
 	}
 	return normalized
-}
-
-func randomHex(bytesLength int) (string, error) {
-	raw := make([]byte, bytesLength)
-	if _, err := rand.Read(raw); err != nil {
-		return "", fmt.Errorf("generate random token: %w", err)
-	}
-	return hex.EncodeToString(raw), nil
 }
 
 func nullableString(value string) any {

@@ -29,7 +29,6 @@ CREATE TABLE sessions (
 
 CREATE TABLE events (
   id bigint unsigned NOT NULL AUTO_INCREMENT,
-  slug varchar(191) NOT NULL,
   title varchar(191) NOT NULL,
   description text NOT NULL,
   location varchar(191) NOT NULL,
@@ -44,7 +43,6 @@ CREATE TABLE events (
   created_at timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   PRIMARY KEY (id),
-  UNIQUE KEY events_slug_unique (slug),
   KEY events_public_starts_at_index (is_public, starts_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 

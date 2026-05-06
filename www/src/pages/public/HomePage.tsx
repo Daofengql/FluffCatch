@@ -1,4 +1,4 @@
-import { Alert, Box, CircularProgress, Grid, Paper, Stack, Typography } from '@mui/material';
+import { Alert, Box, Button, CircularProgress, Grid, Paper, Stack, Typography } from '@mui/material';
 import { useEffect, useState } from 'react';
 import { getEvents, type EventCard as EventCardData } from '../../api/client';
 import { EventCard } from '../../components/EventCard';
@@ -8,11 +8,17 @@ export function HomePage() {
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(true);
 
-  useEffect(() => {
+  function loadEvents() {
+    setLoading(true);
+    setError('');
     getEvents()
-      .then(setEvents)
+      .then((items) => setEvents(Array.isArray(items) ? items : []))
       .catch((err: unknown) => setError(err instanceof Error ? err.message : '加载失败'))
       .finally(() => setLoading(false));
+  }
+
+  useEffect(() => {
+    loadEvents();
   }, []);
 
   return (
@@ -30,7 +36,18 @@ export function HomePage() {
           <CircularProgress />
         </Box>
       )}
-      {error && <Alert severity="error">{error}</Alert>}
+      {error && (
+        <Alert
+          action={
+            <Button color="inherit" onClick={loadEvents} size="small">
+              重试
+            </Button>
+          }
+          severity="error"
+        >
+          {error}
+        </Alert>
+      )}
       {!loading && !error && (
         <Grid container spacing={3}>
           {events.map((event) => (

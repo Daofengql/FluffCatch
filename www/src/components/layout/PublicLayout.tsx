@@ -2,7 +2,8 @@ import { AdminPanelSettings, Home, Login, Menu as MenuIcon } from '@mui/icons-ma
 import { AppBar, Box, Button, Container, IconButton, Menu, MenuItem, Stack, Toolbar, Typography } from '@mui/material';
 import { useEffect, useMemo, useState } from 'react';
 import { Outlet, useLocation, useNavigate } from 'react-router-dom';
-import { getMe, getSiteSettings, type SiteSettings } from '../../api/client';
+import { getSiteSettings, type SiteSettings } from '../../api/client';
+import { getCachedMe, refreshMe, subscribeAuthState } from '../../api/authState';
 
 const defaultSite: SiteSettings = {
   name: 'FluffCatch',
@@ -18,7 +19,7 @@ type PublicLayoutHeaderProps = {
 export function PublicLayout() {
   const location = useLocation();
   const [site, setSite] = useState<SiteSettings>(defaultSite);
-  const [authenticated, setAuthenticated] = useState(false);
+  const [authenticated, setAuthenticated] = useState(() => getCachedMe().authenticated);
 
   useEffect(() => {
     getSiteSettings()
@@ -27,10 +28,10 @@ export function PublicLayout() {
   }, []);
 
   useEffect(() => {
-    getMe()
-      .then((payload) => setAuthenticated(payload.authenticated))
-      .catch(() => setAuthenticated(false));
-  }, [location.pathname]);
+    const unsubscribe = subscribeAuthState((payload) => setAuthenticated(payload.authenticated));
+    refreshMe().catch(() => undefined);
+    return unsubscribe;
+  }, []);
 
   useEffect(() => {
     document.title = site.name || defaultSite.name;

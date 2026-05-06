@@ -2,11 +2,13 @@ import { Alert, Button, Card, CardMedia, CircularProgress, Grid, Stack, Typograp
 import { useEffect, useState } from 'react';
 import { Link as RouterLink, useParams } from 'react-router-dom';
 import { getEvent, getPhotos, type EventCard, type Photo } from '../../api/client';
+import { ImagePreviewDialog } from '../../components/ImagePreviewDialog';
 
 export function EventDetailPage() {
   const eventId = Number(useParams().eventId);
   const [event, setEvent] = useState<EventCard | null>(null);
   const [photos, setPhotos] = useState<Photo[]>([]);
+  const [preview, setPreview] = useState<Photo | null>(null);
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(true);
 
@@ -14,7 +16,7 @@ export function EventDetailPage() {
     Promise.all([getEvent(eventId), getPhotos(eventId)])
       .then(([eventData, photoData]) => {
         setEvent(eventData);
-        setPhotos(photoData);
+        setPhotos(photoData.photos);
       })
       .catch((err: unknown) => setError(err instanceof Error ? err.message : '加载失败'))
       .finally(() => setLoading(false));
@@ -48,7 +50,12 @@ export function EventDetailPage() {
         {photos.map((photo) => (
           <Grid key={photo.id} size={{ xs: 6, md: 3 }}>
             <Card>
-              <CardMedia component="img" image={photo.thumbnailUrl || photo.url} sx={{ aspectRatio: '1 / 1', objectFit: 'cover' }} />
+              <CardMedia
+                component="img"
+                image={photo.thumbnailUrl || photo.url}
+                onClick={() => setPreview(photo)}
+                sx={{ aspectRatio: '1 / 1', cursor: 'zoom-in', objectFit: 'cover' }}
+              />
             </Card>
           </Grid>
         ))}
@@ -58,6 +65,13 @@ export function EventDetailPage() {
           </Grid>
         )}
       </Grid>
+      <ImagePreviewDialog
+        onClose={() => setPreview(null)}
+        open={Boolean(preview)}
+        src={preview?.url || ''}
+        subtitle={preview?.photographerName ? `摄影师：${preview.photographerName}` : undefined}
+        title={event.title}
+      />
     </Stack>
   );
 }
