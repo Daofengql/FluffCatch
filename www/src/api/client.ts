@@ -66,13 +66,26 @@ export type StoragePolicyUsage = {
   sizeBytes: number;
 };
 
+export type S3Settings = {
+  endpoint: string;
+  bucket: string;
+  region: string;
+  accessKey: string;
+  secretKey?: string;
+  useSsl: boolean;
+  accountId?: string;
+};
+
+export type StorageDriver = 'local' | 'minio' | 'aws-s3' | 'aliyun-oss' | 'tencent-cos' | 'cf-r2' | 's3';
+
 export type StoragePolicy = {
   id: string;
   name: string;
-  driver: string;
+  driver: StorageDriver;
   localPath?: string;
   publicPrefix: string;
   publicBaseUrl?: string;
+  s3?: S3Settings;
 };
 
 export type SiteSettings = {
@@ -228,6 +241,14 @@ export async function deletePhoto(photoId: number, headers?: Record<string, stri
   });
 }
 
+export async function batchDeletePhotos(photoIds: number[], headers?: Record<string, string>) {
+  return request<{ deleted: number; deletedObjects: number }>('/api/v1/admin/photos/batch-delete', {
+    method: 'POST',
+    body: JSON.stringify({ photoIds }),
+    headers
+  });
+}
+
 export async function likePhoto(photoId: number) {
   return request<{ photoId: number; likeCount: number; liked: boolean; justLiked: boolean }>(`/api/v1/photos/${photoId}/like`, {
     method: 'POST'
@@ -323,4 +344,18 @@ export async function clearSiteLogo() {
 
 export async function getAdminDashboard() {
   return request<{ stats: Record<string, number> }>('/api/v1/admin/dashboard');
+}
+
+export async function updateStoragePolicies(payload: { activePolicyId: string; policies: StoragePolicy[] }) {
+  return request<{ storagePolicies: { activePolicyId: string; policies: StoragePolicy[] }; usage: Record<string, StoragePolicyUsage>; message: string }>('/api/v1/admin/settings/storage', {
+    method: 'PUT',
+    body: JSON.stringify(payload)
+  });
+}
+
+export async function testStorageConnection(policy: StoragePolicy) {
+  return request<{ success: boolean; error?: string }>('/api/v1/admin/settings/storage/test', {
+    method: 'POST',
+    body: JSON.stringify(policy)
+  });
 }

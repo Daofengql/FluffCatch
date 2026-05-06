@@ -36,6 +36,7 @@ type S3Settings struct {
 	AccessKey string `json:"accessKey"`
 	SecretKey string `json:"secretKey,omitempty"`
 	UseSSL    bool   `json:"useSsl"`
+	AccountID string `json:"accountId,omitempty"`
 }
 
 type OIDCSettings struct {

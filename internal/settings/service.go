@@ -220,7 +220,7 @@ func normalizeStoragePolicies(policies StoragePoliciesSettings) (StoragePolicies
 	activeFound := false
 
 	for index, policy := range policies.Policies {
-		normalized, err := normalizeStoragePolicy(policy)
+		normalized, err := NormalizeStoragePolicy(policy)
 		if err != nil {
 			return StoragePoliciesSettings{}, err
 		}
@@ -249,7 +249,7 @@ func normalizeStoragePolicies(policies StoragePoliciesSettings) (StoragePolicies
 	return policies, nil
 }
 
-func normalizeStoragePolicy(policy StoragePolicy) (StoragePolicy, error) {
+func NormalizeStoragePolicy(policy StoragePolicy) (StoragePolicy, error) {
 	policy.ID = strings.TrimSpace(policy.ID)
 	if !validPolicyID(policy.ID) {
 		return StoragePolicy{}, fmt.Errorf("storage policy id must use letters, numbers, dash or underscore")
@@ -270,12 +270,71 @@ func normalizeStoragePolicy(policy StoragePolicy) (StoragePolicy, error) {
 		if strings.TrimSpace(policy.LocalPath) == "" {
 			return StoragePolicy{}, fmt.Errorf("localPath is required for local storage")
 		}
-	case "s3", "minio":
+	case "aws-s3":
+		if strings.TrimSpace(policy.S3.Bucket) == "" {
+			return StoragePolicy{}, fmt.Errorf("bucket is required for AWS S3")
+		}
+		if strings.TrimSpace(policy.S3.AccessKey) == "" || strings.TrimSpace(policy.S3.SecretKey) == "" {
+			return StoragePolicy{}, fmt.Errorf("accessKey and secretKey are required for AWS S3")
+		}
+		if strings.TrimSpace(policy.S3.Region) == "" {
+			policy.S3.Region = "us-east-1"
+		}
 		if strings.TrimSpace(policy.S3.Endpoint) == "" {
-			return StoragePolicy{}, fmt.Errorf("s3 endpoint is required")
+			policy.S3.Endpoint = "s3.amazonaws.com"
+		}
+		policy.S3.UseSSL = true
+	case "minio":
+		if strings.TrimSpace(policy.S3.Endpoint) == "" {
+			return StoragePolicy{}, fmt.Errorf("endpoint is required for MinIO")
 		}
 		if strings.TrimSpace(policy.S3.Bucket) == "" {
-			return StoragePolicy{}, fmt.Errorf("s3 bucket is required")
+			return StoragePolicy{}, fmt.Errorf("bucket is required for MinIO")
+		}
+		if strings.TrimSpace(policy.S3.AccessKey) == "" || strings.TrimSpace(policy.S3.SecretKey) == "" {
+			return StoragePolicy{}, fmt.Errorf("accessKey and secretKey are required for MinIO")
+		}
+	case "aliyun-oss":
+		if strings.TrimSpace(policy.S3.Endpoint) == "" {
+			return StoragePolicy{}, fmt.Errorf("endpoint is required for Aliyun OSS")
+		}
+		if strings.TrimSpace(policy.S3.Bucket) == "" {
+			return StoragePolicy{}, fmt.Errorf("bucket is required for Aliyun OSS")
+		}
+		if strings.TrimSpace(policy.S3.AccessKey) == "" || strings.TrimSpace(policy.S3.SecretKey) == "" {
+			return StoragePolicy{}, fmt.Errorf("accessKey and secretKey are required for Aliyun OSS")
+		}
+	case "tencent-cos":
+		if strings.TrimSpace(policy.S3.Endpoint) == "" {
+			return StoragePolicy{}, fmt.Errorf("endpoint is required for Tencent COS")
+		}
+		if strings.TrimSpace(policy.S3.Bucket) == "" {
+			return StoragePolicy{}, fmt.Errorf("bucket is required for Tencent COS")
+		}
+		if strings.TrimSpace(policy.S3.AccessKey) == "" || strings.TrimSpace(policy.S3.SecretKey) == "" {
+			return StoragePolicy{}, fmt.Errorf("accessKey and secretKey are required for Tencent COS")
+		}
+	case "cf-r2":
+		if strings.TrimSpace(policy.S3.AccountID) == "" {
+			return StoragePolicy{}, fmt.Errorf("accountId is required for Cloudflare R2")
+		}
+		if strings.TrimSpace(policy.S3.Bucket) == "" {
+			return StoragePolicy{}, fmt.Errorf("bucket is required for Cloudflare R2")
+		}
+		if strings.TrimSpace(policy.S3.AccessKey) == "" || strings.TrimSpace(policy.S3.SecretKey) == "" {
+			return StoragePolicy{}, fmt.Errorf("accessKey and secretKey are required for Cloudflare R2")
+		}
+		policy.S3.Endpoint = fmt.Sprintf("%s.r2.cloudflarestorage.com", strings.TrimSpace(policy.S3.AccountID))
+		policy.S3.UseSSL = true
+		if strings.TrimSpace(policy.S3.Region) == "" {
+			policy.S3.Region = "auto"
+		}
+	case "s3":
+		if strings.TrimSpace(policy.S3.Endpoint) == "" {
+			return StoragePolicy{}, fmt.Errorf("endpoint is required for S3 storage")
+		}
+		if strings.TrimSpace(policy.S3.Bucket) == "" {
+			return StoragePolicy{}, fmt.Errorf("bucket is required for S3 storage")
 		}
 	default:
 		return StoragePolicy{}, fmt.Errorf("unsupported storage driver %q", policy.Driver)

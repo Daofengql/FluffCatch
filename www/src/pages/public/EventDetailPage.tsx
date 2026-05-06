@@ -25,7 +25,7 @@ import type { SelectChangeEvent } from '@mui/material/Select';
 import { useEffect, useMemo, useState } from 'react';
 import { useParams } from 'react-router-dom';
 import { QRCodeSVG } from 'qrcode.react';
-import { deletePhoto, getEvent, getPhotos, likePhoto, updatePhoto, type EventCard, type Photo } from '../../api/client';
+import { batchDeletePhotos, deletePhoto, getEvent, getPhotos, likePhoto, updatePhoto, type EventCard, type Photo } from '../../api/client';
 import { getCachedMe, refreshMe, subscribeAuthState } from '../../api/authState';
 import { ConfirmDialog } from '../../components/ConfirmDialog';
 import { ImagePreviewDialog } from '../../components/ImagePreviewDialog';
@@ -140,7 +140,7 @@ export function EventDetailPage() {
     setDeleteConfirm(null);
     setError('');
     try {
-      await Promise.all(selectedIds.map((id) => deletePhoto(id, headers)));
+      await batchDeletePhotos(selectedIds, headers);
       setMessage(`已删除 ${selectedIds.length} 张图片。`);
       setSelectedIds([]);
       load();

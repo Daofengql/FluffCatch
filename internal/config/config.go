@@ -97,6 +97,7 @@ type S3Config struct {
 	AccessKey string
 	SecretKey string
 	UseSSL    bool
+	AccountID string
 }
 
 type AuthConfig struct {
@@ -191,7 +192,7 @@ func Load() (Config, error) {
 
 	cfg.Storage.Driver = strings.ToLower(cfg.Storage.Driver)
 	switch cfg.Storage.Driver {
-	case "local", "s3", "minio":
+	case "local", "s3", "minio", "aws-s3", "aliyun-oss", "tencent-cos", "cf-r2":
 	default:
 		return Config{}, fmt.Errorf("unsupported STORAGE_DRIVER %q", cfg.Storage.Driver)
 	}

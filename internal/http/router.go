@@ -96,8 +96,10 @@ func (server *Server) Routes() stdhttp.Handler {
 			admin.Post("/submissions/batch-delete", server.deleteSubmissions)
 			admin.Put("/photos/{id}", server.updatePhoto)
 			admin.Delete("/photos/{id}", server.deletePhoto)
+			admin.Post("/photos/batch-delete", server.batchDeletePhotos)
 			admin.Get("/settings", server.getSettings)
 			admin.Put("/settings/storage", server.updateStorageSettings)
+			admin.Post("/settings/storage/test", server.testStorageConnection)
 			admin.Put("/settings/oidc", server.updateOIDCSettings)
 			admin.Put("/settings/site", server.updateSiteSettings)
 			admin.Post("/settings/site/logo", server.uploadSiteLogo)
@@ -648,6 +650,42 @@ func (server *Server) deletePhoto(w stdhttp.ResponseWriter, r *stdhttp.Request) 
 	writeJSON(w, stdhttp.StatusOK, map[string]any{"message": "photo deleted", "deletedObjects": len(objects)})
 }
 
+func (server *Server) batchDeletePhotos(w stdhttp.ResponseWriter, r *stdhttp.Request) {
+	if !server.verifyCaptchaHeader(w, r) {
+		return
+	}
+	var req struct {
+		PhotoIDs []int64 `json:"photoIds"`
+	}
+	if err := decodeJSON(r, &req); err != nil {
+		writeError(w, stdhttp.StatusBadRequest, "invalid batch delete payload")
+		return
+	}
+	if len(req.PhotoIDs) == 0 {
+		writeError(w, stdhttp.StatusBadRequest, "photoIds is required")
+		return
+	}
+
+	deleted := 0
+	var allObjects []storage.StoredObject
+	for _, id := range req.PhotoIDs {
+		ok, objects, err := server.galleryService.DeletePhoto(r.Context(), id)
+		if err != nil || !ok {
+			continue
+		}
+		deleted++
+		allObjects = append(allObjects, objects...)
+	}
+	for _, object := range allObjects {
+		store, err := server.storageManager.StoreForPolicy(object.PolicyID)
+		if err != nil {
+			continue
+		}
+		_ = store.Delete(r.Context(), object.Key)
+	}
+	writeJSON(w, stdhttp.StatusOK, map[string]any{"deleted": deleted, "deletedObjects": len(allObjects)})
+}
+
 func (server *Server) adminDashboard(w stdhttp.ResponseWriter, r *stdhttp.Request) {
 	stats := map[string]any{
 		"events":             int64(0),
@@ -714,6 +752,42 @@ func (server *Server) updateStorageSettings(w stdhttp.ResponseWriter, r *stdhttp
 		"usage":           server.storagePolicyUsageOrEmpty(r),
 		"message":         "storage policies updated",
 	})
+}
+
+func (server *Server) testStorageConnection(w stdhttp.ResponseWriter, r *stdhttp.Request) {
+	var policy settings.StoragePolicy
+	if err := decodeJSON(r, &policy); err != nil {
+		writeError(w, stdhttp.StatusBadRequest, "invalid storage policy payload")
+		return
+	}
+
+	normalized, err := settings.NormalizeStoragePolicy(policy)
+	if err != nil {
+		writeJSON(w, stdhttp.StatusOK, map[string]any{"success": false, "error": err.Error()})
+		return
+	}
+
+	config := storageConfigFromPolicy(normalized)
+	store, err := storage.New(config)
+	if err != nil {
+		writeJSON(w, stdhttp.StatusOK, map[string]any{"success": false, "error": err.Error()})
+		return
+	}
+
+	testKey := "_test/connection_test.bin"
+	_, err = store.Put(r.Context(), storage.Object{
+		Key:         testKey,
+		Content:     strings.NewReader("ok"),
+		ContentType: "application/octet-stream",
+		Size:        2,
+	})
+	if err != nil {
+		writeJSON(w, stdhttp.StatusOK, map[string]any{"success": false, "error": "upload test failed: " + err.Error()})
+		return
+	}
+
+	_ = store.Delete(r.Context(), testKey)
+	writeJSON(w, stdhttp.StatusOK, map[string]any{"success": true})
 }
 
 func (server *Server) updateOIDCSettings(w stdhttp.ResponseWriter, r *stdhttp.Request) {
@@ -955,6 +1029,7 @@ func storageConfigFromPolicy(policy settings.StoragePolicy) storage.Config {
 			AccessKey: policy.S3.AccessKey,
 			SecretKey: policy.S3.SecretKey,
 			UseSSL:    policy.S3.UseSSL,
+			AccountID: policy.S3.AccountID,
 		},
 	}
 }

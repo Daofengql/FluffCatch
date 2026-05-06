@@ -200,6 +200,7 @@ func storageConfigFromPolicy(policy settings.StoragePolicy) storage.Config {
 			AccessKey: policy.S3.AccessKey,
 			SecretKey: policy.S3.SecretKey,
 			UseSSL:    policy.S3.UseSSL,
+			AccountID: policy.S3.AccountID,
 		},
 	}
 }

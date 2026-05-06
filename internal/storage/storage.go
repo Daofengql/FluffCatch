@@ -35,6 +35,7 @@ type S3Config struct {
 	AccessKey string
 	SecretKey string
 	UseSSL    bool
+	AccountID string
 }
 
 type Config struct {
@@ -97,15 +98,47 @@ func New(config Config) (Store, error) {
 			baseURL:  config.PublicBaseURL,
 			store:    NewLocalStore(config.LocalPath, config.PublicPrefix),
 		}, nil
-	case "s3", "minio":
+	case "aws-s3", "minio", "cf-r2", "s3":
 		if config.PublicBaseURL == "" {
 			return nil, fmt.Errorf("publicBaseUrl is required for %s storage", config.Driver)
+		}
+		s3Store, err := NewS3Store(config.S3, config.PublicBaseURL)
+		if err != nil {
+			return nil, err
 		}
 		return PolicyStore{
 			policyID: config.PolicyID,
 			driver:   config.Driver,
 			baseURL:  config.PublicBaseURL,
-			store:    NewExternalStore(config.PublicBaseURL),
+			store:    s3Store,
+		}, nil
+	case "aliyun-oss":
+		if config.PublicBaseURL == "" {
+			return nil, fmt.Errorf("publicBaseUrl is required for aliyun-oss storage")
+		}
+		ossStore, err := NewOSSStore(config.S3, config.PublicBaseURL)
+		if err != nil {
+			return nil, err
+		}
+		return PolicyStore{
+			policyID: config.PolicyID,
+			driver:   config.Driver,
+			baseURL:  config.PublicBaseURL,
+			store:    ossStore,
+		}, nil
+	case "tencent-cos":
+		if config.PublicBaseURL == "" {
+			return nil, fmt.Errorf("publicBaseUrl is required for tencent-cos storage")
+		}
+		cosStore, err := NewCOSStore(config.S3, config.PublicBaseURL)
+		if err != nil {
+			return nil, err
+		}
+		return PolicyStore{
+			policyID: config.PolicyID,
+			driver:   config.Driver,
+			baseURL:  config.PublicBaseURL,
+			store:    cosStore,
 		}, nil
 	default:
 		return nil, fmt.Errorf("unsupported storage driver %q", config.Driver)
