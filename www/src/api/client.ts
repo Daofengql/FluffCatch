@@ -3,6 +3,10 @@ export type EventCard = {
   title: string;
   description: string;
   location: string;
+  provinceCode?: string;
+  provinceName?: string;
+  cityCode?: string;
+  cityName?: string;
   startTime?: string;
   endTime?: string;
   coverPolicyId?: string;
@@ -10,6 +14,8 @@ export type EventCard = {
   coverUrl?: string;
   isPublic: boolean;
   submissionEnabled: boolean;
+  submissionPassword?: string;
+  photoCount: number;
 };
 
 export type Photo = {
@@ -20,9 +26,16 @@ export type Photo = {
   url: string;
   thumbnailUrl?: string;
   contentHash: string;
+  contentType: string;
+  sizeBytes: number;
+  likeCount: number;
+  liked: boolean;
   photographerName?: string;
   visibility: 'public' | 'protected' | 'private';
   tags: { id: number; name: string }[];
+  takenAt?: string;
+  createdAt: string;
+  updatedAt: string;
 };
 
 export type Submission = {
@@ -66,6 +79,7 @@ export type SiteSettings = {
   name: string;
   subtitle: string;
   logoUrl: string;
+  homeMarkdown: string;
 };
 
 export type MeResponse = {
@@ -105,6 +119,10 @@ export type CaptchaChallenge = {
   imageSvg: string;
   expiresAt: string;
 };
+
+export function captchaHeaders(challenge: CaptchaChallenge, answer: string): Record<string, string> {
+  return { 'X-Captcha-Id': challenge.id, 'X-Captcha-Answer': answer };
+}
 
 export async function getCaptcha() {
   return request<CaptchaChallenge>('/api/v1/auth/captcha');
@@ -161,10 +179,15 @@ export async function saveEvent(event: Partial<EventCard> & { submissionPassword
     title: event.title,
     description: event.description,
     location: event.location,
+    provinceCode: event.provinceCode || '',
+    provinceName: event.provinceName || '',
+    cityCode: event.cityCode || '',
+    cityName: event.cityName || '',
     startTime: event.startTime || '',
     endTime: event.endTime || '',
     coverPolicyId: event.coverPolicyId || '',
     coverObjectKey: event.coverObjectKey || '',
+    removeCover: false,
     isPublic: Boolean(event.isPublic),
     submissionEnabled: event.submissionEnabled ?? true,
     submissionPassword: event.submissionPassword || ''
@@ -184,9 +207,10 @@ export async function uploadEventCover(eventId: number, file: File) {
   });
 }
 
-export async function deleteEvent(eventId: number) {
+export async function deleteEvent(eventId: number, headers?: Record<string, string>) {
   return request<{ message: string; deletedObjects: number }>(`/api/v1/admin/events/${eventId}`, {
-    method: 'DELETE'
+    method: 'DELETE',
+    headers
   });
 }
 
@@ -197,21 +221,33 @@ export async function updatePhoto(photoId: number, payload: { photographerName?:
   });
 }
 
-export async function deletePhoto(photoId: number) {
+export async function deletePhoto(photoId: number, headers?: Record<string, string>) {
   return request<{ message: string; deletedObjects: number }>(`/api/v1/admin/photos/${photoId}`, {
-    method: 'DELETE'
+    method: 'DELETE',
+    headers
   });
 }
 
+export async function likePhoto(photoId: number) {
+  return request<{ photoId: number; likeCount: number; liked: boolean; justLiked: boolean }>(`/api/v1/photos/${photoId}/like`, {
+    method: 'POST'
+  });
+}
+
+export type SubmissionUploadResult = {
+  submissions?: Submission[];
+  photos?: Photo[];
+};
+
 export async function submitPhotos(eventId: number, form: FormData) {
-  return request<{ submissions: Submission[] }>(`/api/v1/events/${eventId}/submissions`, {
+  return request<SubmissionUploadResult>(`/api/v1/events/${eventId}/submissions`, {
     method: 'POST',
     body: form
   });
 }
 
 export function submitPhotoWithProgress(eventId: number, form: FormData, onProgress: (progress: number) => void) {
-  return new Promise<{ submissions: Submission[] }>((resolve, reject) => {
+  return new Promise<SubmissionUploadResult>((resolve, reject) => {
     const xhr = new XMLHttpRequest();
     xhr.open('POST', `/api/v1/events/${eventId}/submissions`);
     xhr.withCredentials = true;
@@ -239,6 +275,11 @@ export async function getPendingSubmissions(): Promise<Submission[]> {
   return Array.isArray(payload?.submissions) ? payload.submissions : [];
 }
 
+export async function getEventPendingSubmissions(eventId: number): Promise<Submission[]> {
+  const payload = await request<{ submissions?: Submission[] } | null>(`/api/v1/admin/events/${eventId}/submissions`);
+  return Array.isArray(payload?.submissions) ? payload.submissions : [];
+}
+
 export async function approveSubmissions(submissionIds: number[]) {
   return request<{ processed: number; message: string }>('/api/v1/admin/submissions/batch-approve', {
     method: 'POST',
@@ -246,10 +287,11 @@ export async function approveSubmissions(submissionIds: number[]) {
   });
 }
 
-export async function deleteSubmissions(submissionIds: number[]) {
+export async function deleteSubmissions(submissionIds: number[], headers?: Record<string, string>) {
   return request<{ processed: number; message: string }>('/api/v1/admin/submissions/batch-delete', {
     method: 'POST',
-    body: JSON.stringify({ submissionIds })
+    body: JSON.stringify({ submissionIds }),
+    headers
   });
 }
 
@@ -261,6 +303,21 @@ export async function updateSiteSettings(site: SiteSettings) {
   return request<{ site: SiteSettings; message: string }>('/api/v1/admin/settings/site', {
     method: 'PUT',
     body: JSON.stringify(site)
+  });
+}
+
+export async function uploadSiteLogo(file: File) {
+  const form = new FormData();
+  form.append('file', file);
+  return request<{ site: SiteSettings; url: string; message: string }>('/api/v1/admin/settings/site/logo', {
+    method: 'POST',
+    body: form
+  });
+}
+
+export async function clearSiteLogo() {
+  return request<{ site: SiteSettings; message: string }>('/api/v1/admin/settings/site/logo', {
+    method: 'DELETE'
   });
 }
 

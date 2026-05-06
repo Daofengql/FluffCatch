@@ -124,7 +124,7 @@ func runMigrationsAndExit(ctx context.Context, cfg config.Config) {
 		os.Exit(1)
 	}
 
-	dbConn, err := db.Open(ctx, dsn)
+	dbConn, err := db.Open(ctx, dsn, databaseOptionsFromConfig(cfg.Database))
 	if err != nil {
 		slog.Error("failed to connect mysql", "error", err)
 		os.Exit(1)
@@ -159,7 +159,7 @@ func resetAdminPasswordAndExit(ctx context.Context, cfg config.Config, password 
 		os.Exit(1)
 	}
 
-	dbConn, err := db.Open(ctx, dsn)
+	dbConn, err := db.Open(ctx, dsn, databaseOptionsFromConfig(cfg.Database))
 	if err != nil {
 		slog.Error("failed to connect mysql", "error", err)
 		os.Exit(1)
@@ -216,11 +216,22 @@ func mustOpenDatabase(ctx context.Context, cfg config.Config) *sql.DB {
 		os.Exit(1)
 	}
 
-	dbConn, err := db.Open(ctx, dsn)
+	dbConn, err := db.Open(ctx, dsn, databaseOptionsFromConfig(cfg.Database))
 	if err != nil {
 		slog.Error("failed to connect mysql", "error", err)
 		os.Exit(1)
 	}
 
 	return dbConn
+}
+
+func databaseOptionsFromConfig(database config.DatabaseConfig) db.Options {
+	return db.Options{
+		MaxOpenConns:      database.MaxOpenConns,
+		MaxIdleConns:      database.MaxIdleConns,
+		ConnMaxLifetime:   database.ConnMaxLifetime,
+		ConnMaxIdleTime:   database.ConnMaxIdleTime,
+		ConnectRetries:    database.ConnectRetries,
+		ConnectRetryDelay: database.ConnectRetryDelay,
+	}
 }

@@ -1,4 +1,4 @@
-import { ArrowBack, Dashboard, ExitToApp, Folder, Inbox, Settings } from '@mui/icons-material';
+import { ArrowBack, ExitToApp, Folder, Settings } from '@mui/icons-material';
 import {
   Avatar,
   Box,
@@ -21,13 +21,12 @@ const drawerWidth = 240;
 const fallbackSite: SiteSettings = {
   name: 'FluffCatch',
   subtitle: '兽聚返图收集与画廊',
-  logoUrl: ''
+  logoUrl: '',
+  homeMarkdown: ''
 };
 
 const navItems = [
-  { label: '概览', path: '/admin/dashboard', icon: <Dashboard /> },
   { label: '兽聚管理', path: '/admin/events', icon: <Folder /> },
-  { label: '投稿审核', path: '/admin/submissions', icon: <Inbox /> },
   { label: '系统设置', path: '/admin/settings', icon: <Settings /> }
 ];
 
@@ -149,7 +148,7 @@ export function AdminLayout() {
 
   return (
     <Box sx={{ bgcolor: 'grey.50', display: 'flex', flexDirection: 'column', minHeight: '100vh' }}>
-      <PublicLayoutHeader authenticated site={site} />
+      <PublicLayoutHeader authenticated hideAdminEntry site={site} />
       <Box sx={{ display: 'flex', flex: 1, mt: 8 }}>
         <Drawer
           open

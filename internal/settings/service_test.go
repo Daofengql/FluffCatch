@@ -46,6 +46,18 @@ func TestUpdateStoragePoliciesRejectsInvalidDriver(t *testing.T) {
 	}
 }
 
+func TestUpdateSiteAllowsEmptyHomeMarkdown(t *testing.T) {
+	service := NewService(NewStore(nil, RuntimeSettings{}))
+
+	site, err := service.UpdateSite(context.Background(), SiteSettings{Name: "Test"})
+	if err != nil {
+		t.Fatalf("UpdateSite() returned error: %v", err)
+	}
+	if site.HomeMarkdown != "" {
+		t.Fatalf("expected empty home markdown, got %q", site.HomeMarkdown)
+	}
+}
+
 func TestUpdateStoragePoliciesPreventsDeletingUsedPolicy(t *testing.T) {
 	service := NewServiceWithReferences(
 		NewStore(nil, RuntimeSettings{

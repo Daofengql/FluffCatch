@@ -24,7 +24,7 @@ func (service *Service) ListPublic(ctx context.Context) ([]Event, error) {
 }
 
 func (service *Service) ListAdmin(ctx context.Context) ([]Event, error) {
-	return service.list(ctx, "")
+	return service.listWithOptions(ctx, "", true)
 }
 
 func (service *Service) GetPublic(ctx context.Context, id int64) (Event, bool, error) {
@@ -32,7 +32,7 @@ func (service *Service) GetPublic(ctx context.Context, id int64) (Event, bool, e
 }
 
 func (service *Service) GetAdmin(ctx context.Context, id int64) (Event, bool, error) {
-	return service.get(ctx, id, false)
+	return service.getWithOptions(ctx, id, false, true)
 }
 
 func (service *Service) Create(ctx context.Context, req CreateEventRequest) (Event, error) {
@@ -52,12 +52,12 @@ func (service *Service) Create(ctx context.Context, req CreateEventRequest) (Eve
 
 	result, err := service.db.ExecContext(ctx, `
 		INSERT INTO events (
-			title, description, location, starts_at, ends_at,
+			title, description, location, province_code, province_name, city_code, city_name, starts_at, ends_at,
 			cover_storage_policy_id, cover_object_key,
-			is_public, submission_enabled, submission_password_hash
+			is_public, submission_enabled, submission_password_hash, submission_password_plain
 		)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-	`, event.Title, event.Description, event.Location, nullableTime(event.StartTime), nullableTime(event.EndTime), nullableString(event.CoverPolicyID), nullableString(event.CoverObjectKey), event.IsPublic, event.SubmissionEnabled, nullableString(passwordHash))
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	`, event.Title, event.Description, event.Location, nullableString(event.ProvinceCode), nullableString(event.ProvinceName), nullableString(event.CityCode), nullableString(event.CityName), nullableTime(event.StartTime), nullableTime(event.EndTime), nullableString(event.CoverPolicyID), nullableString(event.CoverObjectKey), event.IsPublic, event.SubmissionEnabled, nullableString(passwordHash), nullableString(req.SubmissionPass))
 	if err != nil {
 		return Event{}, friendlySQLError("create event", err)
 	}
@@ -94,21 +94,39 @@ func (service *Service) Update(ctx context.Context, id int64, req CreateEventReq
 	}
 
 	if req.SubmissionPass == "" {
-		_, err = service.db.ExecContext(ctx, `
-			UPDATE events
-			SET title = ?, description = ?, location = ?, starts_at = ?, ends_at = ?,
-				cover_storage_policy_id = ?, cover_object_key = ?,
-				is_public = ?, submission_enabled = ?
-			WHERE id = ?
-		`, event.Title, event.Description, event.Location, nullableTime(event.StartTime), nullableTime(event.EndTime), nullableString(event.CoverPolicyID), nullableString(event.CoverObjectKey), event.IsPublic, event.SubmissionEnabled, id)
+		if req.RemoveCover || event.CoverPolicyID != "" || event.CoverObjectKey != "" {
+			_, err = service.db.ExecContext(ctx, `
+				UPDATE events
+				SET title = ?, description = ?, location = ?, province_code = ?, province_name = ?, city_code = ?, city_name = ?, starts_at = ?, ends_at = ?,
+					cover_storage_policy_id = ?, cover_object_key = ?,
+					is_public = ?, submission_enabled = ?
+				WHERE id = ?
+			`, event.Title, event.Description, event.Location, nullableString(event.ProvinceCode), nullableString(event.ProvinceName), nullableString(event.CityCode), nullableString(event.CityName), nullableTime(event.StartTime), nullableTime(event.EndTime), nullableString(event.CoverPolicyID), nullableString(event.CoverObjectKey), event.IsPublic, event.SubmissionEnabled, id)
+		} else {
+			_, err = service.db.ExecContext(ctx, `
+				UPDATE events
+				SET title = ?, description = ?, location = ?, province_code = ?, province_name = ?, city_code = ?, city_name = ?, starts_at = ?, ends_at = ?,
+					is_public = ?, submission_enabled = ?
+				WHERE id = ?
+			`, event.Title, event.Description, event.Location, nullableString(event.ProvinceCode), nullableString(event.ProvinceName), nullableString(event.CityCode), nullableString(event.CityName), nullableTime(event.StartTime), nullableTime(event.EndTime), event.IsPublic, event.SubmissionEnabled, id)
+		}
 	} else {
-		_, err = service.db.ExecContext(ctx, `
-			UPDATE events
-			SET title = ?, description = ?, location = ?, starts_at = ?, ends_at = ?,
-				cover_storage_policy_id = ?, cover_object_key = ?,
-				is_public = ?, submission_enabled = ?, submission_password_hash = ?
-			WHERE id = ?
-		`, event.Title, event.Description, event.Location, nullableTime(event.StartTime), nullableTime(event.EndTime), nullableString(event.CoverPolicyID), nullableString(event.CoverObjectKey), event.IsPublic, event.SubmissionEnabled, nullableString(passwordHash), id)
+		if req.RemoveCover || event.CoverPolicyID != "" || event.CoverObjectKey != "" {
+			_, err = service.db.ExecContext(ctx, `
+				UPDATE events
+				SET title = ?, description = ?, location = ?, province_code = ?, province_name = ?, city_code = ?, city_name = ?, starts_at = ?, ends_at = ?,
+					cover_storage_policy_id = ?, cover_object_key = ?,
+					is_public = ?, submission_enabled = ?, submission_password_hash = ?, submission_password_plain = ?
+				WHERE id = ?
+			`, event.Title, event.Description, event.Location, nullableString(event.ProvinceCode), nullableString(event.ProvinceName), nullableString(event.CityCode), nullableString(event.CityName), nullableTime(event.StartTime), nullableTime(event.EndTime), nullableString(event.CoverPolicyID), nullableString(event.CoverObjectKey), event.IsPublic, event.SubmissionEnabled, nullableString(passwordHash), nullableString(req.SubmissionPass), id)
+		} else {
+			_, err = service.db.ExecContext(ctx, `
+				UPDATE events
+				SET title = ?, description = ?, location = ?, province_code = ?, province_name = ?, city_code = ?, city_name = ?, starts_at = ?, ends_at = ?,
+					is_public = ?, submission_enabled = ?, submission_password_hash = ?, submission_password_plain = ?
+				WHERE id = ?
+			`, event.Title, event.Description, event.Location, nullableString(event.ProvinceCode), nullableString(event.ProvinceName), nullableString(event.CityCode), nullableString(event.CityName), nullableTime(event.StartTime), nullableTime(event.EndTime), event.IsPublic, event.SubmissionEnabled, nullableString(passwordHash), nullableString(req.SubmissionPass), id)
+		}
 	}
 	if err != nil {
 		return Event{}, friendlySQLError("update event", err)
@@ -162,13 +180,30 @@ func (service *Service) SubmissionPasswordHash(ctx context.Context, eventID int6
 }
 
 func (service *Service) list(ctx context.Context, where string) ([]Event, error) {
+	return service.listWithOptions(ctx, where, false)
+}
+
+func (service *Service) listWithOptions(ctx context.Context, where string, includeSubmissionPassword bool) ([]Event, error) {
 	if service.db == nil {
 		return []Event{}, nil
 	}
 
 	query := `
-		SELECT id, title, description, location, starts_at, ends_at,
-			cover_storage_policy_id, cover_object_key, is_public, submission_enabled, created_at, updated_at
+		SELECT id, title, description, location,
+			COALESCE(province_code, ''), COALESCE(province_name, ''), COALESCE(city_code, ''), COALESCE(city_name, ''),
+			starts_at, ends_at,
+			cover_storage_policy_id, cover_object_key, is_public, submission_enabled,
+			(SELECT COUNT(*) FROM photos WHERE photos.event_id = events.id`
+	if !includeSubmissionPassword {
+		query += ` AND photos.visibility = 'public'`
+	}
+	query += `), `
+	if includeSubmissionPassword {
+		query += `COALESCE(submission_password_plain, ''), `
+	} else {
+		query += `'', `
+	}
+	query += `created_at, updated_at
 		FROM events
 		` + where + `
 		ORDER BY COALESCE(starts_at, created_at) DESC, id DESC
@@ -196,13 +231,31 @@ func (service *Service) list(ctx context.Context, where string) ([]Event, error)
 }
 
 func (service *Service) get(ctx context.Context, id int64, onlyPublic bool) (Event, bool, error) {
+	return service.getWithOptions(ctx, id, onlyPublic, false)
+}
+
+func (service *Service) getWithOptions(ctx context.Context, id int64, onlyPublic bool, includeSubmissionPassword bool) (Event, bool, error) {
 	if service.db == nil {
 		return Event{}, false, nil
 	}
 
 	query := `
-		SELECT id, title, description, location, starts_at, ends_at,
-			cover_storage_policy_id, cover_object_key, is_public, submission_enabled, created_at, updated_at
+		SELECT id, title, description, location,
+			COALESCE(province_code, ''), COALESCE(province_name, ''), COALESCE(city_code, ''), COALESCE(city_name, ''),
+			starts_at, ends_at,
+			cover_storage_policy_id, cover_object_key, is_public, submission_enabled,
+			(SELECT COUNT(*) FROM photos WHERE photos.event_id = events.id`
+	if includeSubmissionPassword {
+		query += `), `
+	} else {
+		query += ` AND photos.visibility = 'public'), `
+	}
+	if includeSubmissionPassword {
+		query += `COALESCE(submission_password_plain, ''), `
+	} else {
+		query += `'', `
+	}
+	query += `created_at, updated_at
 		FROM events
 		WHERE id = ?
 	`
@@ -294,12 +347,18 @@ func scanEvent(scanner eventScanner) (Event, error) {
 		&event.Title,
 		&event.Description,
 		&event.Location,
+		&event.ProvinceCode,
+		&event.ProvinceName,
+		&event.CityCode,
+		&event.CityName,
 		&startsAt,
 		&endsAt,
 		&coverPolicyID,
 		&coverObjectKey,
 		&event.IsPublic,
 		&event.SubmissionEnabled,
+		&event.PhotoCount,
+		&event.SubmissionPassword,
 		&event.CreatedAt,
 		&event.UpdatedAt,
 	); err != nil {
@@ -343,6 +402,10 @@ func requestToEvent(req CreateEventRequest) (Event, error) {
 		Title:             strings.TrimSpace(req.Title),
 		Description:       strings.TrimSpace(req.Description),
 		Location:          strings.TrimSpace(req.Location),
+		ProvinceCode:      strings.TrimSpace(req.ProvinceCode),
+		ProvinceName:      strings.TrimSpace(req.ProvinceName),
+		CityCode:          strings.TrimSpace(req.CityCode),
+		CityName:          strings.TrimSpace(req.CityName),
 		StartTime:         startTime,
 		EndTime:           endTime,
 		CoverPolicyID:     strings.TrimSpace(req.CoverPolicyID),

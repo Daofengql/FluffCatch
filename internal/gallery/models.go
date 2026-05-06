@@ -19,6 +19,10 @@ type Photo struct {
 	ThumbnailKey     string     `json:"thumbnailKey,omitempty"`
 	ThumbnailURL     string     `json:"thumbnailUrl,omitempty"`
 	ContentHash      string     `json:"contentHash"`
+	ContentType      string     `json:"contentType"`
+	SizeBytes        int64      `json:"sizeBytes"`
+	LikeCount        int64      `json:"likeCount"`
+	Liked            bool       `json:"liked"`
 	PhotographerName string     `json:"photographerName,omitempty"`
 	Visibility       Visibility `json:"visibility"`
 	Tags             []Tag      `json:"tags"`
@@ -46,4 +50,11 @@ type UpdatePhotoRequest struct {
 	Visibility       Visibility `json:"visibility"`
 	AccessPassword   string     `json:"accessPassword"`
 	Tags             []string   `json:"tags"`
+}
+
+type LikeResult struct {
+	PhotoID   int64 `json:"photoId"`
+	LikeCount int64 `json:"likeCount"`
+	Liked     bool  `json:"liked"`
+	JustLiked bool  `json:"justLiked"`
 }

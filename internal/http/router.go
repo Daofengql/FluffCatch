@@ -1,10 +1,14 @@
 package http
 
 import (
+	"context"
+	"crypto/sha256"
 	"database/sql"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io/fs"
+	"net"
 	stdhttp "net/http"
 	"os"
 	urlpath "path"
@@ -75,6 +79,7 @@ func (server *Server) Routes() stdhttp.Handler {
 		api.Get("/events/{id}", server.getPublicEvent)
 		api.Get("/events/{id}/photos", server.listPublicPhotos)
 		api.Post("/events/{id}/submissions", server.createSubmission)
+		api.Post("/photos/{id}/like", server.likePhoto)
 
 		api.Route("/admin", func(admin chi.Router) {
 			admin.Use(server.requireAdmin)
@@ -85,6 +90,7 @@ func (server *Server) Routes() stdhttp.Handler {
 			admin.Delete("/events/{id}", server.deleteAdminEvent)
 			admin.Post("/events/{id}/cover", server.uploadEventCover)
 			admin.Get("/events/{id}/photos", server.listAdminPhotos)
+			admin.Get("/events/{id}/submissions", server.listEventPendingSubmissions)
 			admin.Get("/submissions", server.listPendingSubmissions)
 			admin.Post("/submissions/batch-approve", server.approveSubmissions)
 			admin.Post("/submissions/batch-delete", server.deleteSubmissions)
@@ -94,6 +100,8 @@ func (server *Server) Routes() stdhttp.Handler {
 			admin.Put("/settings/storage", server.updateStorageSettings)
 			admin.Put("/settings/oidc", server.updateOIDCSettings)
 			admin.Put("/settings/site", server.updateSiteSettings)
+			admin.Post("/settings/site/logo", server.uploadSiteLogo)
+			admin.Delete("/settings/site/logo", server.clearSiteLogo)
 		})
 	})
 
@@ -228,7 +236,18 @@ func (server *Server) getPublicEvent(w stdhttp.ResponseWriter, r *stdhttp.Reques
 		return
 	}
 
-	event, found, err := server.eventService.GetPublic(r.Context(), id)
+	_, isAdmin, err := server.currentAdmin(r)
+	if err != nil {
+		writeError(w, stdhttp.StatusInternalServerError, "failed to authenticate session")
+		return
+	}
+	var event events.Event
+	var found bool
+	if isAdmin {
+		event, found, err = server.eventService.GetAdmin(r.Context(), id)
+	} else {
+		event, found, err = server.eventService.GetPublic(r.Context(), id)
+	}
 	if err != nil {
 		writeError(w, stdhttp.StatusInternalServerError, "failed to load event")
 		return
@@ -249,6 +268,11 @@ func (server *Server) createSubmission(w stdhttp.ResponseWriter, r *stdhttp.Requ
 	if !ok {
 		return
 	}
+	_, isAdmin, err := server.currentAdmin(r)
+	if err != nil {
+		writeError(w, stdhttp.StatusInternalServerError, "failed to authenticate session")
+		return
+	}
 
 	if err := r.ParseMultipartForm(256 << 20); err != nil {
 		writeError(w, stdhttp.StatusBadRequest, "invalid multipart upload")
@@ -260,13 +284,23 @@ func (server *Server) createSubmission(w stdhttp.ResponseWriter, r *stdhttp.Requ
 		file, header, err := r.FormFile("file")
 		if err == nil {
 			defer file.Close()
-			submission, err := server.uploadService.Create(r.Context(), id, uploads.FileUpload{
+			upload := uploads.FileUpload{
 				File:               file,
 				Header:             header,
 				SubmissionPassword: r.FormValue("submissionPassword"),
 				PhotographerName:   r.FormValue("photographerName"),
 				Tags:               parseTagsValue(r.FormValue("tags")),
-			})
+			}
+			if isAdmin {
+				photo, err := server.uploadService.CreateApproved(r.Context(), id, upload)
+				if err != nil {
+					writeError(w, stdhttp.StatusBadRequest, err.Error())
+					return
+				}
+				writeJSON(w, stdhttp.StatusCreated, map[string]any{"photos": []gallery.Photo{photo}})
+				return
+			}
+			submission, err := server.uploadService.Create(r.Context(), id, upload)
 			if err != nil {
 				writeError(w, stdhttp.StatusBadRequest, err.Error())
 				return
@@ -278,30 +312,49 @@ func (server *Server) createSubmission(w stdhttp.ResponseWriter, r *stdhttp.Requ
 		return
 	}
 
-	created := make([]uploads.Submission, 0, len(files))
+	createdSubmissions := make([]uploads.Submission, 0, len(files))
+	createdPhotos := make([]gallery.Photo, 0, len(files))
 	for _, header := range files {
 		file, err := header.Open()
 		if err != nil {
 			writeError(w, stdhttp.StatusBadRequest, "failed to read upload file")
 			return
 		}
-		submission, err := server.uploadService.Create(r.Context(), id, uploads.FileUpload{
+		upload := uploads.FileUpload{
 			File:               file,
 			Header:             header,
 			SubmissionPassword: r.FormValue("submissionPassword"),
 			PhotographerName:   r.FormValue("photographerName"),
 			Tags:               parseTagsValue(r.FormValue("tags")),
-		})
+		}
+		if isAdmin {
+			photo, err := server.uploadService.CreateApproved(r.Context(), id, upload)
+			_ = file.Close()
+			if err != nil {
+				writeError(w, stdhttp.StatusBadRequest, err.Error())
+				return
+			}
+			createdPhotos = append(createdPhotos, photo)
+			continue
+		}
+		submission, err := server.uploadService.Create(r.Context(), id, upload)
 		_ = file.Close()
 		if err != nil {
 			writeError(w, stdhttp.StatusBadRequest, err.Error())
 			return
 		}
-		created = append(created, submission)
+		createdSubmissions = append(createdSubmissions, submission)
+	}
+
+	if isAdmin {
+		writeJSON(w, stdhttp.StatusCreated, map[string]any{
+			"photos": createdPhotos,
+		})
+		return
 	}
 
 	writeJSON(w, stdhttp.StatusCreated, map[string]any{
-		"submissions": created,
+		"submissions": createdSubmissions,
 	})
 }
 
@@ -312,7 +365,7 @@ func (server *Server) listPublicPhotos(w stdhttp.ResponseWriter, r *stdhttp.Requ
 	}
 
 	page, pageSize := parsePagination(r)
-	result, err := server.galleryService.ListForEventPage(r.Context(), id, false, r.URL.Query().Get("password"), page, pageSize)
+	result, err := server.galleryService.ListForEventPageWithFingerprint(r.Context(), id, false, r.URL.Query().Get("password"), viewerFingerprintHash(r), page, pageSize)
 	if err != nil {
 		writeError(w, stdhttp.StatusInternalServerError, "failed to list photos")
 		return
@@ -325,6 +378,25 @@ func (server *Server) listPublicPhotos(w stdhttp.ResponseWriter, r *stdhttp.Requ
 		"pageSize":   result.PageSize,
 		"totalPages": result.TotalPages,
 	})
+}
+
+func (server *Server) likePhoto(w stdhttp.ResponseWriter, r *stdhttp.Request) {
+	id, ok := parseIDParam(w, r, "id")
+	if !ok {
+		return
+	}
+
+	result, err := server.galleryService.Like(r.Context(), id, viewerFingerprintHash(r))
+	if err != nil {
+		if strings.Contains(err.Error(), "not found") {
+			writeError(w, stdhttp.StatusNotFound, err.Error())
+			return
+		}
+		writeError(w, stdhttp.StatusBadRequest, err.Error())
+		return
+	}
+
+	writeJSON(w, stdhttp.StatusOK, result)
 }
 
 func (server *Server) listAdminEvents(w stdhttp.ResponseWriter, r *stdhttp.Request) {
@@ -377,6 +449,9 @@ func (server *Server) updateAdminEvent(w stdhttp.ResponseWriter, r *stdhttp.Requ
 }
 
 func (server *Server) deleteAdminEvent(w stdhttp.ResponseWriter, r *stdhttp.Request) {
+	if !server.verifyCaptchaHeader(w, r) {
+		return
+	}
 	id, ok := parseIDParam(w, r, "id")
 	if !ok {
 		return
@@ -477,6 +552,22 @@ func (server *Server) listPendingSubmissions(w stdhttp.ResponseWriter, r *stdhtt
 	})
 }
 
+func (server *Server) listEventPendingSubmissions(w stdhttp.ResponseWriter, r *stdhttp.Request) {
+	id, ok := parseIDParam(w, r, "id")
+	if !ok {
+		return
+	}
+	submissions, err := server.uploadService.ListPendingForEvent(r.Context(), id)
+	if err != nil {
+		writeError(w, stdhttp.StatusInternalServerError, "failed to list submissions")
+		return
+	}
+
+	writeJSON(w, stdhttp.StatusOK, map[string]any{
+		"submissions": submissions,
+	})
+}
+
 func (server *Server) approveSubmissions(w stdhttp.ResponseWriter, r *stdhttp.Request) {
 	var req uploads.BatchRequest
 	if err := decodeJSON(r, &req); err != nil {
@@ -494,6 +585,9 @@ func (server *Server) approveSubmissions(w stdhttp.ResponseWriter, r *stdhttp.Re
 }
 
 func (server *Server) deleteSubmissions(w stdhttp.ResponseWriter, r *stdhttp.Request) {
+	if !server.verifyCaptchaHeader(w, r) {
+		return
+	}
 	var req uploads.BatchRequest
 	if err := decodeJSON(r, &req); err != nil {
 		writeError(w, stdhttp.StatusBadRequest, "invalid batch payload")
@@ -528,6 +622,9 @@ func (server *Server) updatePhoto(w stdhttp.ResponseWriter, r *stdhttp.Request) 
 }
 
 func (server *Server) deletePhoto(w stdhttp.ResponseWriter, r *stdhttp.Request) {
+	if !server.verifyCaptchaHeader(w, r) {
+		return
+	}
 	id, ok := parseIDParam(w, r, "id")
 	if !ok {
 		return
@@ -644,12 +741,106 @@ func (server *Server) updateSiteSettings(w stdhttp.ResponseWriter, r *stdhttp.Re
 		writeError(w, stdhttp.StatusBadRequest, "invalid site settings payload")
 		return
 	}
+	current, err := server.settingsService.Load(r.Context())
+	if err != nil {
+		writeError(w, stdhttp.StatusInternalServerError, "failed to load site settings")
+		return
+	}
+	req.LogoURL = current.Site.LogoURL
+
 	updated, err := server.settingsService.UpdateSite(r.Context(), req)
 	if err != nil {
 		writeError(w, stdhttp.StatusBadRequest, err.Error())
 		return
 	}
 	writeJSON(w, stdhttp.StatusOK, map[string]any{"site": updated, "message": "site settings updated"})
+}
+
+func (server *Server) clearSiteLogo(w stdhttp.ResponseWriter, r *stdhttp.Request) {
+	current, err := server.settingsService.Load(r.Context())
+	if err != nil {
+		writeError(w, stdhttp.StatusInternalServerError, "failed to load site settings")
+		return
+	}
+	oldLogoURL := current.Site.LogoURL
+	current.Site.LogoURL = ""
+
+	updated, err := server.settingsService.UpdateSite(r.Context(), current.Site)
+	if err != nil {
+		writeError(w, stdhttp.StatusInternalServerError, "failed to clear site logo")
+		return
+	}
+	server.deleteLocalSiteLogo(r.Context(), oldLogoURL)
+
+	writeJSON(w, stdhttp.StatusOK, map[string]any{"site": updated, "message": "site logo cleared"})
+}
+
+func (server *Server) uploadSiteLogo(w stdhttp.ResponseWriter, r *stdhttp.Request) {
+	file, header, err := r.FormFile("file")
+	if err != nil {
+		writeError(w, stdhttp.StatusBadRequest, "logo file is required")
+		return
+	}
+	defer file.Close()
+
+	if header.Size <= 0 {
+		writeError(w, stdhttp.StatusBadRequest, "logo file is empty")
+		return
+	}
+
+	contentType := header.Header.Get("Content-Type")
+	if !strings.HasPrefix(contentType, "image/") {
+		writeError(w, stdhttp.StatusBadRequest, "logo must be an image")
+		return
+	}
+
+	store := storage.NewLocalStore(server.cfg.Storage.LocalPath, "/media/local")
+	objectKey := fmt.Sprintf("site/logo/%d-%s", time.Now().UnixNano(), sanitizeFilename(header.Filename))
+	stored, err := store.Put(r.Context(), storage.Object{
+		Key:         objectKey,
+		Content:     file,
+		ContentType: contentType,
+		Size:        header.Size,
+	})
+	if err != nil {
+		writeError(w, stdhttp.StatusBadRequest, err.Error())
+		return
+	}
+
+	current, err := server.settingsService.Load(r.Context())
+	if err != nil {
+		_ = store.Delete(r.Context(), stored.Key)
+		writeError(w, stdhttp.StatusInternalServerError, "failed to load site settings")
+		return
+	}
+	oldLogoURL := current.Site.LogoURL
+	current.Site.LogoURL = stored.URL
+	updated, err := server.settingsService.UpdateSite(r.Context(), current.Site)
+	if err != nil {
+		_ = store.Delete(r.Context(), stored.Key)
+		writeError(w, stdhttp.StatusInternalServerError, "failed to save site logo")
+		return
+	}
+	server.deleteLocalSiteLogo(r.Context(), oldLogoURL)
+
+	writeJSON(w, stdhttp.StatusOK, map[string]any{
+		"site":    updated,
+		"url":     stored.URL,
+		"message": "site logo uploaded",
+	})
+}
+
+func (server *Server) deleteLocalSiteLogo(ctx context.Context, logoURL string) {
+	const prefix = "/media/local/"
+	if !strings.HasPrefix(logoURL, prefix) {
+		return
+	}
+	key := strings.TrimPrefix(logoURL, prefix)
+	if key == "" {
+		return
+	}
+	store := storage.NewLocalStore(server.cfg.Storage.LocalPath, "/media/local")
+	_ = store.Delete(ctx, key)
 }
 
 func (server *Server) storagePolicyUsageOrEmpty(r *stdhttp.Request) map[string]settings.PolicyUsage {
@@ -692,14 +883,18 @@ func (server *Server) currentAdmin(r *stdhttp.Request) (auth.AdminUser, bool, er
 func (server *Server) mountLocalMedia(r chi.Router) {
 	r.Get("/media/{policyID}/*", func(w stdhttp.ResponseWriter, r *stdhttp.Request) {
 		policyID := chi.URLParam(r, "policyID")
-		current, ok := server.storageManager.ConfigForPolicy(policyID)
-		if !ok {
-			writeError(w, stdhttp.StatusNotFound, "media policy is unavailable")
-			return
-		}
-		if current.Driver != "local" {
-			writeError(w, stdhttp.StatusNotFound, "media route is not available for current storage driver")
-			return
+		localPath := server.cfg.Storage.LocalPath
+		if policyID != "local" {
+			current, ok := server.storageManager.ConfigForPolicy(policyID)
+			if !ok {
+				writeError(w, stdhttp.StatusNotFound, "media policy is unavailable")
+				return
+			}
+			if current.Driver != "local" {
+				writeError(w, stdhttp.StatusNotFound, "media route is not available for current storage driver")
+				return
+			}
+			localPath = current.LocalPath
 		}
 
 		key := chi.URLParam(r, "*")
@@ -712,7 +907,7 @@ func (server *Server) mountLocalMedia(r chi.Router) {
 			writeError(w, stdhttp.StatusBadRequest, "invalid media key")
 			return
 		}
-		stdhttp.ServeFile(w, r, filepath.Join(current.LocalPath, filepath.FromSlash(cleanKey)))
+		stdhttp.ServeFile(w, r, filepath.Join(localPath, filepath.FromSlash(cleanKey)))
 	})
 }
 
@@ -859,4 +1054,27 @@ func sanitizeFilename(filename string) string {
 		return "upload.bin"
 	}
 	return filename
+}
+
+func viewerFingerprintHash(r *stdhttp.Request) string {
+	ip := strings.TrimSpace(r.RemoteAddr)
+	if host, _, err := net.SplitHostPort(ip); err == nil {
+		ip = host
+	}
+	if forwarded := strings.TrimSpace(r.Header.Get("X-Forwarded-For")); forwarded != "" {
+		parts := strings.Split(forwarded, ",")
+		if first := strings.TrimSpace(parts[0]); first != "" {
+			ip = first
+		}
+	}
+	if realIP := strings.TrimSpace(r.Header.Get("X-Real-IP")); realIP != "" {
+		ip = realIP
+	}
+
+	sum := sha256.Sum256([]byte(strings.Join([]string{
+		ip,
+		r.UserAgent(),
+		strings.TrimSpace(r.Header.Get("Accept-Language")),
+	}, "|")))
+	return hex.EncodeToString(sum[:])
 }

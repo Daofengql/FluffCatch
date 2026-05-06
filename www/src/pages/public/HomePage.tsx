@@ -1,10 +1,34 @@
-import { Alert, Box, Button, CircularProgress, Grid, Paper, Stack, Typography } from '@mui/material';
-import { useEffect, useState } from 'react';
-import { getEvents, type EventCard as EventCardData } from '../../api/client';
+import MDEditor from '@uiw/react-md-editor';
+import {
+  Alert,
+  Box,
+  Button,
+  CircularProgress,
+  Grid,
+  Paper,
+  Stack,
+  TextField,
+  Typography
+} from '@mui/material';
+import { useEffect, useMemo, useState } from 'react';
+import { getEvents, getSiteSettings, type EventCard as EventCardData, type SiteSettings } from '../../api/client';
+import { CityCascader, type CityValue } from '../../components/common/CityCascader';
 import { EventCard } from '../../components/EventCard';
+
+const fallbackSite: SiteSettings = {
+  name: 'FluffCatch',
+  subtitle: '兽聚返图收集与画廊',
+  logoUrl: '',
+  homeMarkdown: ''
+};
 
 export function HomePage() {
   const [events, setEvents] = useState<EventCardData[]>([]);
+  const [site, setSite] = useState<SiteSettings>(fallbackSite);
+  const [query, setQuery] = useState('');
+  const [regionFilter, setRegionFilter] = useState<CityValue>({ cityCode: '', cityName: '', provinceCode: '', provinceName: '' });
+  const [startDate, setStartDate] = useState('');
+  const [endDate, setEndDate] = useState('');
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(true);
 
@@ -19,18 +43,85 @@ export function HomePage() {
 
   useEffect(() => {
     loadEvents();
+    getSiteSettings()
+      .then((payload) => setSite({ ...fallbackSite, ...payload }))
+      .catch(() => setSite(fallbackSite));
   }, []);
+
+  const filteredEvents = useMemo(() => {
+    const keyword = query.trim().toLowerCase();
+    const filterStart = startDate ? new Date(`${startDate}T00:00:00`) : null;
+    const filterEnd = endDate ? new Date(`${endDate}T23:59:59`) : null;
+
+    return events.filter((event) => {
+      if (keyword && !event.title.toLowerCase().includes(keyword)) {
+        return false;
+      }
+      if (regionFilter.cityCode && event.cityCode !== regionFilter.cityCode) {
+        return false;
+      }
+      if (!regionFilter.cityCode && regionFilter.provinceCode && event.provinceCode !== regionFilter.provinceCode) {
+        return false;
+      }
+      if (!filterStart && !filterEnd) {
+        return true;
+      }
+
+      const eventStart = event.startTime ? new Date(event.startTime) : null;
+      const eventEnd = event.endTime ? new Date(event.endTime) : eventStart;
+      if (!eventStart && !eventEnd) {
+        return false;
+      }
+      const rangeStart = eventStart ?? eventEnd;
+      const rangeEnd = eventEnd ?? eventStart;
+      if (filterStart && rangeEnd && rangeEnd < filterStart) {
+        return false;
+      }
+      if (filterEnd && rangeStart && rangeStart > filterEnd) {
+        return false;
+      }
+      return true;
+    });
+  }, [endDate, events, query, regionFilter.cityCode, regionFilter.provinceCode, startDate]);
 
   return (
     <Stack sx={{ gap: 3 }}>
-      <Box>
-        <Typography sx={{ fontWeight: 800 }} variant="h4">
-          兽聚返图画廊
-        </Typography>
-        <Typography color="text.secondary" sx={{ mt: 1 }}>
-          每场兽聚独立收图、审核、归档，不再到处翻返图。
-        </Typography>
-      </Box>
+      {site.homeMarkdown.trim() && (
+        <Paper
+          data-color-mode="light"
+          sx={{
+            background: 'linear-gradient(135deg, rgba(37,99,235,0.10), rgba(255,255,255,0.96) 48%, rgba(14,165,233,0.10))',
+            borderRadius: 4,
+            overflow: 'hidden',
+            p: { xs: 3, md: 4 }
+          }}
+        >
+          <Box sx={{ '& .wmde-markdown': { bgcolor: 'transparent', color: 'text.primary' }, '& .wmde-markdown h1': { fontSize: { xs: '2rem', md: '2.6rem' }, lineHeight: 1.15 } }}>
+            <MDEditor.Markdown source={site.homeMarkdown} skipHtml />
+          </Box>
+        </Paper>
+      )}
+      <Paper sx={{ borderRadius: 3, p: 2.5 }}>
+        <Grid container spacing={2}>
+          <Grid size={{ xs: 12, md: 4 }}>
+            <TextField fullWidth label="按名称搜索" onChange={(event) => setQuery(event.target.value)} placeholder="输入兽聚名称关键词" value={query} />
+          </Grid>
+          <Grid size={{ xs: 12, md: 3 }}>
+            <CityCascader helperText="可只选省份，也可继续选到城市。" onChange={setRegionFilter} value={regionFilter} />
+          </Grid>
+          <Grid size={{ xs: 12, sm: 6, md: 2 }}>
+            <TextField fullWidth label="开始日期" onChange={(event) => setStartDate(event.target.value)} slotProps={{ inputLabel: { shrink: true } }} type="date" value={startDate} />
+          </Grid>
+          <Grid size={{ xs: 12, sm: 6, md: 2 }}>
+            <TextField fullWidth label="结束日期" onChange={(event) => setEndDate(event.target.value)} slotProps={{ inputLabel: { shrink: true } }} type="date" value={endDate} />
+          </Grid>
+          <Grid size={{ xs: 12, sm: 6, md: 1 }}>
+            <Button fullWidth onClick={() => { setQuery(''); setRegionFilter({ cityCode: '', cityName: '', provinceCode: '', provinceName: '' }); setStartDate(''); setEndDate(''); }} sx={{ height: '100%' }}>
+              清空
+            </Button>
+          </Grid>
+        </Grid>
+      </Paper>
       {loading && (
         <Box sx={{ display: 'flex', justifyContent: 'center', py: 8 }}>
           <CircularProgress />
@@ -50,19 +141,19 @@ export function HomePage() {
       )}
       {!loading && !error && (
         <Grid container spacing={3}>
-          {events.map((event) => (
+          {filteredEvents.map((event) => (
             <Grid key={event.id} size={{ xs: 12, md: 6, lg: 4 }}>
               <EventCard event={event} />
             </Grid>
           ))}
-          {!events.length && (
+          {!filteredEvents.length && (
             <Grid size={{ xs: 12 }}>
               <Paper sx={{ p: 4, textAlign: 'center' }}>
                 <Typography sx={{ fontWeight: 800 }} variant="h6">
-                  还没有公开兽聚
+                  {events.length ? '没有匹配的兽聚' : '还没有公开兽聚'}
                 </Typography>
                 <Typography color="text.secondary" sx={{ mt: 1 }}>
-                  管理员创建公开兽聚后，这里会显示卡片式入口。
+                  {events.length ? '可以调整搜索词、地区或时间范围再试一次。' : '管理员创建公开兽聚后，这里会显示卡片式入口。'}
                 </Typography>
               </Paper>
             </Grid>

@@ -24,3 +24,13 @@ func decodeJSON(r *stdhttp.Request, target any) error {
 	decoder.DisallowUnknownFields()
 	return decoder.Decode(target)
 }
+
+func (server *Server) verifyCaptchaHeader(w stdhttp.ResponseWriter, r *stdhttp.Request) bool {
+	id := r.Header.Get("X-Captcha-Id")
+	answer := r.Header.Get("X-Captcha-Answer")
+	if !server.captchaStore.Verify(r.Context(), id, answer) {
+		writeError(w, stdhttp.StatusBadRequest, "invalid captcha")
+		return false
+	}
+	return true
+}

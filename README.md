@@ -43,6 +43,20 @@ npm run dev
 
 默认情况下，后端启动时会连接 MySQL，但不会自动建表。建表需要显式进入迁移模式。
 
+后端使用 Go 标准库连接池管理 MySQL 连接。默认会启用驱动连接存活检查，并设置连接、读取、写入超时；如果 MySQL 临时断开，后续请求会从池中重新获取可用连接。启动连接失败时会按 `MYSQL_CONNECT_RETRIES` 和 `MYSQL_CONNECT_RETRY_DELAY` 自动重试。
+
+如遇到本机 MySQL、代理或防火墙偶发断开，可以按需在 `.env` 中增加这些可选项：
+
+- `MYSQL_MAX_OPEN_CONNS`：最大打开连接数，默认 `20`。
+- `MYSQL_MAX_IDLE_CONNS`：最大空闲连接数，默认 `10`。
+- `MYSQL_CONN_MAX_LIFETIME`：连接最长生命周期，默认 `25m`。
+- `MYSQL_CONN_MAX_IDLE_TIME`：连接最大空闲时间，默认 `5m`。
+- `MYSQL_TIMEOUT`：建立连接超时，默认 `5s`。
+- `MYSQL_READ_TIMEOUT`：读取超时，默认 `30s`。
+- `MYSQL_WRITE_TIMEOUT`：写入超时，默认 `30s`。
+- `MYSQL_CONNECT_RETRIES`：启动连接重试次数，默认 `5`。
+- `MYSQL_CONNECT_RETRY_DELAY`：启动连接重试间隔，默认 `2s`。
+
 如果只想执行数据库迁移，不进入主系统，可以运行：
 
 ```bash
@@ -122,6 +136,7 @@ npm run dev
 - `GET /site`
 - `GET /events/{id}`
 - `GET /events/{id}/photos`
+- `POST /photos/{id}/like`
 - `POST /events/{id}/submissions`
 - `GET /admin/dashboard`
 - `GET /admin/events`
@@ -138,24 +153,31 @@ npm run dev
 - `PUT /admin/settings/storage`
 - `PUT /admin/settings/oidc`
 - `PUT /admin/settings/site`
+- `POST /admin/settings/site/logo`
+- `DELETE /admin/settings/site/logo`
 
 管理员登录使用数据库中的 `admin_users`，登录页包含图片验证码；登录后通过 `fluffcatch_session` Cookie 访问后台。开发调试时仍保留 `X-FluffCatch-Admin: true` 占位请求头。
 
 ## 前后台路由
 
-- 公开页面：`/`、`/events/:id`、`/events/:id/submit`、`/login`
+- 公开页面：`/`、`/submit`、`/events/:id`、`/login`
 - 后台页面：`/admin/dashboard`、`/admin/events`、`/admin/submissions`、`/admin/settings`
 
 ## 领域模型
 
 - 每个兽聚都是一个独立卡片，包含标题、简介、举办地点、开始/结束时间、公开状态、封面图和投稿口令。
+- 兽聚地点分为“行政区”和“详细地点”：行政区使用省/市级联选择，详细地点继续用原 `location` 字段填写酒店、会场或补充说明。
+- 首页可按省份或城市筛选兽聚；未补录行政区的旧数据仍会显示详细地点，但不会出现在省市筛选结果中。
 - 访客可以进入某个兽聚的独立投稿页上传图片，并可留下摄影师署名与自由 `#标签`。
 - 管理员可以查看待审核投稿，并批量通过或批量删除。
 - 通过后的图片进入对应兽聚画廊，可设置为公开、密码访问或私有。
 - 支持多个存储策略；新上传文件使用当前默认策略，已上传文件按照记录中的 `storage_policy_id` 找回原策略读取。
 - 本地存储图片通过后端 `/media/{policyId}/...` 提供；S3/MinIO 等外部策略应配置公开桶或 CDN 的 `publicBaseUrl`，前端直接访问对象 URL，不经过后端代理。
 - 管理页可查看每个存储策略的对象数量与占用量；仍有文件引用的策略不能删除，避免幽灵文件。
-- 后台系统设置可以修改站点名称、副标题和 Logo URL，公开页和后台顶栏会动态读取数据库中的站点信息。
+- 后台系统设置可以修改站点名称、副标题和首页 Markdown 介绍卡片；Logo 只能通过后台上传，强制保存到本地存储并写入内部 URL。
+- 公开画廊图片以小卡片展示，会显示摄影师、文件类型、文件大小、时间和标签等基础信息。
+- 公开图片支持点赞；访客点赞使用 IP、浏览器 UA 与语言生成哈希指纹去重，不保存原始 IP。
+- 后台投稿审核、兽聚图片管理的卡片/列表视图会记忆在当前浏览器本地，刷新后保持上次选择。
 
 ## 数据库迁移
 

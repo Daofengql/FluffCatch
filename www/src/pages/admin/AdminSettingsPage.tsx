@@ -1,13 +1,15 @@
+import MDEditor from '@uiw/react-md-editor';
 import { Alert, Avatar, Box, Button, Card, CardContent, Chip, Divider, Grid, Paper, Stack, TextField, Typography } from '@mui/material';
 import { type ChangeEvent, type FormEvent, useEffect, useState } from 'react';
 import { useLocation } from 'react-router-dom';
-import { getAdminSettings, updateSiteSettings, type AdminSettingsResponse, type SiteSettings } from '../../api/client';
+import { clearSiteLogo, getAdminSettings, updateSiteSettings, uploadSiteLogo, type AdminSettingsResponse, type SiteSettings } from '../../api/client';
 import { PageHeader } from '../../components/common/PageHeader';
 
 const fallbackSite: SiteSettings = {
   name: 'FluffCatch',
   subtitle: '兽聚返图收集与画廊',
-  logoUrl: ''
+  logoUrl: '',
+  homeMarkdown: ''
 };
 
 export function AdminSettingsPage() {
@@ -16,6 +18,7 @@ export function AdminSettingsPage() {
   const [site, setSite] = useState<SiteSettings>(fallbackSite);
   const [message, setMessage] = useState('');
   const [error, setError] = useState('');
+  const [logoUploading, setLogoUploading] = useState(false);
 
   function refresh() {
     getAdminSettings()
@@ -43,10 +46,43 @@ export function AdminSettingsPage() {
     try {
       const result = await updateSiteSettings(site);
       setSite(result.site);
-      setMessage('站点信息已保存。刷新公开页即可看到新标题与 Logo。');
+      setMessage('站点信息已保存。刷新公开页即可看到新标题、Logo 与首页介绍。');
       refresh();
     } catch (err) {
       setError(err instanceof Error ? err.message : '站点信息保存失败');
+    }
+  }
+
+  async function handleLogoSelect(event: ChangeEvent<HTMLInputElement>) {
+    const file = event.target.files?.[0] ?? null;
+    event.target.value = '';
+    if (!file) return;
+
+    setError('');
+    setMessage('');
+    setLogoUploading(true);
+    try {
+      const result = await uploadSiteLogo(file);
+      setSite(result.site);
+      setMessage('Logo 已上传，并已写入站点设置。');
+      refresh();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Logo 上传失败');
+    } finally {
+      setLogoUploading(false);
+    }
+  }
+
+  async function handleClearLogo() {
+    setError('');
+    setMessage('');
+    try {
+      const result = await clearSiteLogo();
+      setSite(result.site);
+      setMessage('Logo 已清空。');
+      refresh();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Logo 清空失败');
     }
   }
 
@@ -79,8 +115,19 @@ export function AdminSettingsPage() {
                 站点信息
               </Typography>
               <Typography color="text.secondary">
-                公开页导航栏会显示站点名称、副标题与 Logo。Logo 暂以 URL 形式配置。
+                公开页导航栏会显示站点名称、副标题与 Logo；首页介绍卡片支持 Markdown。
               </Typography>
+              <Stack direction="row" sx={{ flexWrap: 'wrap', gap: 1, mt: 1.5 }}>
+                <Button component="label" disabled={logoUploading} size="small" variant="outlined">
+                  {logoUploading ? '上传中...' : site.logoUrl ? '更换 Logo' : '上传 Logo'}
+                  <input accept="image/*" hidden onChange={handleLogoSelect} type="file" />
+                </Button>
+                {site.logoUrl && (
+                  <Button color="secondary" onClick={() => void handleClearLogo()} size="small">
+                    清空 Logo
+                  </Button>
+                )}
+              </Stack>
             </Box>
           </Stack>
           <Grid container spacing={2}>
@@ -91,14 +138,18 @@ export function AdminSettingsPage() {
               <TextField fullWidth label="副标题" name="subtitle" onChange={handleSiteChange} value={site.subtitle} />
             </Grid>
             <Grid size={{ xs: 12 }}>
-              <TextField
-                fullWidth
-                label="Logo URL"
-                name="logoUrl"
-                onChange={handleSiteChange}
-                placeholder="https://example.com/logo.png"
-                value={site.logoUrl}
-              />
+              <Typography sx={{ fontWeight: 700, mb: 1 }}>首页介绍 Markdown</Typography>
+              <Box data-color-mode="light" sx={{ '& .w-md-editor': { boxShadow: 'none' }, '& .wmde-markdown': { bgcolor: 'transparent' } }}>
+                <MDEditor
+                  height={280}
+                  onChange={(value) => setSite((prev) => ({ ...prev, homeMarkdown: value || '' }))}
+                  preview="edit"
+                  value={site.homeMarkdown}
+                />
+              </Box>
+              <Typography color="text.secondary" sx={{ mt: 1 }} variant="caption">
+                支持标题、列表、链接、表格等常用 Markdown。出于安全考虑，公开页会跳过原始 HTML。
+              </Typography>
             </Grid>
           </Grid>
           <Box>

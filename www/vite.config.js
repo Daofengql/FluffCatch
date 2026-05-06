@@ -35,6 +35,22 @@ export default defineConfig({
                     if (id.includes('node_modules/@fontsource/')) {
                         return 'vendor-fonts';
                     }
+                    if (id.includes('node_modules/@uiw/') ||
+                        id.includes('node_modules/react-markdown/') ||
+                        id.includes('node_modules/remark') ||
+                        id.includes('node_modules/rehype') ||
+                        id.includes('node_modules/unified/') ||
+                        id.includes('node_modules/micromark') ||
+                        id.includes('node_modules/mdast') ||
+                        id.includes('node_modules/hast') ||
+                        id.includes('node_modules/unist') ||
+                        id.includes('node_modules/vfile') ||
+                        id.includes('node_modules/parse-entities/') ||
+                        id.includes('node_modules/property-information/') ||
+                        id.includes('node_modules/comma-separated-tokens/') ||
+                        id.includes('node_modules/space-separated-tokens/')) {
+                        return 'vendor-markdown';
+                    }
                     if (id.includes('node_modules/')) {
                         return 'vendor';
                     }

@@ -32,6 +32,10 @@ func (service *Service) ListForEvent(ctx context.Context, eventID int64, admin b
 }
 
 func (service *Service) ListForEventPage(ctx context.Context, eventID int64, admin bool, password string, page int, pageSize int) (Page, error) {
+	return service.ListForEventPageWithFingerprint(ctx, eventID, admin, password, "", page, pageSize)
+}
+
+func (service *Service) ListForEventPageWithFingerprint(ctx context.Context, eventID int64, admin bool, password string, fingerprintHash string, page int, pageSize int) (Page, error) {
 	if service.db == nil {
 		return Page{Items: []Photo{}, Page: 1, PageSize: pageSize}, nil
 	}
@@ -58,7 +62,7 @@ func (service *Service) ListForEventPage(ctx context.Context, eventID int64, adm
 
 	query := `
 		SELECT id, event_id, storage_policy_id, object_key, COALESCE(thumbnail_key, ''),
-			content_hash, COALESCE(photographer_name, ''), visibility, taken_at, created_at, updated_at
+			content_hash, content_type, size_bytes, like_count, COALESCE(photographer_name, ''), visibility, taken_at, created_at, updated_at
 		FROM photos
 		` + where + `
 		ORDER BY COALESCE(taken_at, created_at) DESC, id DESC
@@ -86,6 +90,9 @@ func (service *Service) ListForEventPage(ctx context.Context, eventID int64, adm
 	}
 
 	if err := service.attachTags(ctx, photos); err != nil {
+		return Page{}, err
+	}
+	if err := service.attachLiked(ctx, photos, fingerprintHash); err != nil {
 		return Page{}, err
 	}
 
@@ -179,7 +186,7 @@ func (service *Service) DeletePhoto(ctx context.Context, photoID int64) (bool, [
 func (service *Service) Get(ctx context.Context, photoID int64) (Photo, bool, error) {
 	row := service.db.QueryRowContext(ctx, `
 		SELECT id, event_id, storage_policy_id, object_key, COALESCE(thumbnail_key, ''),
-			content_hash, COALESCE(photographer_name, ''), visibility, taken_at, created_at, updated_at
+			content_hash, content_type, size_bytes, like_count, COALESCE(photographer_name, ''), visibility, taken_at, created_at, updated_at
 		FROM photos
 		WHERE id = ?
 		LIMIT 1
@@ -196,6 +203,76 @@ func (service *Service) Get(ctx context.Context, photoID int64) (Photo, bool, er
 		return Photo{}, false, err
 	}
 	return photos[0], true, nil
+}
+
+func (service *Service) Like(ctx context.Context, photoID int64, fingerprintHash string) (LikeResult, error) {
+	if service.db == nil {
+		return LikeResult{}, fmt.Errorf("database is required")
+	}
+	fingerprintHash = strings.TrimSpace(fingerprintHash)
+	if fingerprintHash == "" {
+		return LikeResult{}, fmt.Errorf("viewer fingerprint is required")
+	}
+
+	var visibility string
+	var likeCount int64
+	var isPublic bool
+	err := service.db.QueryRowContext(ctx, `
+		SELECT photos.visibility, photos.like_count, events.is_public
+		FROM photos
+		INNER JOIN events ON events.id = photos.event_id
+		WHERE photos.id = ?
+		LIMIT 1
+	`, photoID).Scan(&visibility, &likeCount, &isPublic)
+	if err == sql.ErrNoRows {
+		return LikeResult{}, fmt.Errorf("photo not found")
+	}
+	if err != nil {
+		return LikeResult{}, fmt.Errorf("load photo for like: %w", err)
+	}
+	if !isPublic || visibility != string(VisibilityPublic) {
+		return LikeResult{}, fmt.Errorf("photo is not public")
+	}
+
+	tx, err := service.db.BeginTx(ctx, nil)
+	if err != nil {
+		return LikeResult{}, fmt.Errorf("begin like photo: %w", err)
+	}
+	defer tx.Rollback()
+
+	result, err := tx.ExecContext(ctx, `
+		INSERT IGNORE INTO photo_likes (photo_id, fingerprint_hash)
+		VALUES (?, ?)
+	`, photoID, fingerprintHash)
+	if err != nil {
+		return LikeResult{}, fmt.Errorf("record photo like: %w", err)
+	}
+
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return LikeResult{}, fmt.Errorf("read like result: %w", err)
+	}
+	justLiked := affected > 0
+	if justLiked {
+		if _, err := tx.ExecContext(ctx, "UPDATE photos SET like_count = like_count + 1 WHERE id = ?", photoID); err != nil {
+			return LikeResult{}, fmt.Errorf("increment photo like count: %w", err)
+		}
+	}
+
+	if err := tx.QueryRowContext(ctx, "SELECT like_count FROM photos WHERE id = ? LIMIT 1", photoID).Scan(&likeCount); err != nil {
+		return LikeResult{}, fmt.Errorf("load photo like count: %w", err)
+	}
+
+	if err := tx.Commit(); err != nil {
+		return LikeResult{}, fmt.Errorf("commit photo like: %w", err)
+	}
+
+	return LikeResult{
+		PhotoID:   photoID,
+		LikeCount: likeCount,
+		Liked:     true,
+		JustLiked: justLiked,
+	}, nil
 }
 
 type photoScanner interface {
@@ -215,6 +292,9 @@ func (service *Service) scanPhoto(scanner photoScanner) (Photo, error) {
 		&photo.ObjectKey,
 		&thumbnailKey,
 		&photo.ContentHash,
+		&photo.ContentType,
+		&photo.SizeBytes,
+		&photo.LikeCount,
 		&photo.PhotographerName,
 		&visibility,
 		&takenAt,
@@ -224,6 +304,7 @@ func (service *Service) scanPhoto(scanner photoScanner) (Photo, error) {
 		return Photo{}, err
 	}
 
+	photo.Tags = []Tag{}
 	photo.Visibility = Visibility(visibility)
 	photo.ThumbnailKey = thumbnailKey
 	if takenAt.Valid {
@@ -240,6 +321,46 @@ func (service *Service) scanPhoto(scanner photoScanner) (Photo, error) {
 	}
 
 	return photo, nil
+}
+
+func (service *Service) attachLiked(ctx context.Context, photos []Photo, fingerprintHash string) error {
+	fingerprintHash = strings.TrimSpace(fingerprintHash)
+	if len(photos) == 0 || fingerprintHash == "" {
+		return nil
+	}
+
+	ids := make([]string, len(photos))
+	args := make([]any, 0, len(photos)+1)
+	indexByID := map[int64]int{}
+	for index, photo := range photos {
+		ids[index] = "?"
+		args = append(args, photo.ID)
+		indexByID[photo.ID] = index
+	}
+	args = append(args, fingerprintHash)
+
+	rows, err := service.db.QueryContext(ctx, `
+		SELECT photo_id
+		FROM photo_likes
+		WHERE photo_id IN (`+strings.Join(ids, ",")+`)
+			AND fingerprint_hash = ?
+	`, args...)
+	if err != nil {
+		return fmt.Errorf("load liked photos: %w", err)
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var photoID int64
+		if err := rows.Scan(&photoID); err != nil {
+			return fmt.Errorf("scan liked photo: %w", err)
+		}
+		if index, ok := indexByID[photoID]; ok {
+			photos[index].Liked = true
+		}
+	}
+
+	return rows.Err()
 }
 
 func (service *Service) attachTags(ctx context.Context, photos []Photo) error {

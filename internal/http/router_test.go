@@ -84,9 +84,10 @@ func TestPublicSiteRouteReturnsFallbackSettings(t *testing.T) {
 	}
 
 	var payload struct {
-		Name     string `json:"name"`
-		Subtitle string `json:"subtitle"`
-		LogoURL  string `json:"logoUrl"`
+		Name         string `json:"name"`
+		Subtitle     string `json:"subtitle"`
+		LogoURL      string `json:"logoUrl"`
+		HomeMarkdown string `json:"homeMarkdown"`
 	}
 	if err := json.NewDecoder(rec.Body).Decode(&payload); err != nil {
 		t.Fatalf("decode site response: %v", err)
@@ -94,6 +95,9 @@ func TestPublicSiteRouteReturnsFallbackSettings(t *testing.T) {
 
 	if payload.Name != "FluffCatch" {
 		t.Fatalf("expected fallback site name, got %q", payload.Name)
+	}
+	if payload.HomeMarkdown != "" {
+		t.Fatalf("expected empty fallback home markdown, got %q", payload.HomeMarkdown)
 	}
 }
 

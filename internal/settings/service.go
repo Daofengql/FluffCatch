@@ -307,6 +307,7 @@ func normalizeSite(site SiteSettings) SiteSettings {
 	}
 	site.Subtitle = strings.TrimSpace(site.Subtitle)
 	site.LogoURL = strings.TrimSpace(site.LogoURL)
+	site.HomeMarkdown = strings.TrimSpace(site.HomeMarkdown)
 	return site
 }
 

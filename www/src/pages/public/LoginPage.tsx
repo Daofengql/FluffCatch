@@ -19,7 +19,7 @@ export function LoginPage() {
     let cancelled = false;
 
     if (getCachedMe().authenticated) {
-      navigate('/admin/dashboard', { replace: true });
+      navigate('/admin/events', { replace: true });
       return () => {
         cancelled = true;
       };
@@ -29,7 +29,7 @@ export function LoginPage() {
       .then((payload) => {
         if (cancelled) return;
         if (payload.authenticated) {
-          navigate('/admin/dashboard', { replace: true });
+          navigate('/admin/events', { replace: true });
           return;
         }
         refreshCaptcha().catch(() => setError('验证码加载失败'));
@@ -58,7 +58,7 @@ export function LoginPage() {
         captcha?.id || '',
         String(formData.get('captchaAnswer') || '')
       );
-      navigate('/admin/dashboard', { replace: true });
+      navigate('/admin/events', { replace: true });
     } catch (err) {
       setError(err instanceof Error ? err.message : '登录失败');
       refreshCaptcha().catch(() => undefined);

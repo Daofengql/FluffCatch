@@ -48,10 +48,13 @@ type OIDCSettings struct {
 }
 
 type SiteSettings struct {
-	Name     string `json:"name"`
-	Subtitle string `json:"subtitle"`
-	LogoURL  string `json:"logoUrl"`
+	Name         string `json:"name"`
+	Subtitle     string `json:"subtitle"`
+	LogoURL      string `json:"logoUrl"`
+	HomeMarkdown string `json:"homeMarkdown"`
 }
+
+const DefaultHomeMarkdown = ""
 
 func FromConfig(cfg config.Config) RuntimeSettings {
 	defaultPolicy := StoragePolicy{
@@ -85,9 +88,10 @@ func FromConfig(cfg config.Config) RuntimeSettings {
 			RedirectURL:  cfg.OIDC.RedirectURL,
 		},
 		Site: SiteSettings{
-			Name:     cfg.App.Name,
-			Subtitle: "兽聚返图收集与画廊",
-			LogoURL:  "",
+			Name:         cfg.App.Name,
+			Subtitle:     "兽聚返图收集与画廊",
+			LogoURL:      "",
+			HomeMarkdown: DefaultHomeMarkdown,
 		},
 	}
 }

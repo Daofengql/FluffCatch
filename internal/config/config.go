@@ -34,15 +34,24 @@ type HTTPConfig struct {
 }
 
 type DatabaseConfig struct {
-	Host           string
-	Port           int
-	User           string
-	Password       string
-	Database       string
-	Charset        string
-	Location       string
-	ParseTime      bool
-	ConnectOnStart bool
+	Host              string
+	Port              int
+	User              string
+	Password          string
+	Database          string
+	Charset           string
+	Location          string
+	ParseTime         bool
+	ConnectOnStart    bool
+	MaxOpenConns      int
+	MaxIdleConns      int
+	ConnMaxLifetime   time.Duration
+	ConnMaxIdleTime   time.Duration
+	Timeout           time.Duration
+	ReadTimeout       time.Duration
+	WriteTimeout      time.Duration
+	ConnectRetries    int
+	ConnectRetryDelay time.Duration
 }
 
 func (database DatabaseConfig) DSN() (string, error) {
@@ -65,6 +74,10 @@ func (database DatabaseConfig) DSN() (string, error) {
 	cfg.ParseTime = database.ParseTime
 	cfg.Loc = location
 	cfg.Params = params
+	cfg.Timeout = database.Timeout
+	cfg.ReadTimeout = database.ReadTimeout
+	cfg.WriteTimeout = database.WriteTimeout
+	cfg.CheckConnLiveness = true
 
 	return cfg.FormatDSN(), nil
 }
@@ -121,15 +134,24 @@ func Load() (Config, error) {
 			WriteTimeout: getDurationEnv("HTTP_WRITE_TIMEOUT", 30*time.Second),
 		},
 		Database: DatabaseConfig{
-			Host:           getEnv("MYSQL_HOST", "127.0.0.1"),
-			Port:           getIntEnv("MYSQL_PORT", 3306),
-			User:           getEnv("MYSQL_USER", "fluffcatch"),
-			Password:       getEnv("MYSQL_PASSWORD", "fluffcatch"),
-			Database:       getEnv("MYSQL_DATABASE", "fluffcatch"),
-			Charset:        getEnv("MYSQL_CHARSET", "utf8mb4"),
-			Location:       getEnv("MYSQL_LOCATION", "Local"),
-			ParseTime:      getBoolEnv("MYSQL_PARSE_TIME", true),
-			ConnectOnStart: getBoolEnv("MYSQL_CONNECT_ON_START", true),
+			Host:              getEnv("MYSQL_HOST", "127.0.0.1"),
+			Port:              getIntEnv("MYSQL_PORT", 3306),
+			User:              getEnv("MYSQL_USER", "fluffcatch"),
+			Password:          getEnv("MYSQL_PASSWORD", "fluffcatch"),
+			Database:          getEnv("MYSQL_DATABASE", "fluffcatch"),
+			Charset:           getEnv("MYSQL_CHARSET", "utf8mb4"),
+			Location:          getEnv("MYSQL_LOCATION", "Local"),
+			ParseTime:         getBoolEnv("MYSQL_PARSE_TIME", true),
+			ConnectOnStart:    getBoolEnv("MYSQL_CONNECT_ON_START", true),
+			MaxOpenConns:      getIntEnv("MYSQL_MAX_OPEN_CONNS", 20),
+			MaxIdleConns:      getIntEnv("MYSQL_MAX_IDLE_CONNS", 10),
+			ConnMaxLifetime:   getDurationEnv("MYSQL_CONN_MAX_LIFETIME", 25*time.Minute),
+			ConnMaxIdleTime:   getDurationEnv("MYSQL_CONN_MAX_IDLE_TIME", 5*time.Minute),
+			Timeout:           getDurationEnv("MYSQL_TIMEOUT", 5*time.Second),
+			ReadTimeout:       getDurationEnv("MYSQL_READ_TIMEOUT", 30*time.Second),
+			WriteTimeout:      getDurationEnv("MYSQL_WRITE_TIMEOUT", 30*time.Second),
+			ConnectRetries:    getIntEnv("MYSQL_CONNECT_RETRIES", 5),
+			ConnectRetryDelay: getDurationEnv("MYSQL_CONNECT_RETRY_DELAY", 2*time.Second),
 		},
 		Storage: StorageConfig{
 			Driver:        getEnv("STORAGE_DRIVER", "local"),

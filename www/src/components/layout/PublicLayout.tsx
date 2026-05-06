@@ -1,4 +1,4 @@
-import { AdminPanelSettings, Home, Login, Menu as MenuIcon } from '@mui/icons-material';
+import { AdminPanelSettings, CloudUpload, Home, Login, Menu as MenuIcon } from '@mui/icons-material';
 import { AppBar, Box, Button, Container, IconButton, Menu, MenuItem, Stack, Toolbar, Typography } from '@mui/material';
 import { useEffect, useMemo, useState } from 'react';
 import { Outlet, useLocation, useNavigate } from 'react-router-dom';
@@ -8,11 +8,13 @@ import { getCachedMe, refreshMe, subscribeAuthState } from '../../api/authState'
 const defaultSite: SiteSettings = {
   name: 'FluffCatch',
   subtitle: '兽聚返图收集与画廊',
-  logoUrl: ''
+  logoUrl: '',
+  homeMarkdown: ''
 };
 
 type PublicLayoutHeaderProps = {
   authenticated: boolean;
+  hideAdminEntry?: boolean;
   site: SiteSettings;
 };
 
@@ -37,7 +39,7 @@ export function PublicLayout() {
     document.title = site.name || defaultSite.name;
   }, [site.name]);
 
-  const centered = useMemo(() => location.pathname === '/login' || /^\/events\/[^/]+\/submit$/.test(location.pathname), [location.pathname]);
+  const centered = useMemo(() => location.pathname === '/login', [location.pathname]);
 
   return (
     <Box sx={{ bgcolor: 'background.default', display: 'flex', flexDirection: 'column', minHeight: '100vh' }}>
@@ -61,14 +63,15 @@ export function PublicLayout() {
   );
 }
 
-export function PublicLayoutHeader({ authenticated, site }: PublicLayoutHeaderProps) {
+export function PublicLayoutHeader({ authenticated, hideAdminEntry = false, site }: PublicLayoutHeaderProps) {
   const location = useLocation();
   const navigate = useNavigate();
   const [menuAnchor, setMenuAnchor] = useState<null | HTMLElement>(null);
   const navItems = [
-    { label: '首页', path: '/', icon: <Home /> }
+    { label: '首页', path: '/', icon: <Home /> },
+    { label: '返图', path: '/submit', icon: <CloudUpload /> }
   ];
-  const adminTarget = authenticated ? '/admin/dashboard' : '/login';
+  const adminTarget = authenticated ? '/admin/events' : '/login';
 
   function go(path: string) {
     navigate(path);
@@ -138,14 +141,16 @@ export function PublicLayoutHeader({ authenticated, site }: PublicLayoutHeaderPr
           ))}
         </Box>
         <Box sx={{ flex: 1 }} />
-        <Button
-          onClick={() => go(adminTarget)}
-          startIcon={authenticated ? <AdminPanelSettings /> : <Login />}
-          sx={{ display: { xs: 'none', sm: 'inline-flex' } }}
-          variant={authenticated ? 'contained' : 'text'}
-        >
-          {authenticated ? '后台' : '登录'}
-        </Button>
+        {!hideAdminEntry && (
+          <Button
+            onClick={() => go(adminTarget)}
+            startIcon={authenticated ? <AdminPanelSettings /> : <Login />}
+            sx={{ display: { xs: 'none', sm: 'inline-flex' } }}
+            variant={authenticated ? 'contained' : 'text'}
+          >
+            {authenticated ? '后台' : '登录'}
+          </Button>
+        )}
         <IconButton onClick={(event) => setMenuAnchor(event.currentTarget)} sx={{ display: { xs: 'flex', sm: 'none' } }}>
           <MenuIcon />
         </IconButton>
@@ -157,10 +162,12 @@ export function PublicLayoutHeader({ authenticated, site }: PublicLayoutHeaderPr
             {item.label}
           </MenuItem>
         ))}
-        <MenuItem onClick={() => go(adminTarget)} sx={{ gap: 1.5 }}>
-          {authenticated ? <AdminPanelSettings /> : <Login />}
-          {authenticated ? '后台' : '登录'}
-        </MenuItem>
+        {!hideAdminEntry && (
+          <MenuItem onClick={() => go(adminTarget)} sx={{ gap: 1.5 }}>
+            {authenticated ? <AdminPanelSettings /> : <Login />}
+            {authenticated ? '后台' : '登录'}
+          </MenuItem>
+        )}
       </Menu>
     </AppBar>
   );

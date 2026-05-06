@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"log/slog"
 	"sort"
 	"strings"
 	"time"
@@ -13,22 +14,100 @@ import (
 	_ "github.com/go-sql-driver/mysql"
 )
 
-func Open(ctx context.Context, dsn string) (*sql.DB, error) {
+type Options struct {
+	MaxOpenConns      int
+	MaxIdleConns      int
+	ConnMaxLifetime   time.Duration
+	ConnMaxIdleTime   time.Duration
+	ConnectRetries    int
+	ConnectRetryDelay time.Duration
+}
+
+func Open(ctx context.Context, dsn string, options Options) (*sql.DB, error) {
 	conn, err := sql.Open("mysql", dsn)
 	if err != nil {
 		return nil, fmt.Errorf("open mysql: %w", err)
 	}
 
-	conn.SetMaxOpenConns(20)
-	conn.SetMaxIdleConns(5)
-	conn.SetConnMaxLifetime(30 * time.Minute)
+	options = normalizeOptions(options)
+	conn.SetMaxOpenConns(options.MaxOpenConns)
+	conn.SetMaxIdleConns(options.MaxIdleConns)
+	conn.SetConnMaxLifetime(options.ConnMaxLifetime)
+	conn.SetConnMaxIdleTime(options.ConnMaxIdleTime)
 
-	if err := conn.PingContext(ctx); err != nil {
+	if err := pingWithRetry(ctx, conn, options); err != nil {
 		_ = conn.Close()
 		return nil, fmt.Errorf("ping mysql: %w", err)
 	}
 
 	return conn, nil
+}
+
+func normalizeOptions(options Options) Options {
+	if options.MaxOpenConns <= 0 {
+		options.MaxOpenConns = 20
+	}
+	if options.MaxIdleConns <= 0 {
+		options.MaxIdleConns = 10
+	}
+	if options.MaxIdleConns > options.MaxOpenConns {
+		options.MaxIdleConns = options.MaxOpenConns
+	}
+	if options.ConnMaxLifetime <= 0 {
+		options.ConnMaxLifetime = 25 * time.Minute
+	}
+	if options.ConnMaxIdleTime <= 0 {
+		options.ConnMaxIdleTime = 5 * time.Minute
+	}
+	if options.ConnectRetries < 0 {
+		options.ConnectRetries = 0
+	}
+	if options.ConnectRetryDelay <= 0 {
+		options.ConnectRetryDelay = 2 * time.Second
+	}
+
+	return options
+}
+
+func pingWithRetry(ctx context.Context, conn *sql.DB, options Options) error {
+	attempts := options.ConnectRetries + 1
+	var lastErr error
+
+	for attempt := 1; attempt <= attempts; attempt++ {
+		if err := conn.PingContext(ctx); err != nil {
+			lastErr = err
+		} else {
+			return nil
+		}
+
+		if attempt == attempts {
+			break
+		}
+
+		slog.Warn(
+			"mysql ping failed; retrying",
+			"attempt",
+			attempt,
+			"max_attempts",
+			attempts,
+			"delay",
+			options.ConnectRetryDelay,
+			"error",
+			lastErr,
+		)
+
+		timer := time.NewTimer(options.ConnectRetryDelay)
+		select {
+		case <-ctx.Done():
+			if !timer.Stop() {
+				<-timer.C
+			}
+			return ctx.Err()
+		case <-timer.C:
+		}
+	}
+
+	return lastErr
 }
 
 func Migrate(ctx context.Context, conn *sql.DB) error {
