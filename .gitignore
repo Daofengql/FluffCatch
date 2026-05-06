@@ -1,0 +1,12 @@
+.env
+.env.*
+!.env.example
+
+bin/
+data/
+
+www/dist/
+www/node_modules/
+
+*.log
+*.tmp
