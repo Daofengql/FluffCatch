@@ -109,6 +109,87 @@ func TestPublicSiteRouteReturnsFallbackSettings(t *testing.T) {
 	}
 }
 
+func TestGetSettingsReturnsRuntimeStoragePolicy(t *testing.T) {
+	cfg := config.Config{
+		App: config.AppConfig{Name: "FluffCatch", Env: "test"},
+		Auth: config.AuthConfig{
+			AdminUsername: "admin",
+		},
+		Upload: config.UploadConfig{
+			MaxSizeMB:         20,
+			MaxFilesPerUpload: 20,
+		},
+		Frontend: config.FrontendConfig{
+			Mode:       "disabled",
+			StaticRoot: t.TempDir(),
+		},
+	}
+
+	storageManager, err := storage.NewManager("default-local", []storage.Config{
+		{
+			PolicyID:      "default-local",
+			Name:          "minio",
+			Driver:        "minio",
+			PublicBaseURL: "https://oss.example.com/fluffcatch",
+			S3: storage.S3Config{
+				Endpoint:  "http://127.0.0.1:9000",
+				Bucket:    "fluffcatch",
+				Region:    "us-east-1",
+				AccessKey: "access",
+				SecretKey: "secret",
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("create storage manager: %v", err)
+	}
+
+	settingsService := settings.NewService(settings.NewStore(nil, settings.RuntimeSettings{
+		StoragePolicies: settings.StoragePoliciesSettings{
+			ActivePolicyID: "default-local",
+			Policies:       []settings.StoragePolicy{{}},
+		},
+	}))
+	server := NewServer(cfg, nil, storageManager, settingsService)
+	runtimePolicies := server.runtimeStoragePolicies()
+	if len(runtimePolicies.Policies) != 1 || runtimePolicies.Policies[0].Driver != "minio" {
+		t.Fatalf("expected runtime minio policy before response, got %#v", runtimePolicies)
+	}
+	sanitizedRuntimePolicies := runtimePolicies.Sanitize()
+	if len(sanitizedRuntimePolicies.Policies) != 1 || sanitizedRuntimePolicies.Policies[0].Driver != "minio" {
+		t.Fatalf("expected sanitized runtime minio policy before response, got %#v", sanitizedRuntimePolicies)
+	}
+
+	req := httptest.NewRequest(stdhttp.MethodGet, "/api/v1/admin/settings", nil)
+	rec := httptest.NewRecorder()
+	server.getSettings(rec, req)
+
+	if rec.Code != stdhttp.StatusOK {
+		t.Fatalf("expected status 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	responseBody := rec.Body.String()
+
+	var payload struct {
+		Settings struct {
+			StoragePolicies settings.StoragePoliciesSettings `json:"storagePolicies"`
+		} `json:"settings"`
+	}
+	if err := json.NewDecoder(strings.NewReader(responseBody)).Decode(&payload); err != nil {
+		t.Fatalf("decode settings response: %v", err)
+	}
+
+	policies := payload.Settings.StoragePolicies.Policies
+	if len(policies) != 1 {
+		t.Fatalf("expected one runtime storage policy, got %d", len(policies))
+	}
+	if policies[0].ID != "default-local" || policies[0].Driver != "minio" || policies[0].Name != "minio" {
+		t.Fatalf("expected runtime minio policy, got %#v in response %s", policies[0], responseBody)
+	}
+	if policies[0].S3.SecretKey != settings.MaskedSecret {
+		t.Fatalf("expected sanitized secret key, got %q", policies[0].S3.SecretKey)
+	}
+}
+
 func TestEventPrivateAccessTokenIsSignedAndScoped(t *testing.T) {
 	server := testServer(t)
 	server.cfg.Auth.SessionSecret = "test-secret"

@@ -84,7 +84,11 @@ func (service *Service) StoragePolicyUsage(ctx context.Context) (map[string]Poli
 		ids = append(ids, policy.ID)
 	}
 
-	return service.references.Usage(ctx, ids)
+	return service.StoragePolicyUsageForIDs(ctx, ids)
+}
+
+func (service *Service) StoragePolicyUsageForIDs(ctx context.Context, policyIDs []string) (map[string]PolicyUsage, error) {
+	return service.references.Usage(ctx, policyIDs)
 }
 
 type PolicyUsage struct {

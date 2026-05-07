@@ -890,14 +890,17 @@ func (server *Server) getSettings(w stdhttp.ResponseWriter, r *stdhttp.Request) 
 		return
 	}
 
-	usage, err := server.settingsService.StoragePolicyUsage(r.Context())
+	runtimeStoragePolicies := server.runtimeStoragePolicies()
+	usage, err := server.settingsService.StoragePolicyUsageForIDs(r.Context(), storagePolicyIDs(runtimeStoragePolicies.Policies))
 	if err != nil {
 		writeError(w, stdhttp.StatusInternalServerError, "failed to load storage policy usage")
 		return
 	}
 
+	sanitized := current.Sanitize()
+	sanitized.StoragePolicies = runtimeStoragePolicies.Sanitize()
 	writeJSON(w, stdhttp.StatusOK, map[string]any{
-		"settings": current.Sanitize(),
+		"settings": sanitized,
 		"usage":    usage,
 	})
 }
@@ -1334,12 +1337,35 @@ func (server *Server) deleteSiteAsset(ctx context.Context, assetURL string) {
 }
 
 func (server *Server) storagePolicyUsageOrEmpty(r *stdhttp.Request) map[string]settings.PolicyUsage {
-	usage, err := server.settingsService.StoragePolicyUsage(r.Context())
+	usage, err := server.settingsService.StoragePolicyUsageForIDs(r.Context(), storagePolicyIDs(server.runtimeStoragePolicies().Policies))
 	if err != nil {
 		return map[string]settings.PolicyUsage{}
 	}
 
 	return usage
+}
+
+func (server *Server) runtimeStoragePolicies() settings.StoragePoliciesSettings {
+	configs := server.storageManager.Configs()
+	policies := make([]settings.StoragePolicy, 0, len(configs))
+	for _, config := range configs {
+		policies = append(policies, storagePolicyFromConfig(config))
+	}
+
+	return settings.StoragePoliciesSettings{
+		ActivePolicyID: server.storageManager.ActivePolicyID(),
+		Policies:       policies,
+	}
+}
+
+func storagePolicyIDs(policies []settings.StoragePolicy) []string {
+	ids := make([]string, 0, len(policies))
+	for _, policy := range policies {
+		if policy.ID != "" {
+			ids = append(ids, policy.ID)
+		}
+	}
+	return ids
 }
 
 func (server *Server) requireAdmin(next stdhttp.Handler) stdhttp.Handler {
@@ -1684,6 +1710,26 @@ func storageConfigFromPolicy(policy settings.StoragePolicy) storage.Config {
 			SecretKey: policy.S3.SecretKey,
 			UseSSL:    policy.S3.UseSSL,
 			AccountID: policy.S3.AccountID,
+		},
+	}
+}
+
+func storagePolicyFromConfig(config storage.Config) settings.StoragePolicy {
+	return settings.StoragePolicy{
+		ID:            config.PolicyID,
+		Name:          config.Name,
+		Driver:        config.Driver,
+		LocalPath:     config.LocalPath,
+		PublicPrefix:  config.PublicPrefix,
+		PublicBaseURL: config.PublicBaseURL,
+		S3: settings.S3Settings{
+			Endpoint:  config.S3.Endpoint,
+			Bucket:    config.S3.Bucket,
+			Region:    config.S3.Region,
+			AccessKey: config.S3.AccessKey,
+			SecretKey: config.S3.SecretKey,
+			UseSSL:    config.S3.UseSSL,
+			AccountID: config.S3.AccountID,
 		},
 	}
 }

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"net/url"
+	"sort"
 	"strings"
 	"sync"
 )
@@ -216,6 +217,28 @@ func (manager *Manager) ActiveConfig() (Config, bool) {
 
 	config, ok := manager.configs[manager.activePolicyID]
 	return config, ok
+}
+
+func (manager *Manager) Configs() []Config {
+	manager.mu.RLock()
+	defer manager.mu.RUnlock()
+
+	configs := make([]Config, 0, len(manager.configs))
+	for _, config := range manager.configs {
+		configs = append(configs, config)
+	}
+
+	sort.Slice(configs, func(i, j int) bool {
+		if configs[i].PolicyID == manager.activePolicyID {
+			return true
+		}
+		if configs[j].PolicyID == manager.activePolicyID {
+			return false
+		}
+		return configs[i].PolicyID < configs[j].PolicyID
+	})
+
+	return configs
 }
 
 func (manager *Manager) Reconfigure(activePolicyID string, configs []Config) error {

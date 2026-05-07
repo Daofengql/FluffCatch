@@ -35,8 +35,9 @@ type StoragePoliciesSettings struct {
 }
 
 func (s StoragePoliciesSettings) Sanitize() StoragePoliciesSettings {
-	s.Policies = make([]StoragePolicy, len(s.Policies))
-	for i, p := range s.Policies {
+	policies := s.Policies
+	s.Policies = make([]StoragePolicy, len(policies))
+	for i, p := range policies {
 		s.Policies[i] = p.Sanitize()
 	}
 	return s
