@@ -63,16 +63,22 @@ func TestUpdateStoragePoliciesAllowsLocalizedPolicyID(t *testing.T) {
 	}
 }
 
-func TestUpdateStoragePoliciesRejectsEmptyPolicyID(t *testing.T) {
+func TestUpdateStoragePoliciesGeneratesMissingPolicyID(t *testing.T) {
 	service := NewService(NewStore(nil, RuntimeSettings{}))
 
-	_, err := service.UpdateStoragePolicies(context.Background(), StoragePoliciesSettings{
+	settings, err := service.UpdateStoragePolicies(context.Background(), StoragePoliciesSettings{
 		Policies: []StoragePolicy{
 			{ID: "  ", Name: "默认本地存储", Driver: "local", LocalPath: "data/uploads"},
 		},
 	})
-	if err == nil {
-		t.Fatal("expected empty policy id error")
+	if err != nil {
+		t.Fatalf("UpdateStoragePolicies() returned error: %v", err)
+	}
+	if settings.Policies[0].ID != "default-local" {
+		t.Fatalf("expected generated default policy id, got %q", settings.Policies[0].ID)
+	}
+	if settings.ActivePolicyID != "default-local" {
+		t.Fatalf("expected generated active policy id, got %q", settings.ActivePolicyID)
 	}
 }
 

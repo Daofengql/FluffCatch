@@ -239,6 +239,10 @@ func normalizeStoragePolicies(policies StoragePoliciesSettings) (StoragePolicies
 	activeFound := false
 
 	for index, policy := range policies.Policies {
+		if strings.TrimSpace(policy.ID) == "" {
+			policy.ID = defaultStoragePolicyID(index)
+		}
+
 		normalized, err := NormalizeStoragePolicy(policy)
 		if err != nil {
 			return StoragePoliciesSettings{}, err
@@ -266,6 +270,13 @@ func normalizeStoragePolicies(policies StoragePoliciesSettings) (StoragePolicies
 	}
 
 	return policies, nil
+}
+
+func defaultStoragePolicyID(index int) string {
+	if index == 0 {
+		return "default-local"
+	}
+	return fmt.Sprintf("storage-policy-%d", index+1)
 }
 
 func NormalizeStoragePolicy(policy StoragePolicy) (StoragePolicy, error) {
