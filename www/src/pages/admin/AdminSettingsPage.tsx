@@ -5,6 +5,7 @@ import {
   Avatar,
   Box,
   Button,
+  Chip,
   Divider,
   FormControl,
   Grid,
@@ -125,6 +126,7 @@ export function AdminSettingsPage() {
   const markdownColorMode = colorScheme === 'dark' ? 'dark' : 'light';
   const isS3Driver = ['minio', 'aws-s3', 'aliyun-oss', 'tencent-cos', 'cf-r2', 's3'].includes(storagePolicy.driver);
   const usage = settings?.usage[storagePolicy.id] ?? { objectCount: 0, sizeBytes: 0 };
+  const activePolicyId = settings?.settings.storagePolicies.activePolicyId || storagePolicy.id;
   const selectedSection = useMemo(() => settingsSections.find((item) => item.key === activeSection) ?? settingsSections[0], [activeSection]);
   const themePreview = useMemo(() => resolveThemePreview(site, colorScheme), [colorScheme, site.themeMode, site.themePreset, site.themePrimaryColor]);
 
@@ -705,6 +707,15 @@ export function AdminSettingsPage() {
               <Typography color="text.secondary">
                 同一时间只启用一个存储策略。切换存储只影响新上传文件；已有文件按记录中的策略地址读取。
               </Typography>
+              <Stack direction={{ xs: 'column', sm: 'row' }} sx={{ alignItems: { xs: 'stretch', sm: 'center' }, gap: 1.5 }}>
+                <TextField
+                  fullWidth
+                  label="策略 ID"
+                  slotProps={{ input: { readOnly: true } }}
+                  value={storagePolicy.id || '保存后自动生成'}
+                />
+                <Chip color="primary" label={`当前启用：${activePolicyId || '未设置'}`} variant="outlined" />
+              </Stack>
               <Grid container spacing={2}>
                 <Grid size={{ xs: 12, sm: 6 }}>
                   <TextField fullWidth label="策略名称" onChange={(event) => setStoragePolicy((prev) => ({ ...prev, name: event.target.value }))} value={storagePolicy.name} />
