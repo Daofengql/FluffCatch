@@ -103,7 +103,7 @@ func (store *Store) saveValue(ctx context.Context, key string, value any) error 
 
 	_, err = store.db.ExecContext(ctx, `
 		INSERT INTO settings (`+"`key`, `value`"+`)
-		VALUES (?, CAST(? AS JSON))
+		VALUES (?, ?)
 		ON DUPLICATE KEY UPDATE
 			`+"`value`"+` = VALUES(`+"`value`"+`),
 			updated_at = CURRENT_TIMESTAMP
