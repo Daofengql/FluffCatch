@@ -1,6 +1,11 @@
 package settings
 
-import "fluffcatch/internal/config"
+import (
+	"fmt"
+	"time"
+
+	"fluffcatch/internal/config"
+)
 
 const (
 	KeyStoragePolicies = "storage_policies"
@@ -86,10 +91,22 @@ func (o OIDCSettings) Sanitize() OIDCSettings {
 }
 
 type SiteSettings struct {
-	Name         string `json:"name"`
-	Subtitle     string `json:"subtitle"`
-	LogoURL      string `json:"logoUrl"`
-	HomeMarkdown string `json:"homeMarkdown"`
+	Name                       string `json:"name"`
+	Subtitle                   string `json:"subtitle"`
+	LogoURL                    string `json:"logoUrl"`
+	HomeMarkdown               string `json:"homeMarkdown"`
+	ThemeMode                  string `json:"themeMode"`
+	ThemePreset                string `json:"themePreset"`
+	ThemePrimaryColor          string `json:"themePrimaryColor"`
+	PublicBackgroundDesktopURL string `json:"publicBackgroundDesktopUrl"`
+	PublicBackgroundMobileURL  string `json:"publicBackgroundMobileUrl"`
+	FooterText                 string `json:"footerText"`
+	ICPNumber                  string `json:"icpNumber"`
+	PoliceRecordNumber         string `json:"policeRecordNumber"`
+	PoliceRecordURL            string `json:"policeRecordUrl"`
+	ContactText                string `json:"contactText"`
+	ContactEmail               string `json:"contactEmail"`
+	ContactURL                 string `json:"contactUrl"`
 }
 
 type UploadSettings struct {
@@ -131,10 +148,13 @@ func FromConfig(cfg config.Config) RuntimeSettings {
 			RedirectURL:  cfg.OIDC.RedirectURL,
 		},
 		Site: SiteSettings{
-			Name:         cfg.App.Name,
-			Subtitle:     "兽聚返图收集与画廊",
-			LogoURL:      "",
-			HomeMarkdown: DefaultHomeMarkdown,
+			Name:              cfg.App.Name,
+			Subtitle:          "兽聚返图收集与画廊",
+			HomeMarkdown:      DefaultHomeMarkdown,
+			ThemeMode:         "system",
+			ThemePreset:       "blue",
+			ThemePrimaryColor: "#2563eb",
+			FooterText:        fmt.Sprintf("© %d %s. All rights reserved.", time.Now().Year(), cfg.App.Name),
 		},
 		Upload: UploadSettings{
 			MaxFileSizeMB:     cfg.Upload.MaxSizeMB,

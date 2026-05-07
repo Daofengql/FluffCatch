@@ -319,7 +319,7 @@ export function EventDetailPage() {
                 image={photoURL(photo, 'thumbnail')}
                 sx={{
                   aspectRatio: '4 / 3',
-                  bgcolor: 'grey.100',
+                  bgcolor: 'action.hover',
                   cursor: manageMode ? 'pointer' : locked ? 'pointer' : 'zoom-in',
                   filter: locked ? 'blur(12px) saturate(0.9)' : undefined,
                   objectFit: 'cover',
@@ -409,17 +409,20 @@ export function EventDetailPage() {
       {message && <Alert onClose={() => setMessage('')} severity="success">{message}</Alert>}
 
       <Paper
-        sx={{
-          background: 'linear-gradient(135deg, rgba(37,99,235,0.10), rgba(255,255,255,0.96) 48%, rgba(14,165,233,0.10))',
-          borderRadius: 4,
+        sx={(theme) => ({
+          bgcolor: 'background.paper',
+          border: '1px solid',
+          borderColor: theme.palette.mode === 'dark' ? 'rgba(226, 232, 240, 0.18)' : 'divider',
+          borderRadius: 2,
+          boxShadow: 'none',
           overflow: 'hidden',
           p: { xs: 2.5, md: 3 }
-        }}
+        })}
       >
         <Stack direction={{ xs: 'column', md: 'row' }} sx={{ gap: 3 }}>
           <Box
             sx={{
-              bgcolor: 'grey.100',
+              bgcolor: 'action.hover',
               borderRadius: 3,
               flexShrink: 0,
               overflow: 'hidden',
@@ -429,7 +432,12 @@ export function EventDetailPage() {
             {event.coverUrl ? (
               <Box component="img" src={event.coverUrl} sx={{ aspectRatio: '16 / 10', display: 'block', objectFit: 'cover', width: '100%' }} />
             ) : (
-              <Box sx={{ aspectRatio: '16 / 10', background: 'linear-gradient(135deg, #bfdbfe, #fde68a)' }} />
+              <Box
+                sx={{
+                  aspectRatio: '16 / 10',
+                  bgcolor: 'action.hover'
+                }}
+              />
             )}
           </Box>
           <Stack sx={{ flex: 1, gap: 2, justifyContent: 'center', minWidth: 0 }}>
@@ -486,7 +494,7 @@ export function EventDetailPage() {
       <Collapse in={authenticated && shareOpen && Boolean(shareUrl)}>
         <Paper sx={{ borderRadius: 3, p: { xs: 2, sm: 2.5 } }} variant="outlined">
           <Stack direction={{ xs: 'column', md: 'row' }} sx={{ alignItems: { xs: 'stretch', md: 'center' }, gap: 2 }}>
-            <Box sx={{ bgcolor: 'white', border: '1px solid', borderColor: 'grey.200', borderRadius: 2, display: 'inline-flex', p: 1.5, width: 'fit-content' }}>
+            <Box sx={{ bgcolor: '#ffffff', border: '1px solid', borderColor: 'divider', borderRadius: 2, display: 'inline-flex', p: 1.5, width: 'fit-content' }}>
               <QRCodeSVG size={132} value={shareUrl} />
             </Box>
             <Stack sx={{ flex: 1, gap: 1, minWidth: 0 }}>
@@ -501,9 +509,9 @@ export function EventDetailPage() {
               )}
               <Typography
                 sx={{
-                  bgcolor: 'grey.50',
+                  bgcolor: 'action.hover',
                   border: '1px solid',
-                  borderColor: 'grey.200',
+                  borderColor: 'divider',
                   borderRadius: 1.5,
                   overflowWrap: 'anywhere',
                   px: 1.5,

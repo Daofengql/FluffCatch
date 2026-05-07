@@ -24,7 +24,8 @@ function App() {
           <Route path="dashboard" element={<Navigate replace to="/admin/events" />} />
           <Route path="events" element={<AdminEventsPage />} />
           <Route path="submissions" element={<Navigate replace to="/admin/events" />} />
-          <Route path="settings" element={<AdminSettingsPage />} />
+          <Route path="settings" element={<Navigate replace to="/admin/settings/site" />} />
+          <Route path="settings/:section" element={<AdminSettingsPage />} />
         </Route>
 
         <Route path="*" element={<Navigate replace to="/" />} />

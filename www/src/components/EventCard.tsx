@@ -27,14 +27,14 @@ export function EventCard({ event }: EventCardProps) {
           <CardMedia component="img" height="180" image={event.coverUrl} />
         ) : (
           <Box
-            sx={{
+            sx={(theme) => ({
               alignItems: 'center',
-              background: 'linear-gradient(135deg, #c4b5fd, #fdba74)',
-              color: 'white',
+              bgcolor: theme.palette.action.hover,
+              color: 'primary.main',
               display: 'flex',
               height: 180,
               justifyContent: 'center'
-            }}
+            })}
           >
             <PhotoLibrary sx={{ fontSize: 64 }} />
           </Box>

@@ -84,10 +84,12 @@ func TestPublicSiteRouteReturnsFallbackSettings(t *testing.T) {
 	}
 
 	var payload struct {
-		Name         string `json:"name"`
-		Subtitle     string `json:"subtitle"`
-		LogoURL      string `json:"logoUrl"`
-		HomeMarkdown string `json:"homeMarkdown"`
+		Name              string `json:"name"`
+		HomeMarkdown      string `json:"homeMarkdown"`
+		ThemeMode         string `json:"themeMode"`
+		ThemePreset       string `json:"themePreset"`
+		ThemePrimaryColor string `json:"themePrimaryColor"`
+		ICPNumber         string `json:"icpNumber"`
 	}
 	if err := json.NewDecoder(rec.Body).Decode(&payload); err != nil {
 		t.Fatalf("decode site response: %v", err)
@@ -98,6 +100,12 @@ func TestPublicSiteRouteReturnsFallbackSettings(t *testing.T) {
 	}
 	if payload.HomeMarkdown != "" {
 		t.Fatalf("expected empty fallback home markdown, got %q", payload.HomeMarkdown)
+	}
+	if payload.ICPNumber != "" {
+		t.Fatalf("expected empty fallback ICP number, got %q", payload.ICPNumber)
+	}
+	if payload.ThemeMode != "system" || payload.ThemePreset != "blue" || payload.ThemePrimaryColor != "#2563eb" {
+		t.Fatalf("unexpected fallback theme settings: %#v", payload)
 	}
 }
 

@@ -49,12 +49,38 @@ func TestUpdateStoragePoliciesRejectsInvalidDriver(t *testing.T) {
 func TestUpdateSiteAllowsEmptyHomeMarkdown(t *testing.T) {
 	service := NewService(NewStore(nil, RuntimeSettings{}))
 
-	site, err := service.UpdateSite(context.Background(), SiteSettings{Name: "Test"})
+	site, err := service.UpdateSite(context.Background(), SiteSettings{
+		Name:              "Test",
+		ThemeMode:         "  dark  ",
+		ThemePreset:       "custom",
+		ThemePrimaryColor: "  #ABCDEF  ",
+		FooterText:        "  Copyright 2026  ",
+		ICPNumber:         "  粤ICP备12345678号  ",
+		ContactEmail:      "  hello@example.com  ",
+	})
 	if err != nil {
 		t.Fatalf("UpdateSite() returned error: %v", err)
 	}
 	if site.HomeMarkdown != "" {
 		t.Fatalf("expected empty home markdown, got %q", site.HomeMarkdown)
+	}
+	if site.FooterText != "Copyright 2026" {
+		t.Fatalf("expected trimmed footer text, got %q", site.FooterText)
+	}
+	if site.ICPNumber != "粤ICP备12345678号" {
+		t.Fatalf("expected trimmed ICP number, got %q", site.ICPNumber)
+	}
+	if site.ContactEmail != "hello@example.com" {
+		t.Fatalf("expected trimmed contact email, got %q", site.ContactEmail)
+	}
+	if site.ThemeMode != "dark" {
+		t.Fatalf("expected normalized theme mode, got %q", site.ThemeMode)
+	}
+	if site.ThemePreset != "custom" {
+		t.Fatalf("expected custom theme preset, got %q", site.ThemePreset)
+	}
+	if site.ThemePrimaryColor != "#abcdef" {
+		t.Fatalf("expected normalized theme color, got %q", site.ThemePrimaryColor)
 	}
 }
 

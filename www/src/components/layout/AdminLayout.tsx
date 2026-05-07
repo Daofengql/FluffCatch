@@ -15,6 +15,7 @@ import { useEffect, useState } from 'react';
 import { Outlet, useLocation, useNavigate } from 'react-router-dom';
 import { getSiteSettings, type SiteSettings } from '../../api/client';
 import { getCachedMe, logoutAdmin, refreshMe, subscribeAuthState } from '../../api/authState';
+import { useThemePreference } from '../../theme/ThemePreferenceProvider';
 import { PublicLayoutHeader } from './PublicLayout';
 
 const drawerWidth = 240;
@@ -22,7 +23,19 @@ const fallbackSite: SiteSettings = {
   name: 'FluffCatch',
   subtitle: '兽聚返图收集与画廊',
   logoUrl: '',
-  homeMarkdown: ''
+  homeMarkdown: '',
+  themeMode: 'system',
+  themePreset: 'blue',
+  themePrimaryColor: '#2563eb',
+  publicBackgroundDesktopUrl: '',
+  publicBackgroundMobileUrl: '',
+  footerText: `© ${new Date().getFullYear()} FluffCatch. All rights reserved.`,
+  icpNumber: '',
+  policeRecordNumber: '',
+  policeRecordUrl: '',
+  contactText: '',
+  contactEmail: '',
+  contactUrl: ''
 };
 
 const navItems = [
@@ -33,14 +46,19 @@ const navItems = [
 export function AdminLayout() {
   const location = useLocation();
   const navigate = useNavigate();
+  const { applySiteSettings } = useThemePreference();
   const [site, setSite] = useState<SiteSettings>(fallbackSite);
   const [checkingSession, setCheckingSession] = useState(() => !getCachedMe().authenticated);
 
   useEffect(() => {
     getSiteSettings()
-      .then((payload) => setSite({ ...fallbackSite, ...payload }))
+      .then((payload) => {
+        const nextSite = { ...fallbackSite, ...payload };
+        setSite(nextSite);
+        applySiteSettings(nextSite);
+      })
       .catch(() => setSite(fallbackSite));
-  }, []);
+  }, [applySiteSettings]);
 
   useEffect(() => {
     let cancelled = false;
@@ -110,8 +128,9 @@ export function AdminLayout() {
                 borderRadius: 2,
                 mx: 1,
                 '&.Mui-selected': {
-                  bgcolor: '#E3F2FD',
-                  '& .MuiListItemIcon-root': { color: '#1565C0' }
+                  bgcolor: 'action.selected',
+                  color: 'primary.main',
+                  '& .MuiListItemIcon-root': { color: 'primary.main' }
                 }
               }}
             >
@@ -140,14 +159,14 @@ export function AdminLayout() {
 
   if (checkingSession) {
     return (
-      <Box sx={{ alignItems: 'center', bgcolor: 'grey.50', display: 'flex', justifyContent: 'center', minHeight: '100vh' }}>
+      <Box sx={{ alignItems: 'center', bgcolor: 'background.default', display: 'flex', justifyContent: 'center', minHeight: '100vh' }}>
         <CircularProgress />
       </Box>
     );
   }
 
   return (
-    <Box sx={{ bgcolor: 'grey.50', display: 'flex', flexDirection: 'column', minHeight: '100vh' }}>
+    <Box sx={{ bgcolor: 'background.default', display: 'flex', flexDirection: 'column', minHeight: '100vh' }}>
       <PublicLayoutHeader authenticated hideAdminEntry site={site} />
       <Box sx={{ display: 'flex', flex: 1, mt: 8 }}>
         <Drawer
@@ -158,7 +177,8 @@ export function AdminLayout() {
             whiteSpace: 'nowrap',
             width: drawerWidth,
             '& .MuiDrawer-paper': {
-              borderColor: 'grey.200',
+              bgcolor: 'background.paper',
+              borderColor: 'divider',
               borderRight: '1px solid',
               boxSizing: 'border-box',
               height: 'calc(100vh - 64px)',

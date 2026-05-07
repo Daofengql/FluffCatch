@@ -95,6 +95,18 @@ export type SiteSettings = {
   subtitle: string;
   logoUrl: string;
   homeMarkdown: string;
+  themeMode: 'system' | 'light' | 'dark';
+  themePreset: 'blue' | 'emerald' | 'rose' | 'amber' | 'violet' | 'custom';
+  themePrimaryColor: string;
+  publicBackgroundDesktopUrl: string;
+  publicBackgroundMobileUrl: string;
+  footerText: string;
+  icpNumber: string;
+  policeRecordNumber: string;
+  policeRecordUrl: string;
+  contactText: string;
+  contactEmail: string;
+  contactUrl: string;
 };
 
 export type UploadSettings = {
@@ -361,6 +373,21 @@ export async function uploadSiteLogo(file: File) {
 
 export async function clearSiteLogo() {
   return request<{ site: SiteSettings; message: string }>('/api/v1/admin/settings/site/logo', {
+    method: 'DELETE'
+  });
+}
+
+export async function uploadSiteBackground(variant: 'desktop' | 'mobile', file: File) {
+  const form = new FormData();
+  form.append('file', file);
+  return request<{ site: SiteSettings; url: string; message: string; width: number; height: number }>(`/api/v1/admin/settings/site/background/${variant}`, {
+    method: 'POST',
+    body: form
+  });
+}
+
+export async function clearSiteBackground(variant: 'desktop' | 'mobile') {
+  return request<{ site: SiteSettings; message: string }>(`/api/v1/admin/settings/site/background/${variant}`, {
     method: 'DELETE'
   });
 }

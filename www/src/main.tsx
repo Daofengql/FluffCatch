@@ -1,4 +1,3 @@
-import { CssBaseline, ThemeProvider } from '@mui/material';
 import React from 'react';
 import ReactDOM from 'react-dom/client';
 import App from './App';
@@ -8,13 +7,12 @@ import '@fontsource/roboto/500.css';
 import '@fontsource/roboto/700.css';
 import '@uiw/react-md-editor/markdown-editor.css';
 import '@uiw/react-markdown-preview/markdown.css';
-import { theme } from './theme/theme';
+import { ThemePreferenceProvider } from './theme/ThemePreferenceProvider';
 
 ReactDOM.createRoot(document.getElementById('root')!).render(
   <React.StrictMode>
-    <ThemeProvider theme={theme}>
-      <CssBaseline />
+    <ThemePreferenceProvider>
       <App />
-    </ThemeProvider>
+    </ThemePreferenceProvider>
   </React.StrictMode>
 );

@@ -14,6 +14,7 @@ import (
 	"io/fs"
 	"net"
 	stdhttp "net/http"
+	"net/url"
 	"os"
 	urlpath "path"
 	"path/filepath"
@@ -177,6 +178,8 @@ func (server *Server) Routes() stdhttp.Handler {
 			admin.Put("/settings/site", server.updateSiteSettings)
 			admin.Post("/settings/site/logo", server.uploadSiteLogo)
 			admin.Delete("/settings/site/logo", server.clearSiteLogo)
+			admin.Post("/settings/site/background/{variant}", server.uploadSiteBackground)
+			admin.Delete("/settings/site/background/{variant}", server.clearSiteBackground)
 			admin.Put("/settings/upload", server.updateUploadSettings)
 		})
 	})
@@ -991,6 +994,8 @@ func (server *Server) updateSiteSettings(w stdhttp.ResponseWriter, r *stdhttp.Re
 		return
 	}
 	req.LogoURL = current.Site.LogoURL
+	req.PublicBackgroundDesktopURL = current.Site.PublicBackgroundDesktopURL
+	req.PublicBackgroundMobileURL = current.Site.PublicBackgroundMobileURL
 
 	updated, err := server.settingsService.UpdateSite(r.Context(), req)
 	if err != nil {
@@ -1045,7 +1050,7 @@ func (server *Server) clearSiteLogo(w stdhttp.ResponseWriter, r *stdhttp.Request
 		writeError(w, stdhttp.StatusInternalServerError, "failed to clear site logo")
 		return
 	}
-	server.deleteSiteLogo(r.Context(), oldLogoURL)
+	server.deleteSiteAsset(r.Context(), oldLogoURL)
 
 	writeJSON(w, stdhttp.StatusOK, map[string]any{"site": updated, "message": "site logo cleared"})
 }
@@ -1131,7 +1136,7 @@ func (server *Server) uploadSiteLogo(w stdhttp.ResponseWriter, r *stdhttp.Reques
 		writeError(w, stdhttp.StatusInternalServerError, "failed to save site logo")
 		return
 	}
-	server.deleteSiteLogo(r.Context(), oldLogoURL)
+	server.deleteSiteAsset(r.Context(), oldLogoURL)
 
 	writeJSON(w, stdhttp.StatusOK, map[string]any{
 		"site":    updated,
@@ -1140,19 +1145,190 @@ func (server *Server) uploadSiteLogo(w stdhttp.ResponseWriter, r *stdhttp.Reques
 	})
 }
 
-func (server *Server) deleteSiteLogo(ctx context.Context, logoURL string) {
-	if logoURL == "" {
+func (server *Server) clearSiteBackground(w stdhttp.ResponseWriter, r *stdhttp.Request) {
+	variant, ok := parseSiteBackgroundVariant(w, r)
+	if !ok {
 		return
 	}
+
+	current, err := server.settingsService.Load(r.Context())
+	if err != nil {
+		writeError(w, stdhttp.StatusInternalServerError, "failed to load site settings")
+		return
+	}
+
+	var oldURL string
+	switch variant {
+	case "desktop":
+		oldURL = current.Site.PublicBackgroundDesktopURL
+		current.Site.PublicBackgroundDesktopURL = ""
+	case "mobile":
+		oldURL = current.Site.PublicBackgroundMobileURL
+		current.Site.PublicBackgroundMobileURL = ""
+	}
+
+	updated, err := server.settingsService.UpdateSite(r.Context(), current.Site)
+	if err != nil {
+		writeError(w, stdhttp.StatusInternalServerError, "failed to clear site background")
+		return
+	}
+	server.deleteSiteAsset(r.Context(), oldURL)
+
+	writeJSON(w, stdhttp.StatusOK, map[string]any{"site": updated, "message": "site background cleared"})
+}
+
+func (server *Server) uploadSiteBackground(w stdhttp.ResponseWriter, r *stdhttp.Request) {
+	variant, ok := parseSiteBackgroundVariant(w, r)
+	if !ok {
+		return
+	}
+
+	maxBytes := int64(15 * 1024 * 1024)
+	if configured := int64(server.cfg.Upload.MaxSizeMB) * 1024 * 1024; configured > 0 && configured < maxBytes {
+		maxBytes = configured
+	}
+	r.Body = stdhttp.MaxBytesReader(w, r.Body, maxBytes)
+	file, header, err := r.FormFile("file")
+	if err != nil {
+		writeError(w, stdhttp.StatusBadRequest, "background file is required")
+		return
+	}
+	defer file.Close()
+
+	if header.Size <= 0 {
+		writeError(w, stdhttp.StatusBadRequest, "background file is empty")
+		return
+	}
+	if header.Size > maxBytes {
+		writeError(w, stdhttp.StatusBadRequest, "background file exceeds maximum upload size")
+		return
+	}
+
+	limited := io.LimitReader(file, maxBytes+1)
+	head := make([]byte, 512)
+	n, err := io.ReadFull(limited, head)
+	if err != nil && err != io.ErrUnexpectedEOF {
+		writeError(w, stdhttp.StatusBadRequest, "failed to read background file")
+		return
+	}
+	head = head[:n]
+	detectedType := stdhttp.DetectContentType(head)
+	if !strings.HasPrefix(detectedType, "image/") {
+		writeError(w, stdhttp.StatusBadRequest, "background must be an image")
+		return
+	}
+
+	content, err := io.ReadAll(io.MultiReader(bytes.NewReader(head), limited))
+	if err != nil {
+		writeError(w, stdhttp.StatusBadRequest, "failed to read background file")
+		return
+	}
+	if len(content) == 0 {
+		writeError(w, stdhttp.StatusBadRequest, "background file is empty")
+		return
+	}
+	if int64(len(content)) > maxBytes {
+		writeError(w, stdhttp.StatusBadRequest, "background file exceeds maximum upload size")
+		return
+	}
+
+	targetWidth, targetHeight := 1920, 1080
+	if variant == "mobile" {
+		targetWidth, targetHeight = 1080, 1920
+	}
+	processed, contentType, err := appimage.GenerateCoverJPEGBytes(content, targetWidth, targetHeight, 82)
+	if err != nil {
+		writeError(w, stdhttp.StatusBadRequest, "failed to process background image")
+		return
+	}
+
+	hash := sha256.Sum256(processed)
+	contentHash := hex.EncodeToString(hash[:])
+	objectKey := siteBackgroundObjectKey(variant, contentHash)
+
+	store, err := server.storageManager.ActiveStore()
+	if err != nil {
+		writeError(w, stdhttp.StatusBadRequest, err.Error())
+		return
+	}
+	stored, err := store.Put(r.Context(), storage.Object{
+		Key:         objectKey,
+		Content:     bytes.NewReader(processed),
+		ContentType: contentType,
+		Size:        int64(len(processed)),
+	})
+	if err != nil {
+		writeError(w, stdhttp.StatusBadRequest, err.Error())
+		return
+	}
+
+	current, err := server.settingsService.Load(r.Context())
+	if err != nil {
+		_ = store.Delete(r.Context(), stored.Key)
+		writeError(w, stdhttp.StatusInternalServerError, "failed to load site settings")
+		return
+	}
+
+	var oldURL string
+	switch variant {
+	case "desktop":
+		oldURL = current.Site.PublicBackgroundDesktopURL
+		current.Site.PublicBackgroundDesktopURL = stored.URL
+	case "mobile":
+		oldURL = current.Site.PublicBackgroundMobileURL
+		current.Site.PublicBackgroundMobileURL = stored.URL
+	}
+	updated, err := server.settingsService.UpdateSite(r.Context(), current.Site)
+	if err != nil {
+		_ = store.Delete(r.Context(), stored.Key)
+		writeError(w, stdhttp.StatusInternalServerError, "failed to save site background")
+		return
+	}
+	server.deleteSiteAsset(r.Context(), oldURL)
+
+	writeJSON(w, stdhttp.StatusOK, map[string]any{
+		"site":    updated,
+		"url":     stored.URL,
+		"message": "site background uploaded",
+		"width":   targetWidth,
+		"height":  targetHeight,
+	})
+}
+
+func parseSiteBackgroundVariant(w stdhttp.ResponseWriter, r *stdhttp.Request) (string, bool) {
+	variant := strings.ToLower(strings.TrimSpace(chi.URLParam(r, "variant")))
+	if variant != "desktop" && variant != "mobile" {
+		writeError(w, stdhttp.StatusBadRequest, "background variant must be desktop or mobile")
+		return "", false
+	}
+	return variant, true
+}
+
+func (server *Server) deleteSiteAsset(ctx context.Context, assetURL string) {
+	if assetURL == "" {
+		return
+	}
+	if strings.HasPrefix(assetURL, "/media/") {
+		parts := strings.SplitN(strings.TrimPrefix(assetURL, "/media/"), "/", 2)
+		if len(parts) == 2 {
+			policyID, policyErr := url.PathUnescape(parts[0])
+			key, keyErr := url.PathUnescape(parts[1])
+			if policyErr == nil && keyErr == nil {
+				if store, err := server.storageManager.StoreForPolicy(policyID); err == nil {
+					_ = store.Delete(ctx, key)
+					return
+				}
+			}
+		}
+	}
+
 	store, err := server.storageManager.ActiveStore()
 	if err != nil {
 		return
 	}
-	// Try to extract key from the logo URL by removing the public base URL prefix.
-	publicURL := store.PublicURL("")
-	publicURL = strings.TrimRight(publicURL, "/")
-	if strings.HasPrefix(logoURL, publicURL+"/") {
-		key := strings.TrimPrefix(logoURL, publicURL+"/")
+	publicURL := strings.TrimRight(store.PublicURL(""), "/")
+	if strings.HasPrefix(assetURL, publicURL+"/") {
+		key := strings.TrimPrefix(assetURL, publicURL+"/")
 		_ = store.Delete(ctx, key)
 	}
 }
@@ -1263,8 +1439,8 @@ func (server *Server) mountLocalMedia(r chi.Router) {
 			writeError(w, stdhttp.StatusBadRequest, "media key is required")
 			return
 		}
-		cleanKey := strings.TrimPrefix(filepath.ToSlash(filepath.Clean(key)), "/")
-		if cleanKey == "." || cleanKey == "" || strings.HasPrefix(cleanKey, "../") || cleanKey == ".." || strings.Contains(cleanKey, "/../") {
+		cleanKey, targetPath, err := storage.LocalFilePath(localPath, key)
+		if err != nil {
 			writeError(w, stdhttp.StatusBadRequest, "invalid media key")
 			return
 		}
@@ -1277,7 +1453,7 @@ func (server *Server) mountLocalMedia(r chi.Router) {
 			writeError(w, stdhttp.StatusNotFound, "media not found")
 			return
 		}
-		stdhttp.ServeFile(w, r, filepath.Join(localPath, filepath.FromSlash(cleanKey)))
+		stdhttp.ServeFile(w, r, targetPath)
 	})
 }
 
@@ -1623,6 +1799,10 @@ func logoObjectKey(contentHash string, filename string) string {
 		ext = ".bin"
 	}
 	return fmt.Sprintf("site/logo/%s%s", contentHash, ext)
+}
+
+func siteBackgroundObjectKey(variant string, contentHash string) string {
+	return fmt.Sprintf("site/backgrounds/%s/%s.jpg", variant, contentHash)
 }
 
 func viewerFingerprintHash(r *stdhttp.Request) string {

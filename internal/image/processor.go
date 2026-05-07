@@ -146,3 +146,69 @@ func GenerateBlurredPreviewBytes(content []byte, maxDimension int) ([]byte, stri
 
 	return output.Bytes(), "image/jpeg", nil
 }
+
+func GenerateCoverJPEGBytes(content []byte, targetWidth int, targetHeight int, quality int) ([]byte, string, error) {
+	if targetWidth <= 0 || targetHeight <= 0 {
+		return nil, "", fmt.Errorf("invalid target dimensions")
+	}
+	if quality <= 0 || quality > 100 {
+		quality = 82
+	}
+
+	source, _, err := stdimage.Decode(bytes.NewReader(content))
+	if err != nil {
+		return nil, "", fmt.Errorf("decode image: %w", err)
+	}
+
+	bounds := source.Bounds()
+	width := bounds.Dx()
+	height := bounds.Dy()
+	if width <= 0 || height <= 0 {
+		return nil, "", fmt.Errorf("invalid image dimensions")
+	}
+
+	targetRatio := float64(targetWidth) / float64(targetHeight)
+	sourceRatio := float64(width) / float64(height)
+	cropWidth := width
+	cropHeight := height
+	if sourceRatio > targetRatio {
+		cropWidth = max(1, int(math.Round(float64(height)*targetRatio)))
+	} else if sourceRatio < targetRatio {
+		cropHeight = max(1, int(math.Round(float64(width)/targetRatio)))
+	}
+	cropX := bounds.Min.X + (width-cropWidth)/2
+	cropY := bounds.Min.Y + (height-cropHeight)/2
+
+	target := stdimage.NewRGBA(stdimage.Rect(0, 0, targetWidth, targetHeight))
+	draw.Draw(target, target.Bounds(), &stdimage.Uniform{C: color.White}, stdimage.Point{}, draw.Src)
+	for y := 0; y < targetHeight; y++ {
+		for x := 0; x < targetWidth; x++ {
+			sourceX := cropX + min(cropWidth-1, int(float64(x)*float64(cropWidth)/float64(targetWidth)))
+			sourceY := cropY + min(cropHeight-1, int(float64(y)*float64(cropHeight)/float64(targetHeight)))
+			target.Set(x, y, colorOverWhite(source.At(sourceX, sourceY)))
+		}
+	}
+
+	var output bytes.Buffer
+	if err := jpeg.Encode(&output, target, &jpeg.Options{Quality: quality}); err != nil {
+		return nil, "", fmt.Errorf("encode image: %w", err)
+	}
+
+	return output.Bytes(), "image/jpeg", nil
+}
+
+func colorOverWhite(c color.Color) color.RGBA {
+	r, g, b, a := c.RGBA()
+	if a == 0xffff {
+		return color.RGBA{R: uint8(r >> 8), G: uint8(g >> 8), B: uint8(b >> 8), A: 0xff}
+	}
+	if a == 0 {
+		return color.RGBA{R: 0xff, G: 0xff, B: 0xff, A: 0xff}
+	}
+	return color.RGBA{
+		R: uint8((r + 0xffff - a) >> 8),
+		G: uint8((g + 0xffff - a) >> 8),
+		B: uint8((b + 0xffff - a) >> 8),
+		A: 0xff,
+	}
+}

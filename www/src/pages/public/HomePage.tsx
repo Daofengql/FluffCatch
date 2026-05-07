@@ -10,6 +10,7 @@ import {
   TextField,
   Typography
 } from '@mui/material';
+import { useColorScheme } from '@mui/material/styles';
 import { useEffect, useMemo, useState } from 'react';
 import { getEvents, getSiteSettings, type EventCard as EventCardData, type SiteSettings } from '../../api/client';
 import { CityCascader, type CityValue } from '../../components/common/CityCascader';
@@ -19,10 +20,23 @@ const fallbackSite: SiteSettings = {
   name: 'FluffCatch',
   subtitle: '兽聚返图收集与画廊',
   logoUrl: '',
-  homeMarkdown: ''
+  homeMarkdown: '',
+  themeMode: 'system',
+  themePreset: 'blue',
+  themePrimaryColor: '#2563eb',
+  publicBackgroundDesktopUrl: '',
+  publicBackgroundMobileUrl: '',
+  footerText: `© ${new Date().getFullYear()} FluffCatch. All rights reserved.`,
+  icpNumber: '',
+  policeRecordNumber: '',
+  policeRecordUrl: '',
+  contactText: '',
+  contactEmail: '',
+  contactUrl: ''
 };
 
 export function HomePage() {
+  const { colorScheme } = useColorScheme();
   const [events, setEvents] = useState<EventCardData[]>([]);
   const [site, setSite] = useState<SiteSettings>(fallbackSite);
   const [query, setQuery] = useState('');
@@ -83,20 +97,39 @@ export function HomePage() {
       return true;
     });
   }, [endDate, events, query, regionFilter.cityCode, regionFilter.provinceCode, startDate]);
+  const markdownColorMode = colorScheme === 'dark' ? 'dark' : 'light';
 
   return (
     <Stack sx={{ gap: 3 }}>
       {site.homeMarkdown.trim() && (
         <Paper
-          data-color-mode="light"
-          sx={{
-            background: 'linear-gradient(135deg, rgba(37,99,235,0.10), rgba(255,255,255,0.96) 48%, rgba(14,165,233,0.10))',
-            borderRadius: 4,
+          data-color-mode={markdownColorMode}
+          sx={(theme) => ({
+            bgcolor: 'background.paper',
+            border: '1px solid',
+            borderColor: theme.palette.mode === 'dark' ? 'rgba(226, 232, 240, 0.18)' : 'divider',
+            borderRadius: 2,
             overflow: 'hidden',
             p: { xs: 3, md: 4 }
-          }}
+          })}
         >
-          <Box sx={{ '& .wmde-markdown': { bgcolor: 'transparent', color: 'text.primary' }, '& .wmde-markdown h1': { fontSize: { xs: '2rem', md: '2.6rem' }, lineHeight: 1.15 } }}>
+          <Box
+            sx={(theme) => ({
+              bgcolor: 'transparent',
+              '& .wmde-markdown': { bgcolor: 'transparent', color: theme.palette.text.primary },
+              '& .wmde-markdown a': { color: theme.palette.primary.main },
+              '& .wmde-markdown blockquote': { borderLeftColor: theme.palette.primary.main, color: theme.palette.text.secondary },
+              '& .wmde-markdown h1': { fontSize: { xs: '2rem', md: '2.6rem' }, lineHeight: 1.15 },
+              '& .wmde-markdown h1, & .wmde-markdown h2, & .wmde-markdown h3': { color: theme.palette.text.primary },
+              '& .wmde-markdown hr': { borderColor: theme.palette.divider },
+              '& .wmde-markdown pre, & .wmde-markdown code': {
+                backgroundColor: theme.palette.mode === 'dark' ? 'rgba(226, 232, 240, 0.1)' : 'rgba(15, 23, 42, 0.06)'
+              },
+              '& .wmde-markdown table tr': { backgroundColor: 'transparent', borderColor: theme.palette.divider },
+              '& .wmde-markdown table tr:nth-of-type(2n)': { backgroundColor: theme.palette.action.hover },
+              '& .wmde-markdown table th, & .wmde-markdown table td': { borderColor: theme.palette.divider }
+            })}
+          >
             <MDEditor.Markdown source={site.homeMarkdown} skipHtml />
           </Box>
         </Paper>

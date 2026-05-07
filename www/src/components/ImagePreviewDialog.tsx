@@ -49,14 +49,13 @@ export function ImagePreviewDialog({ images, index = 0, onClose, onIndexChange, 
       onClose={onClose}
       open={open}
       slotProps={{
-        backdrop: { sx: { bgcolor: 'rgba(2, 6, 23, 0.52)', backdropFilter: 'blur(4px)' } },
+        backdrop: { sx: { bgcolor: 'rgba(2, 6, 23, 0.72)' } },
         paper: {
           sx: {
-            backdropFilter: 'blur(18px)',
-            bgcolor: 'rgba(15, 23, 42, 0.88)',
+            bgcolor: '#0f172a',
             border: '1px solid rgba(255,255,255,0.12)',
             borderRadius: fullscreen ? 0 : 4,
-            boxShadow: '0 24px 80px rgba(15,23,42,0.45)',
+            boxShadow: fullscreen ? 'none' : '0 16px 40px rgba(2, 6, 23, 0.45)',
             color: 'white',
             height: fullscreen ? '100vh' : '80vh',
             maxHeight: fullscreen ? '100vh' : '80vh',

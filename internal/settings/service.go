@@ -32,7 +32,13 @@ func NewServiceWithReferences(store *Store, references PolicyReferenceChecker) *
 }
 
 func (service *Service) Load(ctx context.Context) (RuntimeSettings, error) {
-	return service.store.Load(ctx)
+	current, err := service.store.Load(ctx)
+	if err != nil {
+		return RuntimeSettings{}, err
+	}
+	current.Site = normalizeSite(current.Site)
+	current.Upload = normalizeUpload(current.Upload)
+	return current, nil
 }
 
 func (service *Service) UpdateStoragePolicies(ctx context.Context, policies StoragePoliciesSettings) (StoragePoliciesSettings, error) {
@@ -380,7 +386,47 @@ func normalizeSite(site SiteSettings) SiteSettings {
 	site.Subtitle = strings.TrimSpace(site.Subtitle)
 	site.LogoURL = strings.TrimSpace(site.LogoURL)
 	site.HomeMarkdown = strings.TrimSpace(site.HomeMarkdown)
+	site.ThemeMode = normalizeThemeMode(site.ThemeMode)
+	site.ThemePreset = normalizeThemePreset(site.ThemePreset)
+	site.ThemePrimaryColor = normalizeThemePrimaryColor(site.ThemePrimaryColor)
+	site.PublicBackgroundDesktopURL = strings.TrimSpace(site.PublicBackgroundDesktopURL)
+	site.PublicBackgroundMobileURL = strings.TrimSpace(site.PublicBackgroundMobileURL)
+	site.FooterText = strings.TrimSpace(site.FooterText)
+	site.ICPNumber = strings.TrimSpace(site.ICPNumber)
+	site.PoliceRecordNumber = strings.TrimSpace(site.PoliceRecordNumber)
+	site.PoliceRecordURL = strings.TrimSpace(site.PoliceRecordURL)
+	site.ContactText = strings.TrimSpace(site.ContactText)
+	site.ContactEmail = strings.TrimSpace(site.ContactEmail)
+	site.ContactURL = strings.TrimSpace(site.ContactURL)
 	return site
+}
+
+func normalizeThemeMode(mode string) string {
+	mode = strings.ToLower(strings.TrimSpace(mode))
+	switch mode {
+	case "light", "dark", "system":
+		return mode
+	default:
+		return "system"
+	}
+}
+
+func normalizeThemePreset(preset string) string {
+	preset = strings.ToLower(strings.TrimSpace(preset))
+	switch preset {
+	case "blue", "emerald", "rose", "amber", "violet", "custom":
+		return preset
+	default:
+		return "blue"
+	}
+}
+
+func normalizeThemePrimaryColor(color string) string {
+	color = strings.ToLower(strings.TrimSpace(color))
+	if themeColorPattern.MatchString(color) {
+		return color
+	}
+	return "#2563eb"
 }
 
 func normalizeUpload(upload UploadSettings) UploadSettings {
@@ -400,6 +446,7 @@ func normalizeUpload(upload UploadSettings) UploadSettings {
 }
 
 var policyIDPattern = regexp.MustCompile(`^[a-zA-Z0-9_-]+$`)
+var themeColorPattern = regexp.MustCompile(`^#[0-9a-f]{6}$`)
 
 func validPolicyID(id string) bool {
 	return id != "" && policyIDPattern.MatchString(id)

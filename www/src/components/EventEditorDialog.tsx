@@ -184,7 +184,6 @@ export function EventEditorDialog({ event, mode, onClose, onSaved, open }: Event
               <Button
                 component="label"
                 sx={{
-                  backdropFilter: 'blur(8px)',
                   bgcolor: 'rgba(255,255,255,0.92)',
                   bottom: 12,
                   left: 12,
@@ -203,7 +202,7 @@ export function EventEditorDialog({ event, mode, onClose, onSaved, open }: Event
               sx={{
                 alignItems: 'center',
                 aspectRatio: '16 / 7',
-                bgcolor: 'grey.100',
+                bgcolor: 'action.hover',
                 borderBottom: '1px dashed',
                 borderColor: 'divider',
                 color: 'text.secondary',
@@ -213,7 +212,7 @@ export function EventEditorDialog({ event, mode, onClose, onSaved, open }: Event
                 px: 2,
                 textAlign: 'center',
                 transition: 'background-color 160ms ease, color 160ms ease',
-                '&:hover': { bgcolor: 'grey.200', color: 'primary.main' }
+                '&:hover': { bgcolor: 'action.selected', color: 'primary.main' }
               }}
             >
               <Stack sx={{ alignItems: 'center', gap: 1 }}>

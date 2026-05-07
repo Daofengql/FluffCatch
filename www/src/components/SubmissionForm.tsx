@@ -186,7 +186,7 @@ export function SubmissionForm({ event, footer, initialSubmissionPassword = '', 
           </Paper>
         ))}
         {!queue.length && (
-          <Paper sx={{ bgcolor: 'grey.50', p: 3, textAlign: 'center' }} variant="outlined">
+          <Paper sx={{ bgcolor: 'action.hover', p: 3, textAlign: 'center' }} variant="outlined">
             <Typography color="text.secondary">还没有选择图片。点上面的按钮一次选多张，毛毛们排队进审核池。</Typography>
           </Paper>
         )}
