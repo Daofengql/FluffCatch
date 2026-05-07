@@ -1,0 +1,182 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+
+permissions:
+  contents: write
+
+jobs:
+  frontend:
+    name: Build frontend
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: www/package-lock.json
+
+      - name: Build frontend
+        working-directory: www
+        run: |
+          npm ci
+          npm run build
+
+      - name: Upload frontend dist
+        uses: actions/upload-artifact@v4
+        with:
+          name: frontend-dist
+          path: www/dist
+          if-no-files-found: error
+
+  build:
+    name: Build ${{ matrix.goos }}/${{ matrix.goarch }}
+    needs: frontend
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - goos: linux
+            goarch: amd64
+            suffix: linux-amd64
+            archive: tar.gz
+          - goos: linux
+            goarch: arm64
+            suffix: linux-arm64
+            archive: tar.gz
+          - goos: windows
+            goarch: amd64
+            suffix: windows-amd64
+            archive: zip
+          - goos: windows
+            goarch: arm64
+            suffix: windows-arm64
+            archive: zip
+          - goos: darwin
+            goarch: amd64
+            suffix: darwin-amd64
+            archive: tar.gz
+          - goos: darwin
+            goarch: arm64
+            suffix: darwin-arm64
+            archive: tar.gz
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Download frontend dist
+        uses: actions/download-artifact@v4
+        with:
+          name: frontend-dist
+          path: www/dist
+
+      - name: Download Go modules
+        run: go mod download
+
+      - name: Build binary
+        env:
+          CGO_ENABLED: '0'
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+        run: |
+          mkdir -p build
+          binary="fluffcatch"
+          if [ "${{ matrix.goos }}" = "windows" ]; then
+            binary="fluffcatch.exe"
+          fi
+
+          go build \
+            -tags embed_frontend \
+            -ldflags="-s -w" \
+            -o "build/${binary}" \
+            ./cmd/fluffcatch
+
+      - name: Package
+        run: |
+          version="${{ github.ref_name }}"
+          package_dir="FluffCatch-${version}-${{ matrix.suffix }}"
+          archive_name="${package_dir}.${{ matrix.archive }}"
+
+          mkdir -p "package/${package_dir}" dist-packages
+          cp build/* "package/${package_dir}/"
+          cp .env.example README.md "package/${package_dir}/"
+
+          if [ "${{ matrix.archive }}" = "zip" ]; then
+            (cd package && zip -r "../dist-packages/${archive_name}" "${package_dir}")
+          else
+            tar czf "dist-packages/${archive_name}" -C package "${package_dir}"
+          fi
+
+      - name: Upload package
+        uses: actions/upload-artifact@v4
+        with:
+          name: FluffCatch-${{ matrix.suffix }}
+          path: dist-packages/*
+          if-no-files-found: error
+
+  release:
+    name: Publish release
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download release packages
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          pattern: FluffCatch-*
+          merge-multiple: true
+
+      - name: Generate checksums
+        working-directory: artifacts
+        run: |
+          sha256sum FluffCatch-* > SHA256SUMS.txt
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: FluffCatch ${{ github.ref_name }}
+          files: artifacts/*
+          draft: false
+          prerelease: false
+          generate_release_notes: true
+          fail_on_unmatched_files: true
+          body: |
+            ## FluffCatch ${{ github.ref_name }}
+
+            ### Downloads
+            | Platform | Architecture | File |
+            | --- | --- | --- |
+            | Linux | AMD64 | `FluffCatch-${{ github.ref_name }}-linux-amd64.tar.gz` |
+            | Linux | ARM64 | `FluffCatch-${{ github.ref_name }}-linux-arm64.tar.gz` |
+            | Windows | AMD64 | `FluffCatch-${{ github.ref_name }}-windows-amd64.zip` |
+            | Windows | ARM64 | `FluffCatch-${{ github.ref_name }}-windows-arm64.zip` |
+            | macOS | Intel | `FluffCatch-${{ github.ref_name }}-darwin-amd64.tar.gz` |
+            | macOS | Apple Silicon | `FluffCatch-${{ github.ref_name }}-darwin-arm64.tar.gz` |
+
+            ### Checksums
+            Download `SHA256SUMS.txt` and verify the archive before deployment.
+
+            ### Quick Start
+            ```bash
+            tar xzf FluffCatch-${{ github.ref_name }}-linux-amd64.tar.gz
+            cd FluffCatch-${{ github.ref_name }}-linux-amd64
+            cp .env.example .env
+            ./fluffcatch --migrate
+            ./fluffcatch
+            ```

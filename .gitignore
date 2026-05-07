@@ -4,6 +4,7 @@
 
 bin/
 data/
+.claude/
 
 www/dist/
 www/node_modules/
