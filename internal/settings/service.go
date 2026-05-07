@@ -271,7 +271,7 @@ func normalizeStoragePolicies(policies StoragePoliciesSettings) (StoragePolicies
 func NormalizeStoragePolicy(policy StoragePolicy) (StoragePolicy, error) {
 	policy.ID = strings.TrimSpace(policy.ID)
 	if !validPolicyID(policy.ID) {
-		return StoragePolicy{}, fmt.Errorf("storage policy id must use letters, numbers, dash or underscore")
+		return StoragePolicy{}, fmt.Errorf("storage policy id is required")
 	}
 
 	policy.Name = strings.TrimSpace(policy.Name)
@@ -445,11 +445,10 @@ func normalizeUpload(upload UploadSettings) UploadSettings {
 	return upload
 }
 
-var policyIDPattern = regexp.MustCompile(`^[a-zA-Z0-9_-]+$`)
 var themeColorPattern = regexp.MustCompile(`^#[0-9a-f]{6}$`)
 
 func validPolicyID(id string) bool {
-	return id != "" && policyIDPattern.MatchString(id)
+	return strings.TrimSpace(id) != ""
 }
 
 func preserveMaskedStorageSecrets(incoming, current StoragePoliciesSettings) StoragePoliciesSettings {

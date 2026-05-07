@@ -46,6 +46,36 @@ func TestUpdateStoragePoliciesRejectsInvalidDriver(t *testing.T) {
 	}
 }
 
+func TestUpdateStoragePoliciesAllowsLocalizedPolicyID(t *testing.T) {
+	service := NewService(NewStore(nil, RuntimeSettings{}))
+
+	settings, err := service.UpdateStoragePolicies(context.Background(), StoragePoliciesSettings{
+		ActivePolicyID: "默认本地存储",
+		Policies: []StoragePolicy{
+			{ID: "默认本地存储", Name: "默认本地存储", Driver: "local", LocalPath: "data/uploads"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("UpdateStoragePolicies() returned error: %v", err)
+	}
+	if settings.ActivePolicyID != "默认本地存储" {
+		t.Fatalf("expected localized active policy id, got %q", settings.ActivePolicyID)
+	}
+}
+
+func TestUpdateStoragePoliciesRejectsEmptyPolicyID(t *testing.T) {
+	service := NewService(NewStore(nil, RuntimeSettings{}))
+
+	_, err := service.UpdateStoragePolicies(context.Background(), StoragePoliciesSettings{
+		Policies: []StoragePolicy{
+			{ID: "  ", Name: "默认本地存储", Driver: "local", LocalPath: "data/uploads"},
+		},
+	})
+	if err == nil {
+		t.Fatal("expected empty policy id error")
+	}
+}
+
 func TestUpdateSiteAllowsEmptyHomeMarkdown(t *testing.T) {
 	service := NewService(NewStore(nil, RuntimeSettings{}))
 
