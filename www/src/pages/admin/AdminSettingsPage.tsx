@@ -767,7 +767,7 @@ export function AdminSettingsPage() {
 
               <Stack direction={{ xs: 'column', sm: 'row' }} sx={{ gap: 1, justifyContent: 'space-between' }}>
                 <Typography color="text.secondary" variant="body2">
-                  当前策略已存储 {usage.objectCount} 个对象（{formatBytes(usage.sizeBytes)}）
+                  当前策略关联 {usage.objectCount} 条应用记录（{formatBytes(usage.sizeBytes)}）
                 </Typography>
                 <Stack direction="row" sx={{ gap: 1, justifyContent: 'flex-end' }}>
                   {storagePolicy.driver !== 'local' && (
