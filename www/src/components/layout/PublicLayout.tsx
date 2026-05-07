@@ -55,7 +55,7 @@ export function PublicLayout() {
           p: { xs: 2, sm: 3 }
         }}
       >
-        <Container maxWidth={centered ? 'sm' : 'lg'} sx={{ py: { xs: 2, md: 4 }, width: '100%' }}>
+        <Container maxWidth={centered ? 'sm' : 'xl'} sx={{ py: { xs: 2, md: 4 }, width: '100%' }}>
           <Outlet />
         </Container>
       </Box>

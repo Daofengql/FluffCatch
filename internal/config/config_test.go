@@ -67,6 +67,14 @@ func TestLoadDefaults(t *testing.T) {
 	if cfg.Database.ConnectRetryDelay != 2*time.Second {
 		t.Fatalf("expected default mysql connect retry delay 2s, got %s", cfg.Database.ConnectRetryDelay)
 	}
+
+	if cfg.Upload.MaxSizeMB != 20 {
+		t.Fatalf("expected default upload max size 20, got %d", cfg.Upload.MaxSizeMB)
+	}
+
+	if cfg.Upload.MaxFilesPerUpload != 20 {
+		t.Fatalf("expected default upload max files 20, got %d", cfg.Upload.MaxFilesPerUpload)
+	}
 }
 
 func TestLoadRejectsUnknownStorageDriver(t *testing.T) {

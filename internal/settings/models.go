@@ -6,6 +6,7 @@ const (
 	KeyStoragePolicies = "storage_policies"
 	KeyOIDC            = "oidc"
 	KeySite            = "site"
+	KeyUpload          = "upload"
 
 	MaskedSecret = "***"
 )
@@ -14,6 +15,7 @@ type RuntimeSettings struct {
 	StoragePolicies StoragePoliciesSettings `json:"storagePolicies"`
 	OIDC            OIDCSettings            `json:"oidc"`
 	Site            SiteSettings            `json:"site"`
+	Upload          UploadSettings          `json:"upload"`
 }
 
 func (s RuntimeSettings) Sanitize() RuntimeSettings {
@@ -90,6 +92,11 @@ type SiteSettings struct {
 	HomeMarkdown string `json:"homeMarkdown"`
 }
 
+type UploadSettings struct {
+	MaxFileSizeMB     int `json:"maxFileSizeMb"`
+	MaxFilesPerUpload int `json:"maxFilesPerUpload"`
+}
+
 const DefaultHomeMarkdown = ""
 
 func FromConfig(cfg config.Config) RuntimeSettings {
@@ -128,6 +135,10 @@ func FromConfig(cfg config.Config) RuntimeSettings {
 			Subtitle:     "兽聚返图收集与画廊",
 			LogoURL:      "",
 			HomeMarkdown: DefaultHomeMarkdown,
+		},
+		Upload: UploadSettings{
+			MaxFileSizeMB:     cfg.Upload.MaxSizeMB,
+			MaxFilesPerUpload: cfg.Upload.MaxFilesPerUpload,
 		},
 	}
 }

@@ -1,0 +1,22 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(go test *)",
+      "Bash(go build *)",
+      "Bash(git add *)",
+      "Bash(git commit -m ' *)",
+      "Bash(go get *)",
+      "Bash(go mod *)",
+      "Bash(git checkout *)",
+      "WebSearch",
+      "Bash(cat)",
+      "Bash(python /tmp/patch.py)",
+      "Bash(git reset *)",
+      "Bash(go vet *)",
+      "Bash(npm run *)",
+      "Read(//c/Users/daofeng/.claude/plans/**)",
+      "Bash(npm install *)",
+      "Bash(npm --prefix www run build)"
+    ]
+  }
+}

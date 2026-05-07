@@ -5,9 +5,8 @@ import "time"
 type Visibility string
 
 const (
-	VisibilityPublic    Visibility = "public"
-	VisibilityProtected Visibility = "protected"
-	VisibilityPrivate   Visibility = "private"
+	VisibilityPublic  Visibility = "public"
+	VisibilityPrivate Visibility = "private"
 )
 
 type Photo struct {
@@ -18,6 +17,7 @@ type Photo struct {
 	URL              string     `json:"url"`
 	ThumbnailKey     string     `json:"thumbnailKey,omitempty"`
 	ThumbnailURL     string     `json:"thumbnailUrl,omitempty"`
+	AccessGranted    bool       `json:"accessGranted"`
 	ContentHash      string     `json:"contentHash"`
 	ContentType      string     `json:"contentType"`
 	SizeBytes        int64      `json:"sizeBytes"`
@@ -48,7 +48,6 @@ type Page struct {
 type UpdatePhotoRequest struct {
 	PhotographerName string     `json:"photographerName"`
 	Visibility       Visibility `json:"visibility"`
-	AccessPassword   string     `json:"accessPassword"`
 	Tags             []string   `json:"tags"`
 }
 

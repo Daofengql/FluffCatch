@@ -3,8 +3,10 @@ package http
 import (
 	"bytes"
 	"context"
+	"crypto/hmac"
 	"crypto/sha256"
 	"database/sql"
+	"encoding/base64"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -17,12 +19,14 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"fluffcatch/internal/auth"
 	"fluffcatch/internal/config"
 	"fluffcatch/internal/events"
 	"fluffcatch/internal/gallery"
+	appimage "fluffcatch/internal/image"
 	"fluffcatch/internal/settings"
 	"fluffcatch/internal/storage"
 	"fluffcatch/internal/uploads"
@@ -44,6 +48,67 @@ type Server struct {
 	galleryService  *gallery.Service
 	loginLimiter    *rateLimiter
 	captchaLimiter  *rateLimiter
+	blurCache       *blurPreviewCache
+}
+
+type blurPreviewCache struct {
+	mu      sync.Mutex
+	entries map[string]blurPreviewEntry
+}
+
+type blurPreviewEntry struct {
+	content     []byte
+	contentType string
+	expiresAt   time.Time
+}
+
+func newBlurPreviewCache() *blurPreviewCache {
+	return &blurPreviewCache{entries: map[string]blurPreviewEntry{}}
+}
+
+func (cache *blurPreviewCache) Get(key string) ([]byte, string, bool) {
+	cache.mu.Lock()
+	defer cache.mu.Unlock()
+
+	entry, ok := cache.entries[key]
+	if !ok {
+		return nil, "", false
+	}
+	if time.Now().After(entry.expiresAt) {
+		delete(cache.entries, key)
+		return nil, "", false
+	}
+	return entry.content, entry.contentType, true
+}
+
+func (cache *blurPreviewCache) Set(key string, content []byte, contentType string, ttl time.Duration) {
+	cache.mu.Lock()
+	defer cache.mu.Unlock()
+
+	cache.entries[key] = blurPreviewEntry{
+		content:     append([]byte(nil), content...),
+		contentType: contentType,
+		expiresAt:   time.Now().Add(ttl),
+	}
+	if len(cache.entries) <= 256 {
+		return
+	}
+
+	now := time.Now()
+	for key, entry := range cache.entries {
+		if now.After(entry.expiresAt) {
+			delete(cache.entries, key)
+		}
+	}
+	if len(cache.entries) <= 256 {
+		return
+	}
+	for key := range cache.entries {
+		delete(cache.entries, key)
+		if len(cache.entries) <= 256 {
+			return
+		}
+	}
 }
 
 func NewServer(cfg config.Config, dbConn *sql.DB, storageManager *storage.Manager, settingsService *settings.Service) *Server {
@@ -59,6 +124,7 @@ func NewServer(cfg config.Config, dbConn *sql.DB, storageManager *storage.Manage
 		galleryService:  gallery.NewService(dbConn, storageManager),
 		loginLimiter:    newRateLimiter(1, 5),
 		captchaLimiter:  newRateLimiter(2, 10),
+		blurCache:       newBlurPreviewCache(),
 	}
 }
 
@@ -84,6 +150,7 @@ func (server *Server) Routes() stdhttp.Handler {
 		api.Get("/site", server.publicSite)
 		api.Get("/events/{id}", server.getPublicEvent)
 		api.Get("/events/{id}/photos", server.listPublicPhotos)
+		api.Post("/events/{id}/private-access", server.unlockEventPrivatePhotos)
 		api.Post("/events/{id}/submissions", server.createSubmission)
 		api.Post("/photos/{id}/like", server.likePhoto)
 
@@ -110,6 +177,7 @@ func (server *Server) Routes() stdhttp.Handler {
 			admin.Put("/settings/site", server.updateSiteSettings)
 			admin.Post("/settings/site/logo", server.uploadSiteLogo)
 			admin.Delete("/settings/site/logo", server.clearSiteLogo)
+			admin.Put("/settings/upload", server.updateUploadSettings)
 		})
 	})
 
@@ -292,16 +360,22 @@ func (server *Server) createSubmission(w stdhttp.ResponseWriter, r *stdhttp.Requ
 		return
 	}
 
-	maxBytes := int64(server.cfg.Upload.MaxSizeMB) * 1024 * 1024
-	r.Body = stdhttp.MaxBytesReader(w, r.Body, maxBytes)
-	if err := r.ParseMultipartForm(maxBytes); err != nil {
+	uploadSettings, err := server.currentUploadSettings(r.Context())
+	if err != nil {
+		writeError(w, stdhttp.StatusInternalServerError, "failed to load upload settings")
+		return
+	}
+	maxFileBytes := int64(uploadSettings.MaxFileSizeMB) * 1024 * 1024
+	maxBatchBytes := maxFileBytes * int64(uploadSettings.MaxFilesPerUpload)
+	r.Body = stdhttp.MaxBytesReader(w, r.Body, maxBatchBytes)
+	if err := r.ParseMultipartForm(maxBatchBytes); err != nil {
 		writeError(w, stdhttp.StatusBadRequest, "invalid multipart upload")
 		return
 	}
 
 	files := r.MultipartForm.File["files"]
-	if len(files) > 20 {
-		writeError(w, stdhttp.StatusBadRequest, "maximum of 20 files per upload batch")
+	if len(files) > uploadSettings.MaxFilesPerUpload {
+		writeError(w, stdhttp.StatusBadRequest, fmt.Sprintf("maximum of %d files per upload batch", uploadSettings.MaxFilesPerUpload))
 		return
 	}
 	if len(files) == 0 {
@@ -316,7 +390,7 @@ func (server *Server) createSubmission(w stdhttp.ResponseWriter, r *stdhttp.Requ
 				Tags:               parseTagsValue(r.FormValue("tags")),
 			}
 			if isAdmin {
-				photo, err := server.uploadService.CreateApproved(r.Context(), id, upload)
+				photo, err := server.uploadService.CreateApprovedWithLimit(r.Context(), id, upload, maxFileBytes)
 				if err != nil {
 					writeError(w, stdhttp.StatusBadRequest, err.Error())
 					return
@@ -324,7 +398,7 @@ func (server *Server) createSubmission(w stdhttp.ResponseWriter, r *stdhttp.Requ
 				writeJSON(w, stdhttp.StatusCreated, map[string]any{"photos": []gallery.Photo{photo}})
 				return
 			}
-			submission, err := server.uploadService.Create(r.Context(), id, upload)
+			submission, err := server.uploadService.CreateWithLimit(r.Context(), id, upload, maxFileBytes)
 			if err != nil {
 				writeError(w, stdhttp.StatusBadRequest, err.Error())
 				return
@@ -352,7 +426,7 @@ func (server *Server) createSubmission(w stdhttp.ResponseWriter, r *stdhttp.Requ
 			Tags:               parseTagsValue(r.FormValue("tags")),
 		}
 		if isAdmin {
-			photo, err := server.uploadService.CreateApproved(r.Context(), id, upload)
+			photo, err := server.uploadService.CreateApprovedWithLimit(r.Context(), id, upload, maxFileBytes)
 			_ = file.Close()
 			if err != nil {
 				writeError(w, stdhttp.StatusBadRequest, err.Error())
@@ -361,7 +435,7 @@ func (server *Server) createSubmission(w stdhttp.ResponseWriter, r *stdhttp.Requ
 			createdPhotos = append(createdPhotos, photo)
 			continue
 		}
-		submission, err := server.uploadService.Create(r.Context(), id, upload)
+		submission, err := server.uploadService.CreateWithLimit(r.Context(), id, upload, maxFileBytes)
 		_ = file.Close()
 		if err != nil {
 			writeError(w, stdhttp.StatusBadRequest, err.Error())
@@ -389,7 +463,7 @@ func (server *Server) listPublicPhotos(w stdhttp.ResponseWriter, r *stdhttp.Requ
 	}
 
 	page, pageSize := parsePagination(r)
-	result, err := server.galleryService.ListForEventPageWithFingerprint(r.Context(), id, false, r.URL.Query().Get("password"), viewerFingerprintHash(r), page, pageSize)
+	result, err := server.galleryService.ListForEventPageWithAccess(r.Context(), id, false, server.eventPrivateAccessUnlocked(r, id), viewerFingerprintHash(r), page, pageSize)
 	if err != nil {
 		writeError(w, stdhttp.StatusInternalServerError, "failed to list photos")
 		return
@@ -402,6 +476,41 @@ func (server *Server) listPublicPhotos(w stdhttp.ResponseWriter, r *stdhttp.Requ
 		"pageSize":   result.PageSize,
 		"totalPages": result.TotalPages,
 	})
+}
+
+func (server *Server) unlockEventPrivatePhotos(w stdhttp.ResponseWriter, r *stdhttp.Request) {
+	id, ok := parseIDParam(w, r, "id")
+	if !ok {
+		return
+	}
+	var req struct {
+		Password string `json:"password"`
+	}
+	if err := decodeJSON(r, &req); err != nil {
+		writeError(w, stdhttp.StatusBadRequest, "invalid private access payload")
+		return
+	}
+
+	verified, err := server.galleryService.VerifyEventPrivatePassword(r.Context(), id, req.Password)
+	if err != nil {
+		writeError(w, stdhttp.StatusInternalServerError, "failed to verify private password")
+		return
+	}
+	if !verified {
+		writeJSON(w, stdhttp.StatusUnauthorized, map[string]any{"unlocked": false})
+		return
+	}
+
+	secure := r.TLS != nil || server.cfg.App.Env == "production"
+	stdhttp.SetCookie(w, &stdhttp.Cookie{
+		Name:     eventPrivateAccessCookieName(id),
+		Value:    server.signEventPrivateAccessToken(id),
+		Path:     "/",
+		HttpOnly: true,
+		SameSite: stdhttp.SameSiteLaxMode,
+		Secure:   secure,
+	})
+	writeJSON(w, stdhttp.StatusOK, map[string]any{"unlocked": true})
 }
 
 func (server *Server) likePhoto(w stdhttp.ResponseWriter, r *stdhttp.Request) {
@@ -891,6 +1000,37 @@ func (server *Server) updateSiteSettings(w stdhttp.ResponseWriter, r *stdhttp.Re
 	writeJSON(w, stdhttp.StatusOK, map[string]any{"site": updated, "message": "site settings updated"})
 }
 
+func (server *Server) updateUploadSettings(w stdhttp.ResponseWriter, r *stdhttp.Request) {
+	var req settings.UploadSettings
+	if err := decodeJSON(r, &req); err != nil {
+		writeError(w, stdhttp.StatusBadRequest, "invalid upload settings payload")
+		return
+	}
+
+	updated, err := server.settingsService.UpdateUpload(r.Context(), req)
+	if err != nil {
+		writeError(w, stdhttp.StatusBadRequest, err.Error())
+		return
+	}
+
+	writeJSON(w, stdhttp.StatusOK, map[string]any{"upload": updated, "message": "upload settings updated"})
+}
+
+func (server *Server) currentUploadSettings(ctx context.Context) (settings.UploadSettings, error) {
+	current, err := server.settingsService.Load(ctx)
+	if err != nil {
+		return settings.UploadSettings{}, err
+	}
+	upload := current.Upload
+	if upload.MaxFileSizeMB <= 0 {
+		upload.MaxFileSizeMB = server.cfg.Upload.MaxSizeMB
+	}
+	if upload.MaxFilesPerUpload <= 0 {
+		upload.MaxFilesPerUpload = server.cfg.Upload.MaxFilesPerUpload
+	}
+	return upload, nil
+}
+
 func (server *Server) clearSiteLogo(w stdhttp.ResponseWriter, r *stdhttp.Request) {
 	current, err := server.settingsService.Load(r.Context())
 	if err != nil {
@@ -1050,7 +1190,58 @@ func (server *Server) currentAdmin(r *stdhttp.Request) (auth.AdminUser, bool, er
 	return server.authService.AuthenticateSession(r.Context(), cookie.Value)
 }
 
+const eventPrivateAccessTokenTTL = 24 * time.Hour
+
+func (server *Server) eventPrivateAccessUnlocked(r *stdhttp.Request, eventID int64) bool {
+	cookie, err := r.Cookie(eventPrivateAccessCookieName(eventID))
+	if err != nil {
+		return false
+	}
+	return server.verifyEventPrivateAccessToken(cookie.Value, eventID)
+}
+
+func eventPrivateAccessCookieName(eventID int64) string {
+	return fmt.Sprintf("fluffcatch_private_%d", eventID)
+}
+
+func (server *Server) signEventPrivateAccessToken(eventID int64) string {
+	issuedAt := strconv.FormatInt(time.Now().Unix(), 10)
+	payload := strings.Join([]string{"v1", strconv.FormatInt(eventID, 10), issuedAt}, ".")
+	signature := server.signEventPrivateAccessPayload(payload)
+	return payload + "." + signature
+}
+
+func (server *Server) verifyEventPrivateAccessToken(token string, eventID int64) bool {
+	parts := strings.Split(token, ".")
+	if len(parts) != 4 || parts[0] != "v1" || parts[1] != strconv.FormatInt(eventID, 10) {
+		return false
+	}
+	issuedUnix, err := strconv.ParseInt(parts[2], 10, 64)
+	if err != nil {
+		return false
+	}
+	issuedAt := time.Unix(issuedUnix, 0)
+	if time.Since(issuedAt) > eventPrivateAccessTokenTTL || issuedAt.After(time.Now().Add(5*time.Minute)) {
+		return false
+	}
+
+	payload := strings.Join(parts[:3], ".")
+	expected := server.signEventPrivateAccessPayload(payload)
+	return hmac.Equal([]byte(expected), []byte(parts[3]))
+}
+
+func (server *Server) signEventPrivateAccessPayload(payload string) string {
+	secret := server.cfg.Auth.SessionSecret
+	if secret == "" {
+		secret = "fluffcatch-private-access-development"
+	}
+	mac := hmac.New(sha256.New, []byte(secret))
+	_, _ = mac.Write([]byte(payload))
+	return base64.RawURLEncoding.EncodeToString(mac.Sum(nil))
+}
+
 func (server *Server) mountLocalMedia(r chi.Router) {
+	r.Get("/media/photos/{id}/{variant}", server.servePhotoMedia)
 	r.Get("/media/{policyID}/*", func(w stdhttp.ResponseWriter, r *stdhttp.Request) {
 		policyID := chi.URLParam(r, "policyID")
 		localPath := server.cfg.Storage.LocalPath
@@ -1077,8 +1268,199 @@ func (server *Server) mountLocalMedia(r chi.Router) {
 			writeError(w, stdhttp.StatusBadRequest, "invalid media key")
 			return
 		}
+		allowed, err := server.canServePublicMedia(r.Context(), policyID, cleanKey)
+		if err != nil {
+			writeError(w, stdhttp.StatusInternalServerError, "failed to authorize media")
+			return
+		}
+		if !allowed {
+			writeError(w, stdhttp.StatusNotFound, "media not found")
+			return
+		}
 		stdhttp.ServeFile(w, r, filepath.Join(localPath, filepath.FromSlash(cleanKey)))
 	})
+}
+
+func (server *Server) servePhotoMedia(w stdhttp.ResponseWriter, r *stdhttp.Request) {
+	id, ok := parseIDParam(w, r, "id")
+	if !ok {
+		return
+	}
+	variant := chi.URLParam(r, "variant")
+	if variant != "original" && variant != "thumbnail" && variant != "blur" {
+		writeError(w, stdhttp.StatusBadRequest, "invalid media variant")
+		return
+	}
+
+	_, isAdmin, err := server.currentAdmin(r)
+	if err != nil {
+		writeError(w, stdhttp.StatusInternalServerError, "failed to authenticate session")
+		return
+	}
+	photo, allowed, err := server.galleryService.CanAccessPhotoWithAccess(r.Context(), id, isAdmin, false)
+	if err != nil {
+		writeError(w, stdhttp.StatusInternalServerError, "failed to authorize photo")
+		return
+	}
+	if !allowed && photo.EventID > 0 {
+		photo, allowed, err = server.galleryService.CanAccessPhotoWithAccess(r.Context(), id, isAdmin, server.eventPrivateAccessUnlocked(r, photo.EventID))
+		if err != nil {
+			writeError(w, stdhttp.StatusInternalServerError, "failed to authorize photo")
+			return
+		}
+	}
+	if variant == "blur" && photo.Visibility != gallery.VisibilityPrivate {
+		writeError(w, stdhttp.StatusBadRequest, "blur preview is only available for locked private photos")
+		return
+	}
+	if !allowed && !(variant == "blur" && photo.Visibility == gallery.VisibilityPrivate) {
+		writeError(w, stdhttp.StatusNotFound, "media not found")
+		return
+	}
+
+	key := photo.ObjectKey
+	if variant == "thumbnail" {
+		if photo.ThumbnailKey == "" {
+			writeError(w, stdhttp.StatusNotFound, "media not found")
+			return
+		}
+		key = photo.ThumbnailKey
+	}
+	if variant == "blur" {
+		server.serveBlurredPhotoPreview(w, r, photo)
+		return
+	}
+	server.serveStoredObject(w, r, photo.StoragePolicyID, key, photo.ContentType, photo.SizeBytes, photo.Visibility == gallery.VisibilityPublic)
+}
+
+func (server *Server) serveBlurredPhotoPreview(w stdhttp.ResponseWriter, r *stdhttp.Request, photo gallery.Photo) {
+	key := photo.ThumbnailKey
+	if key == "" {
+		key = photo.ObjectKey
+	}
+	cacheKey := strings.Join([]string{photo.StoragePolicyID, key, photo.ContentHash}, "\x00")
+	if preview, contentType, ok := server.blurCache.Get(cacheKey); ok {
+		writeBlurredPreview(w, preview, contentType)
+		return
+	}
+
+	store, err := server.storageManager.StoreForPolicy(photo.StoragePolicyID)
+	if err != nil {
+		writeError(w, stdhttp.StatusNotFound, "media policy is unavailable")
+		return
+	}
+	object, err := store.Get(r.Context(), key)
+	if err != nil {
+		writeError(w, stdhttp.StatusNotFound, "media not found")
+		return
+	}
+	defer object.Content.Close()
+
+	content, err := io.ReadAll(io.LimitReader(object.Content, 8*1024*1024))
+	if err != nil {
+		writeError(w, stdhttp.StatusInternalServerError, "failed to read media")
+		return
+	}
+	preview, contentType, err := appimage.GenerateBlurredPreviewBytes(content, 360)
+	if err != nil {
+		writeError(w, stdhttp.StatusInternalServerError, "failed to create preview")
+		return
+	}
+	server.blurCache.Set(cacheKey, preview, contentType, 30*time.Minute)
+
+	writeBlurredPreview(w, preview, contentType)
+}
+
+func writeBlurredPreview(w stdhttp.ResponseWriter, preview []byte, contentType string) {
+	w.Header().Set("Content-Type", contentType)
+	w.Header().Set("Content-Length", strconv.Itoa(len(preview)))
+	w.Header().Set("Cache-Control", "private, max-age=300")
+	_, _ = w.Write(preview)
+}
+
+func (server *Server) serveStoredObject(w stdhttp.ResponseWriter, r *stdhttp.Request, policyID string, key string, contentType string, contentLength int64, public bool) {
+	store, err := server.storageManager.StoreForPolicy(policyID)
+	if err != nil {
+		writeError(w, stdhttp.StatusNotFound, "media policy is unavailable")
+		return
+	}
+	object, err := store.Get(r.Context(), key)
+	if err != nil {
+		writeError(w, stdhttp.StatusNotFound, "media not found")
+		return
+	}
+	defer object.Content.Close()
+
+	if contentType == "" {
+		contentType = object.ContentType
+	}
+	if contentLength <= 0 {
+		contentLength = object.ContentLength
+	}
+	if contentType != "" {
+		w.Header().Set("Content-Type", contentType)
+	}
+	if contentLength >= 0 {
+		w.Header().Set("Content-Length", strconv.FormatInt(contentLength, 10))
+	}
+	if public {
+		w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
+	} else {
+		w.Header().Set("Cache-Control", "private, no-store")
+	}
+	_, _ = io.Copy(w, object.Content)
+}
+
+func (server *Server) canServePublicMedia(ctx context.Context, policyID string, key string) (bool, error) {
+	if server.db == nil {
+		return true, nil
+	}
+
+	var exists int
+	err := server.db.QueryRowContext(ctx, `
+		SELECT 1
+		FROM photos
+		INNER JOIN events ON events.id = photos.event_id
+		WHERE photos.storage_policy_id = ?
+			AND (photos.object_key = ? OR photos.thumbnail_key = ?)
+			AND photos.visibility = 'public'
+			AND events.is_public = true
+		LIMIT 1
+	`, policyID, key, key).Scan(&exists)
+	if err == nil {
+		return true, nil
+	}
+	if err != sql.ErrNoRows {
+		return false, err
+	}
+
+	err = server.db.QueryRowContext(ctx, `
+		SELECT 1
+		FROM events
+		WHERE cover_storage_policy_id = ?
+			AND cover_object_key = ?
+			AND is_public = true
+		LIMIT 1
+	`, policyID, key).Scan(&exists)
+	if err == nil {
+		return true, nil
+	}
+	if err != sql.ErrNoRows {
+		return false, err
+	}
+
+	current, err := server.settingsService.Load(ctx)
+	if err != nil {
+		return false, err
+	}
+	if strings.TrimPrefix(current.Site.LogoURL, "/") == strings.TrimPrefix(storage.MediaURL(policyID, key), "/") {
+		return true, nil
+	}
+	if strings.HasSuffix(current.Site.LogoURL, "/"+key) {
+		return true, nil
+	}
+
+	return false, nil
 }
 
 func (server *Server) mountStaticApp(r chi.Router) {

@@ -68,6 +68,22 @@ func (store *COSStore) Put(ctx context.Context, object Object) (StoredObject, er
 	}, nil
 }
 
+func (store *COSStore) Get(ctx context.Context, key string) (ObjectReader, error) {
+	response, err := store.client.Object.Get(ctx, key, nil)
+	if err != nil {
+		if strings.Contains(err.Error(), "404") || strings.Contains(err.Error(), "NoSuchKey") {
+			return ObjectReader{}, fmt.Errorf("object not found")
+		}
+		return ObjectReader{}, fmt.Errorf("cos get %s: %w", key, err)
+	}
+
+	return ObjectReader{
+		Content:       response.Body,
+		ContentType:   response.Header.Get("Content-Type"),
+		ContentLength: response.ContentLength,
+	}, nil
+}
+
 func (store *COSStore) Delete(ctx context.Context, key string) error {
 	_, err := store.client.Object.Delete(ctx, key)
 	if err != nil {

@@ -65,6 +65,34 @@ func (store *S3Store) Put(ctx context.Context, object Object) (StoredObject, err
 	}, nil
 }
 
+func (store *S3Store) Get(ctx context.Context, key string) (ObjectReader, error) {
+	result, err := store.client.GetObject(ctx, &s3.GetObjectInput{
+		Bucket: aws.String(store.bucket),
+		Key:    aws.String(key),
+	})
+	if err != nil {
+		if isS3NotFoundError(err) {
+			return ObjectReader{}, fmt.Errorf("object not found")
+		}
+		return ObjectReader{}, fmt.Errorf("s3 get %s: %w", key, err)
+	}
+
+	contentType := ""
+	if result.ContentType != nil {
+		contentType = *result.ContentType
+	}
+	contentLength := int64(-1)
+	if result.ContentLength != nil {
+		contentLength = *result.ContentLength
+	}
+
+	return ObjectReader{
+		Content:       result.Body,
+		ContentType:   contentType,
+		ContentLength: contentLength,
+	}, nil
+}
+
 func (store *S3Store) Delete(ctx context.Context, key string) error {
 	_, err := store.client.DeleteObject(ctx, &s3.DeleteObjectInput{
 		Bucket: aws.String(store.bucket),

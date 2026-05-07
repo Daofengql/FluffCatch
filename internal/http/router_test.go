@@ -101,6 +101,24 @@ func TestPublicSiteRouteReturnsFallbackSettings(t *testing.T) {
 	}
 }
 
+func TestEventPrivateAccessTokenIsSignedAndScoped(t *testing.T) {
+	server := testServer(t)
+	server.cfg.Auth.SessionSecret = "test-secret"
+
+	token := server.signEventPrivateAccessToken(42)
+	if !server.verifyEventPrivateAccessToken(token, 42) {
+		t.Fatal("expected signed private access token to verify")
+	}
+	if server.verifyEventPrivateAccessToken(token, 43) {
+		t.Fatal("expected private access token to be scoped to one event")
+	}
+
+	tampered := token[:len(token)-1] + "x"
+	if server.verifyEventPrivateAccessToken(tampered, 42) {
+		t.Fatal("expected tampered private access token to be rejected")
+	}
+}
+
 func testServer(t *testing.T) *Server {
 	t.Helper()
 
@@ -116,6 +134,10 @@ func testServer(t *testing.T) *Server {
 		},
 		Auth: config.AuthConfig{
 			AdminUsername: "admin",
+		},
+		Upload: config.UploadConfig{
+			MaxSizeMB:         20,
+			MaxFilesPerUpload: 20,
 		},
 		Frontend: config.FrontendConfig{
 			Mode:       "disabled",

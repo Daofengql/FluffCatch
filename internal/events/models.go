@@ -19,6 +19,7 @@ type Event struct {
 	IsPublic           bool       `json:"isPublic"`
 	SubmissionEnabled  bool       `json:"submissionEnabled"`
 	SubmissionPassword string     `json:"submissionPassword,omitempty"`
+	PrivatePassword    string     `json:"privatePassword,omitempty"`
 	PhotoCount         int64      `json:"photoCount"`
 	CreatedAt          time.Time  `json:"createdAt"`
 	UpdatedAt          time.Time  `json:"updatedAt"`
@@ -41,4 +42,5 @@ type CreateEventRequest struct {
 	IsPublic          bool   `json:"isPublic"`
 	SubmissionEnabled bool   `json:"submissionEnabled"`
 	SubmissionPass    string `json:"submissionPassword"`
+	PrivatePassword   string `json:"privatePassword"`
 }

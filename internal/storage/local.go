@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"net/http"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -48,6 +49,42 @@ func (store *LocalStore) Put(ctx context.Context, object Object) (StoredObject, 
 	return StoredObject{
 		Key: cleanKey,
 		URL: store.PublicURL(cleanKey),
+	}, nil
+}
+
+func (store *LocalStore) Get(ctx context.Context, key string) (ObjectReader, error) {
+	_ = ctx
+
+	cleanKey, err := cleanObjectKey(key)
+	if err != nil {
+		return ObjectReader{}, err
+	}
+
+	file, err := os.Open(filepath.Join(store.root, filepath.FromSlash(cleanKey)))
+	if err != nil {
+		if os.IsNotExist(err) {
+			return ObjectReader{}, fmt.Errorf("object not found")
+		}
+		return ObjectReader{}, fmt.Errorf("open object: %w", err)
+	}
+
+	info, err := file.Stat()
+	if err != nil {
+		_ = file.Close()
+		return ObjectReader{}, fmt.Errorf("stat object: %w", err)
+	}
+
+	head := make([]byte, 512)
+	n, _ := file.Read(head)
+	if _, err := file.Seek(0, io.SeekStart); err != nil {
+		_ = file.Close()
+		return ObjectReader{}, fmt.Errorf("seek object: %w", err)
+	}
+
+	return ObjectReader{
+		Content:       file,
+		ContentType:   http.DetectContentType(head[:n]),
+		ContentLength: info.Size(),
 	}, nil
 }
 

@@ -22,8 +22,15 @@ type StoredObject struct {
 	PolicyID string `json:"policyId"`
 }
 
+type ObjectReader struct {
+	Content       io.ReadCloser
+	ContentType   string
+	ContentLength int64
+}
+
 type Store interface {
 	Put(ctx context.Context, object Object) (StoredObject, error)
+	Get(ctx context.Context, key string) (ObjectReader, error)
 	Delete(ctx context.Context, key string) error
 	PublicURL(key string) string
 }
@@ -68,6 +75,10 @@ func (store PolicyStore) Put(ctx context.Context, object Object) (StoredObject, 
 
 func (store PolicyStore) Delete(ctx context.Context, key string) error {
 	return store.store.Delete(ctx, key)
+}
+
+func (store PolicyStore) Get(ctx context.Context, key string) (ObjectReader, error) {
+	return store.store.Get(ctx, key)
 }
 
 func (store PolicyStore) PublicURL(key string) string {

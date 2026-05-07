@@ -58,6 +58,32 @@ func TestUpdateSiteAllowsEmptyHomeMarkdown(t *testing.T) {
 	}
 }
 
+func TestUpdateUploadNormalizesLimits(t *testing.T) {
+	service := NewService(NewStore(nil, RuntimeSettings{}))
+
+	upload, err := service.UpdateUpload(context.Background(), UploadSettings{})
+	if err != nil {
+		t.Fatalf("UpdateUpload() returned error: %v", err)
+	}
+	if upload.MaxFileSizeMB != 20 {
+		t.Fatalf("expected default max file size 20, got %d", upload.MaxFileSizeMB)
+	}
+	if upload.MaxFilesPerUpload != 20 {
+		t.Fatalf("expected default max files 20, got %d", upload.MaxFilesPerUpload)
+	}
+
+	upload, err = service.UpdateUpload(context.Background(), UploadSettings{MaxFileSizeMB: 2048, MaxFilesPerUpload: 500})
+	if err != nil {
+		t.Fatalf("UpdateUpload() returned error for high limits: %v", err)
+	}
+	if upload.MaxFileSizeMB != 1024 {
+		t.Fatalf("expected capped max file size 1024, got %d", upload.MaxFileSizeMB)
+	}
+	if upload.MaxFilesPerUpload != 200 {
+		t.Fatalf("expected capped max files 200, got %d", upload.MaxFilesPerUpload)
+	}
+}
+
 func TestUpdateStoragePoliciesPreventsDeletingUsedPolicy(t *testing.T) {
 	service := NewServiceWithReferences(
 		NewStore(nil, RuntimeSettings{

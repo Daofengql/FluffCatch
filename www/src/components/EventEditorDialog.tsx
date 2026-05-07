@@ -130,7 +130,8 @@ export function EventEditorDialog({ event, mode, onClose, onSaved, open }: Event
         endTime: String(formData.get('endTime') || ''),
         isPublic: formData.get('isPublic') === 'on',
         submissionEnabled: formData.get('submissionEnabled') === 'on',
-        submissionPassword: String(formData.get('submissionPassword') || '')
+        submissionPassword: String(formData.get('submissionPassword') || ''),
+        privatePassword: String(formData.get('privatePassword') || '')
       });
 
       if (selectedCoverFile && selectedCoverFile.size > 0) {
@@ -239,6 +240,7 @@ export function EventEditorDialog({ event, mode, onClose, onSaved, open }: Event
                 </Grid>
               </Grid>
               <TextField fullWidth helperText={mode === 'edit' ? '留空则不修改当前投稿口令' : '可留空，留空表示不需要口令'} label="投稿口令" name="submissionPassword" />
+              <TextField fullWidth helperText={mode === 'edit' ? '留空则不修改当前私密口令' : '用于解锁这个兽聚中的私密图片'} label="私密图片访问口令" name="privatePassword" />
 
               <Grid container spacing={2}>
                 <Grid size={{ xs: 12, sm: 6 }}>

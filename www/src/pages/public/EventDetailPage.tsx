@@ -11,6 +11,10 @@ import {
   Chip,
   CircularProgress,
   Collapse,
+  Dialog,
+  DialogActions,
+  DialogContent,
+  DialogTitle,
   FormControl,
   Grid,
   InputLabel,
@@ -25,7 +29,7 @@ import type { SelectChangeEvent } from '@mui/material/Select';
 import { useEffect, useMemo, useState } from 'react';
 import { useParams } from 'react-router-dom';
 import { QRCodeSVG } from 'qrcode.react';
-import { batchDeletePhotos, deletePhoto, getEvent, getPhotos, likePhoto, updatePhoto, type EventCard, type Photo } from '../../api/client';
+import { batchDeletePhotos, deletePhoto, getEvent, getPhotos, likePhoto, unlockEventPrivatePhotos, updatePhoto, type EventCard, type Photo } from '../../api/client';
 import { getCachedMe, refreshMe, subscribeAuthState } from '../../api/authState';
 import { BatchDownloadDialog } from '../../components/BatchDownloadDialog';
 import { ConfirmDialog } from '../../components/ConfirmDialog';
@@ -53,25 +57,53 @@ export function EventDetailPage() {
   const [manageMode, setManageMode] = useState(false);
   const [selectedIds, setSelectedIds] = useState<number[]>([]);
   const [editingPhoto, setEditingPhoto] = useState<Photo | null>(null);
-  const [photoForm, setPhotoForm] = useState({ accessPassword: '', photographerName: '', tags: '', visibility: 'public' as Photo['visibility'] });
+  const [photoForm, setPhotoForm] = useState({ photographerName: '', tags: '', visibility: 'public' as Photo['visibility'] });
   const [copyMessage, setCopyMessage] = useState('');
   const [deleteConfirm, setDeleteConfirm] = useState<{ type: 'batch' } | { type: 'single'; photo: Photo } | null>(null);
   const [downloadId, setDownloadId] = useState<number | null>(null);
   const [batchDownloadOpen, setBatchDownloadOpen] = useState(false);
+  const [privateAccessPassword, setPrivateAccessPassword] = useState('');
+  const [privateAccessUnlocked, setPrivateAccessUnlocked] = useState(() => (
+    typeof window !== 'undefined' && Number.isFinite(eventId)
+      ? window.sessionStorage.getItem(privateAccessCacheKey(eventId)) === '1'
+      : false
+  ));
+  const [passwordDialogOpen, setPasswordDialogOpen] = useState(false);
+  const [passwordError, setPasswordError] = useState('');
+  const [unlockingPassword, setUnlockingPassword] = useState(false);
+  const [pendingProtectedPhoto, setPendingProtectedPhoto] = useState<Photo | null>(null);
 
   function load() {
     setLoading(true);
     setError('');
-    Promise.all([getEvent(eventId), getPhotos(eventId)])
+    return Promise.all([getEvent(eventId), getPhotos(eventId, authenticated, 1, 24)])
       .then(([eventData, photoData]) => {
         setEvent(eventData);
         setPhotos(photoData.photos);
+        return photoData.photos;
       })
-      .catch((err: unknown) => setError(err instanceof Error ? err.message : '加载失败'))
+      .catch((err: unknown) => {
+        setError(err instanceof Error ? err.message : '加载失败');
+        return [];
+      })
       .finally(() => setLoading(false));
   }
 
-  useEffect(load, [eventId]);
+  useEffect(() => {
+    void load();
+  }, [eventId, authenticated]);
+
+  useEffect(() => {
+    if (typeof window === 'undefined' || !eventId) return;
+    setPrivateAccessUnlocked(window.sessionStorage.getItem(privateAccessCacheKey(eventId)) === '1');
+  }, [eventId]);
+
+  function photoURL(photo: Photo, variant: 'original' | 'thumbnail' = 'original') {
+    return variant === 'thumbnail' ? photo.thumbnailUrl || photo.url : photo.url;
+  }
+
+  const publicPhotos = useMemo(() => photos.filter((photo) => photo.visibility === 'public'), [photos]);
+  const restrictedPhotos = useMemo(() => photos.filter((photo) => photo.visibility !== 'public'), [photos]);
 
   useEffect(() => {
     const unsubscribe = subscribeAuthState((payload) => setAuthenticated(payload.authenticated));
@@ -82,7 +114,7 @@ export function EventDetailPage() {
   const previewItems = useMemo(
     () =>
       photos.map((photo) => ({
-        src: photo.url,
+        src: photoURL(photo),
         subtitle: [
           photo.photographerName ? `摄影师：${photo.photographerName}` : '匿名投稿',
           `${formatContentType(photo.contentType)} · ${formatBytes(photo.sizeBytes)}`,
@@ -103,6 +135,44 @@ export function EventDetailPage() {
       setLikeError(err instanceof Error ? err.message : '点赞失败');
       setPhotos((prev) => prev.map((item) => (item.id === photo.id ? photo : item)));
     }
+  }
+
+  async function unlockProtectedPhoto() {
+    if (!pendingProtectedPhoto || !privateAccessPassword.trim()) return;
+    setPasswordError('');
+    setUnlockingPassword(true);
+    const targetID = pendingProtectedPhoto.id;
+    try {
+      await unlockEventPrivatePhotos(eventId, privateAccessPassword.trim());
+      if (typeof window !== 'undefined') {
+        window.sessionStorage.setItem(privateAccessCacheKey(eventId), '1');
+      }
+      setPrivateAccessUnlocked(true);
+      setPrivateAccessPassword('');
+      const nextPhotos = await load();
+      const nextIndex = nextPhotos.findIndex((photo) => photo.id === targetID && photo.accessGranted);
+      if (nextIndex < 0) {
+        setPasswordError('已验证口令，但图片仍未解锁，请刷新后重试。');
+        return;
+      }
+      setPasswordDialogOpen(false);
+      setPendingProtectedPhoto(null);
+      setPreviewIndex(nextIndex);
+    } catch {
+      setPasswordError('访问口令不正确，请检查后重试。');
+    } finally {
+      setUnlockingPassword(false);
+    }
+  }
+
+  function openPhoto(photo: Photo, index: number) {
+    if (photo.visibility === 'private' && !authenticated && !photo.accessGranted) {
+      setPendingProtectedPhoto(photo);
+      setPasswordError('');
+      setPasswordDialogOpen(true);
+      return;
+    }
+    setPreviewIndex(index);
   }
 
   const shareUrl = useMemo(() => {
@@ -138,7 +208,7 @@ export function EventDetailPage() {
   async function handleSingleDownload(photo: Photo) {
     setDownloadId(photo.id);
     try {
-      await downloadPhoto(photo.url, downloadFilename(event?.title ?? 'fluffcatch', photo));
+      await downloadPhoto(photoURL(photo), downloadFilename(event?.title ?? 'fluffcatch', photo));
     } catch (err) {
       setError(err instanceof Error ? err.message : '下载失败');
     } finally {
@@ -156,7 +226,7 @@ export function EventDetailPage() {
     return selectedIds
       .map((id) => photos.find((p) => p.id === id))
       .filter((p): p is Photo => !!p)
-      .map((p) => ({ url: p.url, filename: downloadFilename(event.title, p) }));
+      .map((p) => ({ url: photoURL(p), filename: downloadFilename(event.title, p) }));
   }, [event, photos, selectedIds]);
 
   async function handleBatchDelete() {
@@ -198,7 +268,6 @@ export function EventDetailPage() {
   function startEditPhoto(photo: Photo) {
     setEditingPhoto(photo);
     setPhotoForm({
-      accessPassword: '',
       photographerName: photo.photographerName || '',
       tags: (photo.tags ?? []).map((tag) => tag.name).join(' '),
       visibility: photo.visibility
@@ -211,7 +280,6 @@ export function EventDetailPage() {
     setError('');
     try {
       await updatePhoto(editingPhoto.id, {
-        accessPassword: photoForm.accessPassword,
         photographerName: photoForm.photographerName,
         tags: photoForm.tags.split(/[\s,，]+/).filter(Boolean),
         visibility: photoForm.visibility
@@ -222,6 +290,109 @@ export function EventDetailPage() {
     } catch (err) {
       setError(err instanceof Error ? err.message : '保存图片属性失败');
     }
+  }
+
+  function renderPhotoCard(photo: Photo, index: number, restricted: boolean) {
+    const locked = restricted && photo.visibility === 'private' && !authenticated && !photo.accessGranted;
+    return (
+      <Grid key={photo.id} size={{ xs: 12, sm: 6, md: 4, lg: 3 }}>
+        <Card sx={{ borderRadius: 3, height: '100%', overflow: 'hidden', position: 'relative', border: manageMode && selectedIds.includes(photo.id) ? '2px solid' : undefined, borderColor: manageMode && selectedIds.includes(photo.id) ? 'primary.main' : undefined }}>
+          {manageMode && authenticated && (
+            <Checkbox
+              checked={selectedIds.includes(photo.id)}
+              onChange={() => togglePhotoSelection(photo.id)}
+              sx={{
+                bgcolor: 'rgba(255,255,255,0.9)',
+                borderRadius: 1,
+                left: 8,
+                position: 'absolute',
+                top: 8,
+                zIndex: 2,
+                '&:hover': { bgcolor: 'rgba(255,255,255,1)' }
+              }}
+            />
+          )}
+          <CardActionArea onClick={() => manageMode && authenticated ? togglePhotoSelection(photo.id) : openPhoto(photo, index)} sx={{ display: 'block' }}>
+            <Box sx={{ position: 'relative' }}>
+              <CardMedia
+                component="img"
+                image={photoURL(photo, 'thumbnail')}
+                sx={{
+                  aspectRatio: '4 / 3',
+                  bgcolor: 'grey.100',
+                  cursor: manageMode ? 'pointer' : locked ? 'pointer' : 'zoom-in',
+                  filter: locked ? 'blur(12px) saturate(0.9)' : undefined,
+                  objectFit: 'cover',
+                  transform: locked ? 'scale(1.06)' : undefined
+                }}
+              />
+              {restricted && (
+                <Box sx={{ bgcolor: 'rgba(15,23,42,0.55)', bottom: 0, color: 'white', left: 0, px: 1.25, py: 0.75, position: 'absolute', right: 0 }}>
+                  <Typography sx={{ fontWeight: 800 }} variant="body2">
+                    {!authenticated && photo.accessGranted ? '已解锁' : '私密图片'}
+                  </Typography>
+                </Box>
+              )}
+            </Box>
+          </CardActionArea>
+          <CardContent sx={{ p: 1.75 }}>
+            <Stack sx={{ gap: 1.25 }}>
+              <Stack direction="row" sx={{ alignItems: 'center', gap: 1, minWidth: 0 }}>
+                <CameraAlt color="primary" fontSize="small" />
+                <Typography noWrap sx={{ flex: 1, fontWeight: 700 }}>
+                  {photo.photographerName || '匿名投稿'}
+                </Typography>
+                {!manageMode && photo.visibility === 'public' && (
+                  <Button
+                    color={photo.liked ? 'error' : 'inherit'}
+                    onClick={() => void handleLike(photo)}
+                    size="small"
+                    startIcon={photo.liked ? <Favorite /> : <FavoriteBorder />}
+                    sx={{ minWidth: 0 }}
+                  >
+                    {photo.likeCount || 0}
+                  </Button>
+                )}
+              </Stack>
+              {!manageMode && !locked && (
+                <Button
+                  disabled={downloadId === photo.id}
+                  onClick={(clickEvent) => { clickEvent.stopPropagation(); void handleSingleDownload(photo); }}
+                  size="small"
+                  startIcon={downloadId === photo.id ? <CircularProgress size={16} /> : <CloudDownload />}
+                  variant="outlined"
+                >
+                  下载原图
+                </Button>
+              )}
+              {locked && (
+                <Button onClick={() => openPhoto(photo, index)} size="small" variant="outlined">
+                  输入密码查看
+                </Button>
+              )}
+              {manageMode && authenticated && (
+                <Stack direction="row" sx={{ gap: 1 }}>
+                  <Button onClick={() => startEditPhoto(photo)} size="small" startIcon={<Edit />}>属性</Button>
+                  <Button color="error" onClick={() => requestDeletePhoto(photo)} size="small" startIcon={<Delete />}>删除</Button>
+                </Stack>
+              )}
+              <Stack sx={{ color: 'text.secondary', gap: 0.75 }}>
+                <PhotoMeta icon={<Storage fontSize="inherit" />} text={`${formatContentType(photo.contentType)} · ${formatBytes(photo.sizeBytes)}`} />
+                <PhotoMeta icon={<CalendarMonth fontSize="inherit" />} text={formatPhotoTime(photo.takenAt || photo.createdAt)} />
+              </Stack>
+              {!!(photo.tags ?? []).length && (
+                <Stack direction="row" sx={{ flexWrap: 'wrap', gap: 0.75 }}>
+                  {(photo.tags ?? []).slice(0, 3).map((tag) => (
+                    <Chip icon={<LocalOffer />} key={tag.id} label={tag.name} size="small" sx={{ maxWidth: '100%' }} />
+                  ))}
+                  {(photo.tags ?? []).length > 3 && <Chip label={`+${photo.tags.length - 3}`} size="small" />}
+                </Stack>
+              )}
+            </Stack>
+          </CardContent>
+        </Card>
+      </Grid>
+    );
   }
 
   if (loading) {
@@ -396,91 +567,23 @@ export function EventDetailPage() {
         </Stack>
       )}
 
-      <Grid container spacing={2}>
-        {photos.map((photo, index) => (
-          <Grid key={photo.id} size={{ xs: 12, sm: 6, md: 4, lg: 3 }}>
-            <Card sx={{ borderRadius: 3, height: '100%', overflow: 'hidden', position: 'relative', border: manageMode && selectedIds.includes(photo.id) ? '2px solid' : undefined, borderColor: manageMode && selectedIds.includes(photo.id) ? 'primary.main' : undefined }}>
-              {manageMode && authenticated && (
-                <Checkbox
-                  checked={selectedIds.includes(photo.id)}
-                  onChange={() => togglePhotoSelection(photo.id)}
-                  sx={{
-                    bgcolor: 'rgba(255,255,255,0.9)',
-                    borderRadius: 1,
-                    left: 8,
-                    position: 'absolute',
-                    top: 8,
-                    zIndex: 2,
-                    '&:hover': { bgcolor: 'rgba(255,255,255,1)' }
-                  }}
-                />
-              )}
-              <CardActionArea onClick={() => manageMode && authenticated ? togglePhotoSelection(photo.id) : setPreviewIndex(index)} sx={{ display: 'block' }}>
-                <CardMedia
-                  component="img"
-                  image={photo.thumbnailUrl || photo.url}
-                  sx={{ aspectRatio: '4 / 3', bgcolor: 'grey.100', cursor: manageMode ? 'pointer' : 'zoom-in', objectFit: 'cover' }}
-                />
-              </CardActionArea>
-              <CardContent sx={{ p: 1.75 }}>
-                <Stack sx={{ gap: 1.25 }}>
-                  <Stack direction="row" sx={{ alignItems: 'center', gap: 1, minWidth: 0 }}>
-                    <CameraAlt color="primary" fontSize="small" />
-                    <Typography noWrap sx={{ flex: 1, fontWeight: 700 }}>
-                      {photo.photographerName || '匿名投稿'}
-                    </Typography>
-                    {!manageMode && (
-                      <Button
-                        color={photo.liked ? 'error' : 'inherit'}
-                        onClick={() => void handleLike(photo)}
-                        size="small"
-                        startIcon={photo.liked ? <Favorite /> : <FavoriteBorder />}
-                        sx={{ minWidth: 0 }}
-                      >
-                        {photo.likeCount || 0}
-                      </Button>
-                    )}
-                  </Stack>
-                  {!manageMode && (
-                    <Button
-                      disabled={downloadId === photo.id}
-                      onClick={(clickEvent) => { clickEvent.stopPropagation(); void handleSingleDownload(photo); }}
-                      size="small"
-                      startIcon={downloadId === photo.id ? <CircularProgress size={16} /> : <CloudDownload />}
-                      variant="outlined"
-                    >
-                      下载原图
-                    </Button>
-                  )}
-                  {manageMode && authenticated && (
-                    <Stack direction="row" sx={{ gap: 1 }}>
-                      <Button onClick={() => startEditPhoto(photo)} size="small" startIcon={<Edit />}>属性</Button>
-                      <Button color="error" onClick={() => requestDeletePhoto(photo)} size="small" startIcon={<Delete />}>删除</Button>
-                    </Stack>
-                  )}
-                  <Stack sx={{ color: 'text.secondary', gap: 0.75 }}>
-                    <PhotoMeta icon={<Storage fontSize="inherit" />} text={`${formatContentType(photo.contentType)} · ${formatBytes(photo.sizeBytes)}`} />
-                    <PhotoMeta icon={<CalendarMonth fontSize="inherit" />} text={formatPhotoTime(photo.takenAt || photo.createdAt)} />
-                  </Stack>
-                  {!!(photo.tags ?? []).length && (
-                    <Stack direction="row" sx={{ flexWrap: 'wrap', gap: 0.75 }}>
-                      {(photo.tags ?? []).slice(0, 3).map((tag) => (
-                        <Chip icon={<LocalOffer />} key={tag.id} label={tag.name} size="small" sx={{ maxWidth: '100%' }} />
-                      ))}
-                      {(photo.tags ?? []).length > 3 && <Chip label={`+${photo.tags.length - 3}`} size="small" />}
-                    </Stack>
-                  )}
-                </Stack>
-              </CardContent>
-            </Card>
+      <PhotoSection title="公开返图" subtitle={`${publicPhotos.length} 张公开图片`}>
+        {publicPhotos.length ? (
+          <Grid container spacing={2}>
+            {publicPhotos.map((photo) => renderPhotoCard(photo, photos.findIndex((item) => item.id === photo.id), false))}
           </Grid>
-        ))}
-        {!photos.length && (
-          <Grid size={{ xs: 12 }}>
-            <Alert severity="info">这里暂时还没有公开图片。</Alert>
-          </Grid>
+        ) : (
+          <Alert severity="info">这里暂时还没有公开图片。</Alert>
         )}
-      </Grid>
+      </PhotoSection>
+
+      {!!restrictedPhotos.length && (
+        <PhotoSection title="非公开返图" subtitle={authenticated ? '管理员可直接查看私密图片' : privateAccessUnlocked ? '私密图片已在当前浏览器会话中解锁' : '私密图片会显示模糊预览，输入这个兽聚的私密口令后可查看'}>
+          <Grid container spacing={2}>
+            {restrictedPhotos.map((photo) => renderPhotoCard(photo, photos.findIndex((item) => item.id === photo.id), true))}
+          </Grid>
+        </PhotoSection>
+      )}
       <ImagePreviewDialog
         images={previewItems}
         index={previewIndex < 0 ? 0 : previewIndex}
@@ -492,48 +595,71 @@ export function EventDetailPage() {
       <SubmissionReviewDialog event={event} onChanged={load} onClose={() => setReviewOpen(false)} open={reviewOpen} />
       <EventEditorDialog event={event} mode="edit" onClose={() => setEditorOpen(false)} onSaved={handleEventSaved} open={editorOpen} />
 
-      <Paper component="form" onSubmit={handlePhotoFormSubmit} sx={{ display: editingPhoto ? 'block' : 'none', p: 3 }}>
-        <Typography sx={{ fontWeight: 800, mb: 2 }} variant="h6">图片属性 #{editingPhoto?.id}</Typography>
-        <Stack sx={{ gap: 2 }}>
-          <TextField
-            fullWidth
-            label="摄影师署名"
-            onChange={(e) => setPhotoForm((prev) => ({ ...prev, photographerName: e.target.value }))}
-            value={photoForm.photographerName}
-          />
-          <FormControl fullWidth>
-            <InputLabel>可见性</InputLabel>
-            <Select
-              label="可见性"
-              onChange={(e: SelectChangeEvent) => setPhotoForm((prev) => ({ ...prev, visibility: e.target.value as Photo['visibility'] }))}
-              value={photoForm.visibility}
-            >
-              <MenuItem value="public">公开</MenuItem>
-              <MenuItem value="protected">密码访问</MenuItem>
-              <MenuItem value="private">仅管理员</MenuItem>
-            </Select>
-          </FormControl>
-          <TextField
-            fullWidth
-            helperText="留空则不修改访问密码"
-            label="访问密码"
-            onChange={(e) => setPhotoForm((prev) => ({ ...prev, accessPassword: e.target.value }))}
-            type="password"
-            value={photoForm.accessPassword}
-          />
-          <TextField
-            fullWidth
-            helperText="空格或逗号分隔，例如 #合照 #舞台"
-            label="标签"
-            onChange={(e) => setPhotoForm((prev) => ({ ...prev, tags: e.target.value }))}
-            value={photoForm.tags}
-          />
-          <Stack direction="row" sx={{ gap: 1, justifyContent: 'flex-end' }}>
-            <Button onClick={() => setEditingPhoto(null)}>取消</Button>
-            <Button type="submit" variant="contained">保存</Button>
+      <Dialog fullWidth maxWidth="xs" onClose={() => setPasswordDialogOpen(false)} open={passwordDialogOpen}>
+        <DialogTitle>输入访问口令</DialogTitle>
+        <DialogContent>
+          <Stack component="form" id="gallery-password-form" onSubmit={(submitEvent) => { submitEvent.preventDefault(); void unlockProtectedPhoto(); }} sx={{ gap: 2, pt: 1 }}>
+            <Typography color="text.secondary" variant="body2">
+              这个兽聚的私密图片需要访问口令。验证通过后，本次浏览器会话内会保持解锁。
+            </Typography>
+            <TextField
+              autoFocus
+              error={Boolean(passwordError)}
+              fullWidth
+              helperText={passwordError || ''}
+              label="访问口令"
+              onChange={(inputEvent) => {
+                setPrivateAccessPassword(inputEvent.target.value);
+                setPasswordError('');
+              }}
+              type="password"
+              value={privateAccessPassword}
+            />
           </Stack>
-        </Stack>
-      </Paper>
+        </DialogContent>
+        <DialogActions>
+          <Button disabled={unlockingPassword} onClick={() => setPasswordDialogOpen(false)}>取消</Button>
+          <Button disabled={!privateAccessPassword.trim() || unlockingPassword} form="gallery-password-form" type="submit" variant="contained">
+            {unlockingPassword ? '验证中...' : '解锁查看'}
+          </Button>
+        </DialogActions>
+      </Dialog>
+
+      <Dialog fullWidth maxWidth="sm" onClose={() => setEditingPhoto(null)} open={Boolean(editingPhoto)}>
+        <DialogTitle>图片属性 #{editingPhoto?.id}</DialogTitle>
+        <DialogContent dividers>
+          <Stack component="form" id="photo-property-form" onSubmit={handlePhotoFormSubmit} sx={{ gap: 2, pt: 1 }}>
+            <TextField
+              fullWidth
+              label="摄影师署名"
+              onChange={(e) => setPhotoForm((prev) => ({ ...prev, photographerName: e.target.value }))}
+              value={photoForm.photographerName}
+            />
+            <FormControl fullWidth>
+              <InputLabel>可见性</InputLabel>
+              <Select
+                label="可见性"
+                onChange={(e: SelectChangeEvent) => setPhotoForm((prev) => ({ ...prev, visibility: e.target.value as Photo['visibility'] }))}
+                value={photoForm.visibility}
+              >
+                <MenuItem value="public">公开</MenuItem>
+                <MenuItem value="private">私密</MenuItem>
+              </Select>
+            </FormControl>
+            <TextField
+              fullWidth
+              helperText="空格或逗号分隔，例如 #合照 #舞台"
+              label="标签"
+              onChange={(e) => setPhotoForm((prev) => ({ ...prev, tags: e.target.value }))}
+              value={photoForm.tags}
+            />
+          </Stack>
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setEditingPhoto(null)}>取消</Button>
+          <Button form="photo-property-form" type="submit" variant="contained">保存</Button>
+        </DialogActions>
+      </Dialog>
 
       <BatchDownloadDialog
         items={batchDownloadItems}
@@ -567,6 +693,20 @@ function PhotoMeta({ icon, text }: { icon: React.ReactNode; text: string }) {
         {text}
       </Typography>
     </Stack>
+  );
+}
+
+function PhotoSection({ children, subtitle, title }: { children: React.ReactNode; subtitle: string; title: string }) {
+  return (
+    <Paper sx={{ borderRadius: 3, p: { xs: 2, sm: 2.5 } }} variant="outlined">
+      <Stack sx={{ gap: 2 }}>
+        <Box>
+          <Typography sx={{ fontWeight: 900 }} variant="h6">{title}</Typography>
+          <Typography color="text.secondary" variant="body2">{subtitle}</Typography>
+        </Box>
+        {children}
+      </Stack>
+    </Paper>
   );
 }
 
@@ -626,6 +766,10 @@ function extensionFromURL(url: string) {
   } catch {
     return '';
   }
+}
+
+function privateAccessCacheKey(eventID: number) {
+  return `fluffcatch:private-access:${eventID}`;
 }
 
 function formatDateRange(start?: string, end?: string) {

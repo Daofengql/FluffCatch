@@ -3,6 +3,7 @@ package storage
 import (
 	"context"
 	"fmt"
+	"strconv"
 	"strings"
 
 	oss "github.com/aliyun/aliyun-oss-go-sdk/oss"
@@ -49,6 +50,32 @@ func (store *OSSStore) Put(ctx context.Context, object Object) (StoredObject, er
 	return StoredObject{
 		Key: object.Key,
 		URL: store.PublicURL(object.Key),
+	}, nil
+}
+
+func (store *OSSStore) Get(_ context.Context, key string) (ObjectReader, error) {
+	body, err := store.bucket.GetObject(key)
+	if err != nil {
+		if strings.Contains(err.Error(), "NoSuchKey") || strings.Contains(err.Error(), "404") {
+			return ObjectReader{}, fmt.Errorf("object not found")
+		}
+		return ObjectReader{}, fmt.Errorf("oss get %s: %w", key, err)
+	}
+
+	meta, err := store.bucket.GetObjectDetailedMeta(key)
+	if err != nil {
+		return ObjectReader{Content: body, ContentLength: -1}, nil
+	}
+
+	contentLength := int64(-1)
+	if parsed, err := strconv.ParseInt(meta.Get("Content-Length"), 10, 64); err == nil {
+		contentLength = parsed
+	}
+
+	return ObjectReader{
+		Content:       body,
+		ContentType:   meta.Get("Content-Type"),
+		ContentLength: contentLength,
 	}, nil
 }
 

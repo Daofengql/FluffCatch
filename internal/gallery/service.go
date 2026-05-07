@@ -36,6 +36,18 @@ func (service *Service) ListForEventPage(ctx context.Context, eventID int64, adm
 }
 
 func (service *Service) ListForEventPageWithFingerprint(ctx context.Context, eventID int64, admin bool, password string, fingerprintHash string, page int, pageSize int) (Page, error) {
+	privateAccess := false
+	if password != "" {
+		ok, err := service.verifyEventPrivatePassword(ctx, eventID, password)
+		if err != nil {
+			return Page{}, err
+		}
+		privateAccess = ok
+	}
+	return service.ListForEventPageWithAccess(ctx, eventID, admin, privateAccess, fingerprintHash, page, pageSize)
+}
+
+func (service *Service) ListForEventPageWithAccess(ctx context.Context, eventID int64, admin bool, privateAccess bool, fingerprintHash string, page int, pageSize int) (Page, error) {
 	if service.db == nil {
 		return Page{Items: []Photo{}, Page: 1, PageSize: pageSize}, nil
 	}
@@ -48,11 +60,20 @@ func (service *Service) ListForEventPageWithFingerprint(ctx context.Context, eve
 	if pageSize > 100 {
 		pageSize = 100
 	}
+	if !admin {
+		public, err := service.eventIsPublic(ctx, eventID)
+		if err != nil {
+			return Page{}, err
+		}
+		if !public {
+			return Page{Items: []Photo{}, Page: page, PageSize: pageSize}, nil
+		}
+	}
 
 	where := "WHERE event_id = ?"
 	args := []any{eventID}
 	if !admin {
-		where += " AND visibility = 'public'"
+		where += " AND visibility IN ('public', 'private')"
 	}
 
 	var total int64
@@ -83,6 +104,13 @@ func (service *Service) ListForEventPageWithFingerprint(ctx context.Context, eve
 		if err != nil {
 			return Page{}, err
 		}
+		if !admin && photo.Visibility == VisibilityPrivate && privateAccess {
+			photo.AccessGranted = true
+		}
+		if admin || photo.Visibility == VisibilityPublic {
+			photo.AccessGranted = true
+		}
+		service.applyPhotoURLs(&photo)
 		photos = append(photos, photo)
 	}
 	if err := rows.Err(); err != nil {
@@ -108,18 +136,9 @@ func (service *Service) UpdatePhoto(ctx context.Context, photoID int64, req Upda
 		req.Visibility = VisibilityPublic
 	}
 	switch req.Visibility {
-	case VisibilityPublic, VisibilityProtected, VisibilityPrivate:
+	case VisibilityPublic, VisibilityPrivate:
 	default:
 		return Photo{}, fmt.Errorf("unsupported visibility %q", req.Visibility)
-	}
-
-	var passwordHash string
-	var err error
-	if req.AccessPassword != "" {
-		passwordHash, err = auth.HashPassword(req.AccessPassword)
-		if err != nil {
-			return Photo{}, err
-		}
 	}
 
 	tx, err := service.db.BeginTx(ctx, nil)
@@ -128,11 +147,7 @@ func (service *Service) UpdatePhoto(ctx context.Context, photoID int64, req Upda
 	}
 	defer tx.Rollback()
 
-	if req.AccessPassword == "" {
-		_, err = tx.ExecContext(ctx, "UPDATE photos SET visibility = ?, photographer_name = NULLIF(?, '') WHERE id = ?", req.Visibility, strings.TrimSpace(req.PhotographerName), photoID)
-	} else {
-		_, err = tx.ExecContext(ctx, "UPDATE photos SET visibility = ?, photographer_name = NULLIF(?, ''), access_password_hash = ? WHERE id = ?", req.Visibility, strings.TrimSpace(req.PhotographerName), passwordHash, photoID)
-	}
+	_, err = tx.ExecContext(ctx, "UPDATE photos SET visibility = ?, photographer_name = NULLIF(?, '') WHERE id = ?", req.Visibility, strings.TrimSpace(req.PhotographerName), photoID)
 	if err != nil {
 		return Photo{}, fmt.Errorf("update photo: %w", err)
 	}
@@ -275,6 +290,94 @@ func (service *Service) Like(ctx context.Context, photoID int64, fingerprintHash
 	}, nil
 }
 
+func (service *Service) CanAccessPhoto(ctx context.Context, photoID int64, admin bool, password string) (Photo, bool, error) {
+	privateAccess := false
+	if password != "" {
+		photo, found, err := service.Get(ctx, photoID)
+		if err != nil || !found {
+			return Photo{}, false, err
+		}
+		ok, err := service.verifyEventPrivatePassword(ctx, photo.EventID, password)
+		if err != nil {
+			return Photo{}, false, err
+		}
+		privateAccess = ok
+	}
+	return service.CanAccessPhotoWithAccess(ctx, photoID, admin, privateAccess)
+}
+
+func (service *Service) CanAccessPhotoWithAccess(ctx context.Context, photoID int64, admin bool, privateAccess bool) (Photo, bool, error) {
+	photo, found, err := service.Get(ctx, photoID)
+	if err != nil || !found {
+		return Photo{}, false, err
+	}
+	if admin {
+		photo.AccessGranted = true
+		service.applyPhotoURLs(&photo)
+		return photo, true, nil
+	}
+	public, err := service.eventIsPublic(ctx, photo.EventID)
+	if err != nil {
+		return Photo{}, false, err
+	}
+	if !public {
+		return photo, false, nil
+	}
+	switch photo.Visibility {
+	case VisibilityPublic:
+		photo.AccessGranted = true
+		service.applyPhotoURLs(&photo)
+		return photo, true, nil
+	case VisibilityPrivate:
+		photo.AccessGranted = privateAccess
+		service.applyPhotoURLs(&photo)
+		return photo, privateAccess, nil
+	default:
+		return photo, false, nil
+	}
+}
+
+func (service *Service) VerifyEventPrivatePassword(ctx context.Context, eventID int64, password string) (bool, error) {
+	return service.verifyEventPrivatePassword(ctx, eventID, password)
+}
+
+func (service *Service) eventIsPublic(ctx context.Context, eventID int64) (bool, error) {
+	var public bool
+	err := service.db.QueryRowContext(ctx, "SELECT is_public FROM events WHERE id = ? LIMIT 1", eventID).Scan(&public)
+	if err == sql.ErrNoRows {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("load event visibility: %w", err)
+	}
+	return public, nil
+}
+
+func (service *Service) verifyEventPrivatePassword(ctx context.Context, eventID int64, password string) (bool, error) {
+	password = strings.TrimSpace(password)
+	if password == "" {
+		return false, nil
+	}
+
+	var passwordHash sql.NullString
+	err := service.db.QueryRowContext(ctx, "SELECT private_password_hash FROM events WHERE id = ? LIMIT 1", eventID).Scan(&passwordHash)
+	if err == sql.ErrNoRows {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("load event private password: %w", err)
+	}
+	if !passwordHash.Valid || passwordHash.String == "" {
+		return false, nil
+	}
+
+	ok, err := auth.VerifyPassword(password, passwordHash.String)
+	if err != nil {
+		return false, nil
+	}
+	return ok, nil
+}
+
 type photoScanner interface {
 	Scan(dest ...any) error
 }
@@ -311,16 +414,36 @@ func (service *Service) scanPhoto(scanner photoScanner) (Photo, error) {
 		photo.TakenAt = &takenAt.Time
 	}
 
-	if store, err := service.storageManager.StoreForPolicy(photo.StoragePolicyID); err == nil {
-		photo.URL = store.PublicURL(photo.ObjectKey)
-		if photo.ThumbnailKey != "" {
-			photo.ThumbnailURL = store.PublicURL(photo.ThumbnailKey)
-		}
-	} else {
-		photo.URL = storage.MediaURL(photo.StoragePolicyID, photo.ObjectKey)
-	}
+	service.applyPhotoURLs(&photo)
 
 	return photo, nil
+}
+
+func (service *Service) applyPhotoURLs(photo *Photo) {
+	if photo.Visibility == VisibilityPublic {
+		if store, err := service.storageManager.StoreForPolicy(photo.StoragePolicyID); err == nil {
+			photo.URL = store.PublicURL(photo.ObjectKey)
+			if photo.ThumbnailKey != "" {
+				photo.ThumbnailURL = store.PublicURL(photo.ThumbnailKey)
+			}
+			return
+		}
+	}
+
+	photo.URL = mediaPhotoURL(photo.ID, "original")
+	if photo.ThumbnailKey == "" {
+		photo.ThumbnailURL = ""
+		return
+	}
+	if photo.Visibility == VisibilityPrivate && !photo.AccessGranted {
+		photo.ThumbnailURL = mediaPhotoURL(photo.ID, "blur")
+		return
+	}
+	photo.ThumbnailURL = mediaPhotoURL(photo.ID, "thumbnail")
+}
+
+func mediaPhotoURL(photoID int64, variant string) string {
+	return fmt.Sprintf("/media/photos/%d/%s", photoID, variant)
 }
 
 func (service *Service) attachLiked(ctx context.Context, photos []Photo, fingerprintHash string) error {

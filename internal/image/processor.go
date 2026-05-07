@@ -93,3 +93,56 @@ func GenerateThumbnailBytes(content []byte, maxDimension int) ([]byte, string, e
 
 	return output.Bytes(), "image/jpeg", nil
 }
+
+func GenerateBlurredPreviewBytes(content []byte, maxDimension int) ([]byte, string, error) {
+	if maxDimension <= 0 {
+		maxDimension = 360
+	}
+
+	source, _, err := stdimage.Decode(bytes.NewReader(content))
+	if err != nil {
+		return nil, "", fmt.Errorf("decode image: %w", err)
+	}
+
+	bounds := source.Bounds()
+	width := bounds.Dx()
+	height := bounds.Dy()
+	if width <= 0 || height <= 0 {
+		return nil, "", fmt.Errorf("invalid image dimensions")
+	}
+
+	scale := math.Min(float64(maxDimension)/float64(width), float64(maxDimension)/float64(height))
+	if scale > 1 {
+		scale = 1
+	}
+	targetWidth := max(1, int(math.Round(float64(width)*scale)))
+	targetHeight := max(1, int(math.Round(float64(height)*scale)))
+	tinyWidth := max(1, targetWidth/24)
+	tinyHeight := max(1, targetHeight/24)
+
+	tiny := stdimage.NewRGBA(stdimage.Rect(0, 0, tinyWidth, tinyHeight))
+	for y := 0; y < tinyHeight; y++ {
+		for x := 0; x < tinyWidth; x++ {
+			sourceX := bounds.Min.X + int(float64(x)*float64(width)/float64(tinyWidth))
+			sourceY := bounds.Min.Y + int(float64(y)*float64(height)/float64(tinyHeight))
+			tiny.Set(x, y, source.At(sourceX, sourceY))
+		}
+	}
+
+	target := stdimage.NewRGBA(stdimage.Rect(0, 0, targetWidth, targetHeight))
+	draw.Draw(target, target.Bounds(), &stdimage.Uniform{C: color.White}, stdimage.Point{}, draw.Src)
+	for y := 0; y < targetHeight; y++ {
+		for x := 0; x < targetWidth; x++ {
+			tinyX := min(tinyWidth-1, int(float64(x)*float64(tinyWidth)/float64(targetWidth)))
+			tinyY := min(tinyHeight-1, int(float64(y)*float64(tinyHeight)/float64(targetHeight)))
+			target.Set(x, y, tiny.At(tinyX, tinyY))
+		}
+	}
+
+	var output bytes.Buffer
+	if err := jpeg.Encode(&output, target, &jpeg.Options{Quality: 45}); err != nil {
+		return nil, "", fmt.Errorf("encode blurred preview: %w", err)
+	}
+
+	return output.Bytes(), "image/jpeg", nil
+}

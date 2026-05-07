@@ -15,6 +15,7 @@ export type EventCard = {
   isPublic: boolean;
   submissionEnabled: boolean;
   submissionPassword?: string;
+  privatePassword?: string;
   photoCount: number;
 };
 
@@ -25,13 +26,14 @@ export type Photo = {
   objectKey: string;
   url: string;
   thumbnailUrl?: string;
+  accessGranted: boolean;
   contentHash: string;
   contentType: string;
   sizeBytes: number;
   likeCount: number;
   liked: boolean;
   photographerName?: string;
-  visibility: 'public' | 'protected' | 'private';
+  visibility: 'public' | 'private';
   tags: { id: number; name: string }[];
   takenAt?: string;
   createdAt: string;
@@ -95,6 +97,11 @@ export type SiteSettings = {
   homeMarkdown: string;
 };
 
+export type UploadSettings = {
+  maxFileSizeMb: number;
+  maxFilesPerUpload: number;
+};
+
 export type MeResponse = {
   authenticated: boolean;
   username?: string;
@@ -103,6 +110,7 @@ export type MeResponse = {
 export type AdminSettingsResponse = {
   settings: {
     site: SiteSettings;
+    upload: UploadSettings;
     storagePolicies: {
       activePolicyId: string;
       policies: StoragePolicy[];
@@ -182,12 +190,19 @@ export async function getPhotos(eventId: number, admin = false, page = 1, pageSi
   };
 }
 
+export async function unlockEventPrivatePhotos(eventId: number, password: string) {
+  return request<{ unlocked: boolean }>(`/api/v1/events/${eventId}/private-access`, {
+    method: 'POST',
+    body: JSON.stringify({ password })
+  });
+}
+
 export async function getPhotoList(eventId: number, admin = false): Promise<Photo[]> {
   const payload = await getPhotos(eventId, admin, 1, 100);
   return payload.photos ?? [];
 }
 
-export async function saveEvent(event: Partial<EventCard> & { submissionPassword?: string }) {
+export async function saveEvent(event: Partial<EventCard> & { privatePassword?: string; submissionPassword?: string }) {
   const body = JSON.stringify({
     title: event.title,
     description: event.description,
@@ -203,7 +218,8 @@ export async function saveEvent(event: Partial<EventCard> & { submissionPassword
     removeCover: false,
     isPublic: Boolean(event.isPublic),
     submissionEnabled: event.submissionEnabled ?? true,
-    submissionPassword: event.submissionPassword || ''
+    submissionPassword: event.submissionPassword || '',
+    privatePassword: event.privatePassword || ''
   });
   if (event.id) {
     return request<{ event: EventCard }>(`/api/v1/admin/events/${event.id}`, { method: 'PUT', body });
@@ -227,7 +243,7 @@ export async function deleteEvent(eventId: number, headers?: Record<string, stri
   });
 }
 
-export async function updatePhoto(photoId: number, payload: { photographerName?: string; visibility: Photo['visibility']; accessPassword?: string; tags?: string[] }) {
+export async function updatePhoto(photoId: number, payload: { photographerName?: string; visibility: Photo['visibility']; tags?: string[] }) {
   return request<{ photo: Photo }>(`/api/v1/admin/photos/${photoId}`, {
     method: 'PUT',
     body: JSON.stringify(payload)
@@ -324,6 +340,13 @@ export async function updateSiteSettings(site: SiteSettings) {
   return request<{ site: SiteSettings; message: string }>('/api/v1/admin/settings/site', {
     method: 'PUT',
     body: JSON.stringify(site)
+  });
+}
+
+export async function updateUploadSettings(upload: UploadSettings) {
+  return request<{ upload: UploadSettings; message: string }>('/api/v1/admin/settings/upload', {
+    method: 'PUT',
+    body: JSON.stringify(upload)
   });
 }
 

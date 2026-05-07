@@ -24,7 +24,8 @@ type Config struct {
 }
 
 type UploadConfig struct {
-	MaxSizeMB int
+	MaxSizeMB         int
+	MaxFilesPerUpload int
 }
 
 type AppConfig struct {
@@ -190,7 +191,8 @@ func Load() (Config, error) {
 			StaticRoot: getEnv("FRONTEND_STATIC_ROOT", getEnv("STATIC_ROOT", "www/dist")),
 		},
 		Upload: UploadConfig{
-			MaxSizeMB: getIntEnv("UPLOAD_MAX_SIZE_MB", 20),
+			MaxSizeMB:         getIntEnv("UPLOAD_MAX_SIZE_MB", 20),
+			MaxFilesPerUpload: getIntEnv("UPLOAD_MAX_FILES_PER_UPLOAD", 20),
 		},
 	}
 

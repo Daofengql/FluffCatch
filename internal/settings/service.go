@@ -215,6 +215,14 @@ func (service *Service) UpdateSite(ctx context.Context, site SiteSettings) (Site
 	return normalized, nil
 }
 
+func (service *Service) UpdateUpload(ctx context.Context, upload UploadSettings) (UploadSettings, error) {
+	normalized := normalizeUpload(upload)
+	if err := service.store.SaveUpload(ctx, normalized); err != nil {
+		return UploadSettings{}, err
+	}
+	return normalized, nil
+}
+
 func normalizeStoragePolicies(policies StoragePoliciesSettings) (StoragePoliciesSettings, error) {
 	if len(policies.Policies) == 0 {
 		return StoragePoliciesSettings{}, fmt.Errorf("at least one storage policy is required")
@@ -373,6 +381,22 @@ func normalizeSite(site SiteSettings) SiteSettings {
 	site.LogoURL = strings.TrimSpace(site.LogoURL)
 	site.HomeMarkdown = strings.TrimSpace(site.HomeMarkdown)
 	return site
+}
+
+func normalizeUpload(upload UploadSettings) UploadSettings {
+	if upload.MaxFileSizeMB <= 0 {
+		upload.MaxFileSizeMB = 20
+	}
+	if upload.MaxFilesPerUpload <= 0 {
+		upload.MaxFilesPerUpload = 20
+	}
+	if upload.MaxFileSizeMB > 1024 {
+		upload.MaxFileSizeMB = 1024
+	}
+	if upload.MaxFilesPerUpload > 200 {
+		upload.MaxFilesPerUpload = 200
+	}
+	return upload
 }
 
 var policyIDPattern = regexp.MustCompile(`^[a-zA-Z0-9_-]+$`)

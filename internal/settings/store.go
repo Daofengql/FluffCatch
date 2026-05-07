@@ -35,6 +35,9 @@ func (store *Store) Load(ctx context.Context) (RuntimeSettings, error) {
 	if err := store.loadValue(ctx, KeySite, &current.Site); err != nil {
 		return RuntimeSettings{}, err
 	}
+	if err := store.loadValue(ctx, KeyUpload, &current.Upload); err != nil {
+		return RuntimeSettings{}, err
+	}
 
 	return current, nil
 }
@@ -64,6 +67,15 @@ func (store *Store) SaveOIDC(ctx context.Context, oidc OIDCSettings) error {
 	}
 
 	return store.saveValue(ctx, KeyOIDC, oidc)
+}
+
+func (store *Store) SaveUpload(ctx context.Context, upload UploadSettings) error {
+	if store.db == nil {
+		store.fallback.Upload = upload
+		return nil
+	}
+
+	return store.saveValue(ctx, KeyUpload, upload)
 }
 
 func (store *Store) loadValue(ctx context.Context, key string, target any) error {

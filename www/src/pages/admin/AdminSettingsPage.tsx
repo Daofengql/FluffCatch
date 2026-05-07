@@ -9,12 +9,14 @@ import {
   testStorageConnection,
   updateSiteSettings,
   updateStoragePolicies,
+  updateUploadSettings,
   uploadSiteLogo,
   type AdminSettingsResponse,
   type SiteSettings,
   type S3Settings,
   type StorageDriver,
-  type StoragePolicy
+  type StoragePolicy,
+  type UploadSettings
 } from '../../api/client';
 import { PageHeader } from '../../components/common/PageHeader';
 
@@ -23,6 +25,11 @@ const fallbackSite: SiteSettings = {
   subtitle: '兽聚返图收集与画廊',
   logoUrl: '',
   homeMarkdown: ''
+};
+
+const fallbackUpload: UploadSettings = {
+  maxFileSizeMb: 20,
+  maxFilesPerUpload: 20
 };
 
 const emptyS3: S3Settings = { endpoint: '', bucket: '', region: '', accessKey: '', secretKey: '', useSsl: false, accountId: '' };
@@ -40,6 +47,7 @@ export function AdminSettingsPage() {
   const location = useLocation();
   const [settings, setSettings] = useState<AdminSettingsResponse | null>(null);
   const [site, setSite] = useState<SiteSettings>(fallbackSite);
+  const [upload, setUpload] = useState<UploadSettings>(fallbackUpload);
   const [message, setMessage] = useState('');
   const [error, setError] = useState('');
   const [logoUploading, setLogoUploading] = useState(false);
@@ -62,6 +70,7 @@ export function AdminSettingsPage() {
       .then((payload) => {
         setSettings(payload);
         setSite({ ...fallbackSite, ...payload.settings.site });
+        setUpload({ ...fallbackUpload, ...payload.settings.upload });
         const policies = payload.settings.storagePolicies.policies;
         if (policies.length > 0) {
           setStoragePolicy(policies[0]);
@@ -90,6 +99,20 @@ export function AdminSettingsPage() {
       refresh();
     } catch (err) {
       setError(err instanceof Error ? err.message : '站点信息保存失败');
+    }
+  }
+
+  async function handleUploadSubmit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setError('');
+    setMessage('');
+    try {
+      const result = await updateUploadSettings(upload);
+      setUpload(result.upload);
+      setMessage('上传限制已保存。');
+      refresh();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : '上传限制保存失败');
     }
   }
 
@@ -223,6 +246,40 @@ export function AdminSettingsPage() {
           </Grid>
           <Box>
             <Button type="submit" variant="contained">保存站点信息</Button>
+          </Box>
+        </Stack>
+      </Paper>
+
+      <Paper component="form" onSubmit={handleUploadSubmit} sx={{ p: 3 }}>
+        <Stack sx={{ gap: 2.5 }}>
+          <Box>
+            <Typography gutterBottom sx={{ fontWeight: 800 }} variant="h6">上传限制</Typography>
+            <Typography color="text.secondary">控制投稿与管理员直传的单文件大小、单次上传数量。默认均为 20。</Typography>
+          </Box>
+          <Grid container spacing={2}>
+            <Grid size={{ xs: 12, sm: 6 }}>
+              <TextField
+                fullWidth
+                label="单文件最大大小（MB）"
+                onChange={(e) => setUpload((prev) => ({ ...prev, maxFileSizeMb: Number(e.target.value) }))}
+                slotProps={{ htmlInput: { min: 1, max: 1024, step: 1 } }}
+                type="number"
+                value={upload.maxFileSizeMb}
+              />
+            </Grid>
+            <Grid size={{ xs: 12, sm: 6 }}>
+              <TextField
+                fullWidth
+                label="单次上传最大数量"
+                onChange={(e) => setUpload((prev) => ({ ...prev, maxFilesPerUpload: Number(e.target.value) }))}
+                slotProps={{ htmlInput: { min: 1, max: 200, step: 1 } }}
+                type="number"
+                value={upload.maxFilesPerUpload}
+              />
+            </Grid>
+          </Grid>
+          <Box>
+            <Button type="submit" variant="contained">保存上传限制</Button>
           </Box>
         </Stack>
       </Paper>

@@ -52,6 +52,10 @@ func NewService(dbConn *sql.DB, storageManager *storage.Manager, maxSizeMB int) 
 }
 
 func (service *Service) Create(ctx context.Context, eventID int64, upload FileUpload) (Submission, error) {
+	return service.CreateWithLimit(ctx, eventID, upload, service.maxSizeBytes)
+}
+
+func (service *Service) CreateWithLimit(ctx context.Context, eventID int64, upload FileUpload, maxSizeBytes int64) (Submission, error) {
 	if service.db == nil {
 		return Submission{}, fmt.Errorf("database is required")
 	}
@@ -59,7 +63,7 @@ func (service *Service) Create(ctx context.Context, eventID int64, upload FileUp
 	if err := service.verifySubmissionPassword(ctx, eventID, upload.SubmissionPassword); err != nil {
 		return Submission{}, err
 	}
-	storedUpload, store, err := service.storeUpload(ctx, eventID, upload)
+	storedUpload, store, err := service.storeUpload(ctx, eventID, upload, maxSizeBytes)
 	if err != nil {
 		return Submission{}, err
 	}
@@ -99,6 +103,10 @@ func (service *Service) Create(ctx context.Context, eventID int64, upload FileUp
 }
 
 func (service *Service) CreateApproved(ctx context.Context, eventID int64, upload FileUpload) (gallery.Photo, error) {
+	return service.CreateApprovedWithLimit(ctx, eventID, upload, service.maxSizeBytes)
+}
+
+func (service *Service) CreateApprovedWithLimit(ctx context.Context, eventID int64, upload FileUpload, maxSizeBytes int64) (gallery.Photo, error) {
 	if service.db == nil {
 		return gallery.Photo{}, fmt.Errorf("database is required")
 	}
@@ -106,7 +114,7 @@ func (service *Service) CreateApproved(ctx context.Context, eventID int64, uploa
 	if err := service.verifyEventAllowsSubmission(ctx, eventID); err != nil {
 		return gallery.Photo{}, err
 	}
-	storedUpload, store, err := service.storeUpload(ctx, eventID, upload)
+	storedUpload, store, err := service.storeUpload(ctx, eventID, upload, maxSizeBytes)
 	if err != nil {
 		return gallery.Photo{}, err
 	}
@@ -153,12 +161,18 @@ func (service *Service) CreateApproved(ctx context.Context, eventID int64, uploa
 	return photo, nil
 }
 
-func (service *Service) storeUpload(ctx context.Context, eventID int64, upload FileUpload) (storedUpload, storage.Store, error) {
-	if upload.Header.Size > service.maxSizeBytes {
-		return storedUpload{}, nil, fmt.Errorf("file exceeds maximum upload size of %d MB", service.maxSizeBytes/(1024*1024))
+func (service *Service) storeUpload(ctx context.Context, eventID int64, upload FileUpload, maxSizeBytes int64) (storedUpload, storage.Store, error) {
+	if upload.Header == nil || upload.File == nil {
+		return storedUpload{}, nil, fmt.Errorf("file is required")
+	}
+	if maxSizeBytes <= 0 {
+		maxSizeBytes = 20 * 1024 * 1024
+	}
+	if upload.Header.Size > maxSizeBytes {
+		return storedUpload{}, nil, fmt.Errorf("file exceeds maximum upload size of %d MB", maxSizeBytes/(1024*1024))
 	}
 
-	limited := io.LimitReader(upload.File, service.maxSizeBytes+1)
+	limited := io.LimitReader(upload.File, maxSizeBytes+1)
 
 	// Detect actual content type from magic bytes.
 	head := make([]byte, 512)
@@ -168,7 +182,7 @@ func (service *Service) storeUpload(ctx context.Context, eventID int64, upload F
 	}
 	head = head[:n]
 	detectedType := http.DetectContentType(head)
-	if !strings.HasPrefix(detectedType, "image/") {
+	if !isAllowedImageContentType(detectedType) {
 		return storedUpload{}, nil, fmt.Errorf("file is not a supported image format")
 	}
 
@@ -179,8 +193,8 @@ func (service *Service) storeUpload(ctx context.Context, eventID int64, upload F
 	if len(content) == 0 {
 		return storedUpload{}, nil, fmt.Errorf("empty file is not allowed")
 	}
-	if int64(len(content)) > service.maxSizeBytes {
-		return storedUpload{}, nil, fmt.Errorf("file exceeds maximum upload size of %d MB", service.maxSizeBytes/(1024*1024))
+	if int64(len(content)) > maxSizeBytes {
+		return storedUpload{}, nil, fmt.Errorf("file exceeds maximum upload size of %d MB", maxSizeBytes/(1024*1024))
 	}
 
 	hash := sha256.Sum256(content)
@@ -196,10 +210,7 @@ func (service *Service) storeUpload(ctx context.Context, eventID int64, upload F
 		return storedUpload{}, nil, err
 	}
 
-	contentType := strings.TrimSpace(upload.Header.Header.Get("Content-Type"))
-	if contentType == "" {
-		contentType = "application/octet-stream"
-	}
+	contentType := detectedType
 	objectKey := imageObjectKey(eventID, contentHash, upload.Header.Filename)
 	thumbnailKey := thumbnailObjectKey(eventID, contentHash)
 
@@ -601,21 +612,34 @@ func scanPhoto(scanner photoScanner, storageManager *storage.Manager) (gallery.P
 
 	photo.Tags = []gallery.Tag{}
 	photo.Visibility = gallery.Visibility(visibility)
+	photo.AccessGranted = true
 	photo.ThumbnailKey = thumbnailKey
 	if takenAt.Valid {
 		photo.TakenAt = &takenAt.Time
 	}
 
 	if store, err := storageManager.StoreForPolicy(photo.StoragePolicyID); err == nil {
-		photo.URL = store.PublicURL(photo.ObjectKey)
+		if photo.Visibility == gallery.VisibilityPublic {
+			photo.URL = store.PublicURL(photo.ObjectKey)
+		} else {
+			photo.URL = mediaPhotoURL(photo.ID, "original")
+		}
 		if photo.ThumbnailKey != "" {
-			photo.ThumbnailURL = store.PublicURL(photo.ThumbnailKey)
+			if photo.Visibility == gallery.VisibilityPublic {
+				photo.ThumbnailURL = store.PublicURL(photo.ThumbnailKey)
+			} else {
+				photo.ThumbnailURL = mediaPhotoURL(photo.ID, "thumbnail")
+			}
 		}
 	} else {
-		photo.URL = storage.MediaURL(photo.StoragePolicyID, photo.ObjectKey)
+		photo.URL = mediaPhotoURL(photo.ID, "original")
 	}
 
 	return photo, nil
+}
+
+func mediaPhotoURL(photoID int64, variant string) string {
+	return fmt.Sprintf("/media/photos/%d/%s", photoID, variant)
 }
 
 func attachPhotoTags(ctx context.Context, dbConn *sql.DB, photos []gallery.Photo) error {
@@ -668,6 +692,15 @@ func imageObjectKey(eventID int64, contentHash string, filename string) string {
 
 func thumbnailObjectKey(eventID int64, contentHash string) string {
 	return fmt.Sprintf("events/%d/thumbnails/%s.jpg", eventID, contentHash)
+}
+
+func isAllowedImageContentType(contentType string) bool {
+	switch strings.ToLower(strings.TrimSpace(contentType)) {
+	case "image/jpeg", "image/png", "image/gif", "image/webp":
+		return true
+	default:
+		return false
+	}
 }
 
 func normalizeTags(tags []string) []string {
