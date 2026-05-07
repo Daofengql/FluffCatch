@@ -190,6 +190,14 @@ func ResetAdminPassword(ctx context.Context, dbConn *sql.DB, username string, pa
 		return "", fmt.Errorf("admin password was not updated")
 	}
 
+	// Invalidate all sessions for this user after password reset.
+	if _, err := dbConn.ExecContext(ctx, `
+		DELETE FROM sessions
+		WHERE admin_user_id = (SELECT id FROM admin_users WHERE username = ? LIMIT 1)
+	`, username); err != nil {
+		return "", fmt.Errorf("invalidate sessions after password reset: %w", err)
+	}
+
 	return password, nil
 }
 

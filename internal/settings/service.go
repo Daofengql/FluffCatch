@@ -36,12 +36,13 @@ func (service *Service) Load(ctx context.Context) (RuntimeSettings, error) {
 }
 
 func (service *Service) UpdateStoragePolicies(ctx context.Context, policies StoragePoliciesSettings) (StoragePoliciesSettings, error) {
-	normalized, err := normalizeStoragePolicies(policies)
+	current, err := service.store.Load(ctx)
 	if err != nil {
 		return StoragePoliciesSettings{}, err
 	}
 
-	current, err := service.store.Load(ctx)
+	policies = preserveMaskedStorageSecrets(policies, current.StoragePolicies)
+	normalized, err := normalizeStoragePolicies(policies)
 	if err != nil {
 		return StoragePoliciesSettings{}, err
 	}
@@ -194,6 +195,10 @@ func removedPolicyIDs(before []StoragePolicy, after []StoragePolicy) []string {
 }
 
 func (service *Service) UpdateOIDC(ctx context.Context, oidc OIDCSettings) (OIDCSettings, error) {
+	current, err := service.store.Load(ctx)
+	if err == nil {
+		oidc = preserveMaskedOIDCSecret(oidc, current.OIDC)
+	}
 	normalized := normalizeOIDC(oidc)
 	if err := service.store.SaveOIDC(ctx, normalized); err != nil {
 		return OIDCSettings{}, err
@@ -374,4 +379,27 @@ var policyIDPattern = regexp.MustCompile(`^[a-zA-Z0-9_-]+$`)
 
 func validPolicyID(id string) bool {
 	return id != "" && policyIDPattern.MatchString(id)
+}
+
+func preserveMaskedStorageSecrets(incoming, current StoragePoliciesSettings) StoragePoliciesSettings {
+	currentByID := make(map[string]StoragePolicy, len(current.Policies))
+	for _, p := range current.Policies {
+		currentByID[p.ID] = p
+	}
+	for i, p := range incoming.Policies {
+		if p.S3.SecretKey != MaskedSecret {
+			continue
+		}
+		if cur, ok := currentByID[p.ID]; ok {
+			incoming.Policies[i].S3.SecretKey = cur.S3.SecretKey
+		}
+	}
+	return incoming
+}
+
+func preserveMaskedOIDCSecret(incoming, current OIDCSettings) OIDCSettings {
+	if incoming.ClientSecret == MaskedSecret {
+		incoming.ClientSecret = current.ClientSecret
+	}
+	return incoming
 }

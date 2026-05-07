@@ -1,12 +1,14 @@
 package http
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"database/sql"
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"net"
 	stdhttp "net/http"
@@ -40,6 +42,8 @@ type Server struct {
 	eventService    *events.Service
 	uploadService   *uploads.Service
 	galleryService  *gallery.Service
+	loginLimiter    *rateLimiter
+	captchaLimiter  *rateLimiter
 }
 
 func NewServer(cfg config.Config, dbConn *sql.DB, storageManager *storage.Manager, settingsService *settings.Service) *Server {
@@ -50,9 +54,11 @@ func NewServer(cfg config.Config, dbConn *sql.DB, storageManager *storage.Manage
 		settingsService: settingsService,
 		authService:     auth.NewService(dbConn, cfg.Auth.AdminUsername),
 		captchaStore:    auth.NewCaptchaStore(),
-		eventService:    events.NewService(dbConn),
-		uploadService:   uploads.NewService(dbConn, storageManager),
+		eventService:    events.NewService(dbConn, storageManager),
+		uploadService:   uploads.NewService(dbConn, storageManager, cfg.Upload.MaxSizeMB),
 		galleryService:  gallery.NewService(dbConn, storageManager),
+		loginLimiter:    newRateLimiter(1, 5),
+		captchaLimiter:  newRateLimiter(2, 10),
 	}
 }
 
@@ -142,6 +148,10 @@ func (server *Server) health(w stdhttp.ResponseWriter, r *stdhttp.Request) {
 }
 
 func (server *Server) captcha(w stdhttp.ResponseWriter, r *stdhttp.Request) {
+	if !server.captchaLimiter.Allow(clientIP(r.RemoteAddr)) {
+		writeError(w, stdhttp.StatusTooManyRequests, "too many captcha requests, please slow down")
+		return
+	}
 	challenge, err := server.captchaStore.NewChallenge(r.Context())
 	if err != nil {
 		writeError(w, stdhttp.StatusInternalServerError, "failed to create captcha")
@@ -152,6 +162,10 @@ func (server *Server) captcha(w stdhttp.ResponseWriter, r *stdhttp.Request) {
 }
 
 func (server *Server) login(w stdhttp.ResponseWriter, r *stdhttp.Request) {
+	if !server.loginLimiter.Allow(clientIP(r.RemoteAddr)) {
+		writeError(w, stdhttp.StatusTooManyRequests, "too many login attempts, please slow down")
+		return
+	}
 	var req auth.LoginRequest
 	if err := decodeJSON(r, &req); err != nil {
 		writeError(w, stdhttp.StatusBadRequest, "invalid login payload")
@@ -175,6 +189,7 @@ func (server *Server) login(w stdhttp.ResponseWriter, r *stdhttp.Request) {
 		return
 	}
 
+	secure := r.TLS != nil || server.cfg.App.Env == "production"
 	stdhttp.SetCookie(w, &stdhttp.Cookie{
 		Name:     "fluffcatch_session",
 		Value:    sessionID,
@@ -182,7 +197,7 @@ func (server *Server) login(w stdhttp.ResponseWriter, r *stdhttp.Request) {
 		Expires:  expiresAt,
 		HttpOnly: true,
 		SameSite: stdhttp.SameSiteLaxMode,
-		Secure:   r.TLS != nil,
+		Secure:   secure,
 	})
 
 	writeJSON(w, stdhttp.StatusOK, result)
@@ -192,6 +207,7 @@ func (server *Server) logout(w stdhttp.ResponseWriter, r *stdhttp.Request) {
 	if cookie, err := r.Cookie("fluffcatch_session"); err == nil {
 		_ = server.authService.Logout(r.Context(), cookie.Value)
 	}
+	secure := r.TLS != nil || server.cfg.App.Env == "production"
 	stdhttp.SetCookie(w, &stdhttp.Cookie{
 		Name:     "fluffcatch_session",
 		Value:    "",
@@ -199,7 +215,7 @@ func (server *Server) logout(w stdhttp.ResponseWriter, r *stdhttp.Request) {
 		MaxAge:   -1,
 		HttpOnly: true,
 		SameSite: stdhttp.SameSiteLaxMode,
-		Secure:   r.TLS != nil,
+		Secure:   secure,
 	})
 	writeJSON(w, stdhttp.StatusOK, map[string]string{
 		"message": "logged out",
@@ -276,12 +292,18 @@ func (server *Server) createSubmission(w stdhttp.ResponseWriter, r *stdhttp.Requ
 		return
 	}
 
-	if err := r.ParseMultipartForm(256 << 20); err != nil {
+	maxBytes := int64(server.cfg.Upload.MaxSizeMB) * 1024 * 1024
+	r.Body = stdhttp.MaxBytesReader(w, r.Body, maxBytes)
+	if err := r.ParseMultipartForm(maxBytes); err != nil {
 		writeError(w, stdhttp.StatusBadRequest, "invalid multipart upload")
 		return
 	}
 
 	files := r.MultipartForm.File["files"]
+	if len(files) > 20 {
+		writeError(w, stdhttp.StatusBadRequest, "maximum of 20 files per upload batch")
+		return
+	}
 	if len(files) == 0 {
 		file, header, err := r.FormFile("file")
 		if err == nil {
@@ -485,6 +507,9 @@ func (server *Server) uploadEventCover(w stdhttp.ResponseWriter, r *stdhttp.Requ
 	if !ok {
 		return
 	}
+
+	maxBytes := int64(server.cfg.Upload.MaxSizeMB) * 1024 * 1024
+	r.Body = stdhttp.MaxBytesReader(w, r.Body, maxBytes)
 	file, header, err := r.FormFile("file")
 	if err != nil {
 		writeError(w, stdhttp.StatusBadRequest, "cover file is required")
@@ -492,17 +517,53 @@ func (server *Server) uploadEventCover(w stdhttp.ResponseWriter, r *stdhttp.Requ
 	}
 	defer file.Close()
 
+	if header.Size > maxBytes {
+		writeError(w, stdhttp.StatusBadRequest, "cover file exceeds maximum upload size")
+		return
+	}
+
+	limited := io.LimitReader(file, maxBytes+1)
+	head := make([]byte, 512)
+	n, err := io.ReadFull(limited, head)
+	if err != nil && err != io.ErrUnexpectedEOF {
+		writeError(w, stdhttp.StatusBadRequest, "failed to read cover file")
+		return
+	}
+	head = head[:n]
+	detectedType := stdhttp.DetectContentType(head)
+	if !strings.HasPrefix(detectedType, "image/") {
+		writeError(w, stdhttp.StatusBadRequest, "cover must be an image")
+		return
+	}
+
+	content, err := io.ReadAll(io.MultiReader(bytes.NewReader(head), limited))
+	if err != nil {
+		writeError(w, stdhttp.StatusBadRequest, "failed to read cover file")
+		return
+	}
+	if len(content) == 0 {
+		writeError(w, stdhttp.StatusBadRequest, "cover file is empty")
+		return
+	}
+	if int64(len(content)) > maxBytes {
+		writeError(w, stdhttp.StatusBadRequest, "cover file exceeds maximum upload size")
+		return
+	}
+
+	hash := sha256.Sum256(content)
+	contentHash := hex.EncodeToString(hash[:])
+	objectKey := coverObjectKey(id, contentHash, header.Filename)
+
 	store, err := server.storageManager.ActiveStore()
 	if err != nil {
 		writeError(w, stdhttp.StatusBadRequest, err.Error())
 		return
 	}
-	objectKey := fmt.Sprintf("events/%d/cover/%d-%s", id, time.Now().UnixNano(), sanitizeFilename(header.Filename))
 	stored, err := store.Put(r.Context(), storage.Object{
 		Key:         objectKey,
-		Content:     file,
-		ContentType: header.Header.Get("Content-Type"),
-		Size:        header.Size,
+		Content:     bytes.NewReader(content),
+		ContentType: detectedType,
+		Size:        int64(len(content)),
 	})
 	if err != nil {
 		writeError(w, stdhttp.StatusBadRequest, err.Error())
@@ -724,7 +785,7 @@ func (server *Server) getSettings(w stdhttp.ResponseWriter, r *stdhttp.Request) 
 	}
 
 	writeJSON(w, stdhttp.StatusOK, map[string]any{
-		"settings": current,
+		"settings": current.Sanitize(),
 		"usage":    usage,
 	})
 }
@@ -748,7 +809,7 @@ func (server *Server) updateStorageSettings(w stdhttp.ResponseWriter, r *stdhttp
 	}
 
 	writeJSON(w, stdhttp.StatusOK, map[string]any{
-		"storagePolicies": updated,
+		"storagePolicies": updated.Sanitize(),
 		"usage":           server.storagePolicyUsageOrEmpty(r),
 		"message":         "storage policies updated",
 	})
@@ -804,7 +865,7 @@ func (server *Server) updateOIDCSettings(w stdhttp.ResponseWriter, r *stdhttp.Re
 	}
 
 	writeJSON(w, stdhttp.StatusOK, map[string]any{
-		"oidc":    updated,
+		"oidc":    updated.Sanitize(),
 		"message": "oidc settings updated",
 	})
 }
@@ -844,12 +905,14 @@ func (server *Server) clearSiteLogo(w stdhttp.ResponseWriter, r *stdhttp.Request
 		writeError(w, stdhttp.StatusInternalServerError, "failed to clear site logo")
 		return
 	}
-	server.deleteLocalSiteLogo(r.Context(), oldLogoURL)
+	server.deleteSiteLogo(r.Context(), oldLogoURL)
 
 	writeJSON(w, stdhttp.StatusOK, map[string]any{"site": updated, "message": "site logo cleared"})
 }
 
 func (server *Server) uploadSiteLogo(w stdhttp.ResponseWriter, r *stdhttp.Request) {
+	maxBytes := int64(server.cfg.Upload.MaxSizeMB) * 1024 * 1024
+	r.Body = stdhttp.MaxBytesReader(w, r.Body, maxBytes)
 	file, header, err := r.FormFile("file")
 	if err != nil {
 		writeError(w, stdhttp.StatusBadRequest, "logo file is required")
@@ -861,20 +924,53 @@ func (server *Server) uploadSiteLogo(w stdhttp.ResponseWriter, r *stdhttp.Reques
 		writeError(w, stdhttp.StatusBadRequest, "logo file is empty")
 		return
 	}
+	if header.Size > maxBytes {
+		writeError(w, stdhttp.StatusBadRequest, "logo file exceeds maximum upload size")
+		return
+	}
 
-	contentType := header.Header.Get("Content-Type")
-	if !strings.HasPrefix(contentType, "image/") {
+	limited := io.LimitReader(file, maxBytes+1)
+	head := make([]byte, 512)
+	n, err := io.ReadFull(limited, head)
+	if err != nil && err != io.ErrUnexpectedEOF {
+		writeError(w, stdhttp.StatusBadRequest, "failed to read logo file")
+		return
+	}
+	head = head[:n]
+	detectedType := stdhttp.DetectContentType(head)
+	if !strings.HasPrefix(detectedType, "image/") {
 		writeError(w, stdhttp.StatusBadRequest, "logo must be an image")
 		return
 	}
 
-	store := storage.NewLocalStore(server.cfg.Storage.LocalPath, "/media/local")
-	objectKey := fmt.Sprintf("site/logo/%d-%s", time.Now().UnixNano(), sanitizeFilename(header.Filename))
+	content, err := io.ReadAll(io.MultiReader(bytes.NewReader(head), limited))
+	if err != nil {
+		writeError(w, stdhttp.StatusBadRequest, "failed to read logo file")
+		return
+	}
+	if len(content) == 0 {
+		writeError(w, stdhttp.StatusBadRequest, "logo file is empty")
+		return
+	}
+	if int64(len(content)) > maxBytes {
+		writeError(w, stdhttp.StatusBadRequest, "logo file exceeds maximum upload size")
+		return
+	}
+
+	hash := sha256.Sum256(content)
+	contentHash := hex.EncodeToString(hash[:])
+	objectKey := logoObjectKey(contentHash, header.Filename)
+
+	store, err := server.storageManager.ActiveStore()
+	if err != nil {
+		writeError(w, stdhttp.StatusBadRequest, err.Error())
+		return
+	}
 	stored, err := store.Put(r.Context(), storage.Object{
 		Key:         objectKey,
-		Content:     file,
-		ContentType: contentType,
-		Size:        header.Size,
+		Content:     bytes.NewReader(content),
+		ContentType: detectedType,
+		Size:        int64(len(content)),
 	})
 	if err != nil {
 		writeError(w, stdhttp.StatusBadRequest, err.Error())
@@ -895,7 +991,7 @@ func (server *Server) uploadSiteLogo(w stdhttp.ResponseWriter, r *stdhttp.Reques
 		writeError(w, stdhttp.StatusInternalServerError, "failed to save site logo")
 		return
 	}
-	server.deleteLocalSiteLogo(r.Context(), oldLogoURL)
+	server.deleteSiteLogo(r.Context(), oldLogoURL)
 
 	writeJSON(w, stdhttp.StatusOK, map[string]any{
 		"site":    updated,
@@ -904,17 +1000,21 @@ func (server *Server) uploadSiteLogo(w stdhttp.ResponseWriter, r *stdhttp.Reques
 	})
 }
 
-func (server *Server) deleteLocalSiteLogo(ctx context.Context, logoURL string) {
-	const prefix = "/media/local/"
-	if !strings.HasPrefix(logoURL, prefix) {
+func (server *Server) deleteSiteLogo(ctx context.Context, logoURL string) {
+	if logoURL == "" {
 		return
 	}
-	key := strings.TrimPrefix(logoURL, prefix)
-	if key == "" {
+	store, err := server.storageManager.ActiveStore()
+	if err != nil {
 		return
 	}
-	store := storage.NewLocalStore(server.cfg.Storage.LocalPath, "/media/local")
-	_ = store.Delete(ctx, key)
+	// Try to extract key from the logo URL by removing the public base URL prefix.
+	publicURL := store.PublicURL("")
+	publicURL = strings.TrimRight(publicURL, "/")
+	if strings.HasPrefix(logoURL, publicURL+"/") {
+		key := strings.TrimPrefix(logoURL, publicURL+"/")
+		_ = store.Delete(ctx, key)
+	}
 }
 
 func (server *Server) storagePolicyUsageOrEmpty(r *stdhttp.Request) map[string]settings.PolicyUsage {
@@ -928,10 +1028,6 @@ func (server *Server) storagePolicyUsageOrEmpty(r *stdhttp.Request) map[string]s
 
 func (server *Server) requireAdmin(next stdhttp.Handler) stdhttp.Handler {
 	return stdhttp.HandlerFunc(func(w stdhttp.ResponseWriter, r *stdhttp.Request) {
-		if r.Header.Get("X-FluffCatch-Admin") == "true" {
-			next.ServeHTTP(w, r)
-			return
-		}
 		_, ok, err := server.currentAdmin(r)
 		if err != nil {
 			writeError(w, stdhttp.StatusInternalServerError, "failed to authenticate session")
@@ -1129,6 +1225,22 @@ func sanitizeFilename(filename string) string {
 		return "upload.bin"
 	}
 	return filename
+}
+
+func coverObjectKey(eventID int64, contentHash string, filename string) string {
+	ext := strings.ToLower(filepath.Ext(filename))
+	if ext == "" {
+		ext = ".bin"
+	}
+	return fmt.Sprintf("events/%d/cover/%s%s", eventID, contentHash, ext)
+}
+
+func logoObjectKey(contentHash string, filename string) string {
+	ext := strings.ToLower(filepath.Ext(filename))
+	if ext == "" {
+		ext = ".bin"
+	}
+	return fmt.Sprintf("site/logo/%s%s", contentHash, ext)
 }
 
 func viewerFingerprintHash(r *stdhttp.Request) string {

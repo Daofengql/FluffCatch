@@ -6,6 +6,8 @@ const (
 	KeyStoragePolicies = "storage_policies"
 	KeyOIDC            = "oidc"
 	KeySite            = "site"
+
+	MaskedSecret = "***"
 )
 
 type RuntimeSettings struct {
@@ -14,9 +16,23 @@ type RuntimeSettings struct {
 	Site            SiteSettings            `json:"site"`
 }
 
+func (s RuntimeSettings) Sanitize() RuntimeSettings {
+	s.StoragePolicies = s.StoragePolicies.Sanitize()
+	s.OIDC = s.OIDC.Sanitize()
+	return s
+}
+
 type StoragePoliciesSettings struct {
 	ActivePolicyID string          `json:"activePolicyId"`
 	Policies       []StoragePolicy `json:"policies"`
+}
+
+func (s StoragePoliciesSettings) Sanitize() StoragePoliciesSettings {
+	s.Policies = make([]StoragePolicy, len(s.Policies))
+	for i, p := range s.Policies {
+		s.Policies[i] = p.Sanitize()
+	}
+	return s
 }
 
 type StoragePolicy struct {
@@ -29,6 +45,11 @@ type StoragePolicy struct {
 	S3            S3Settings `json:"s3,omitempty"`
 }
 
+func (p StoragePolicy) Sanitize() StoragePolicy {
+	p.S3 = p.S3.Sanitize()
+	return p
+}
+
 type S3Settings struct {
 	Endpoint  string `json:"endpoint"`
 	Bucket    string `json:"bucket"`
@@ -39,6 +60,13 @@ type S3Settings struct {
 	AccountID string `json:"accountId,omitempty"`
 }
 
+func (s S3Settings) Sanitize() S3Settings {
+	if s.SecretKey != "" {
+		s.SecretKey = MaskedSecret
+	}
+	return s
+}
+
 type OIDCSettings struct {
 	Enabled      bool   `json:"enabled"`
 	Provider     string `json:"provider"`
@@ -46,6 +74,13 @@ type OIDCSettings struct {
 	ClientID     string `json:"clientId"`
 	ClientSecret string `json:"clientSecret,omitempty"`
 	RedirectURL  string `json:"redirectUrl"`
+}
+
+func (o OIDCSettings) Sanitize() OIDCSettings {
+	if o.ClientSecret != "" {
+		o.ClientSecret = MaskedSecret
+	}
+	return o
 }
 
 type SiteSettings struct {

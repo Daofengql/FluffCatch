@@ -27,12 +27,14 @@ import { useParams } from 'react-router-dom';
 import { QRCodeSVG } from 'qrcode.react';
 import { batchDeletePhotos, deletePhoto, getEvent, getPhotos, likePhoto, updatePhoto, type EventCard, type Photo } from '../../api/client';
 import { getCachedMe, refreshMe, subscribeAuthState } from '../../api/authState';
+import { BatchDownloadDialog } from '../../components/BatchDownloadDialog';
 import { ConfirmDialog } from '../../components/ConfirmDialog';
 import { ImagePreviewDialog } from '../../components/ImagePreviewDialog';
 import { EventEditorDialog } from '../../components/EventEditorDialog';
 import { SubmissionDialog } from '../../components/SubmissionDialog';
 import { SubmissionReviewDialog } from '../../components/SubmissionReviewDialog';
 import { formatEventLocation } from '../../utils/eventLocation';
+import { downloadPhoto } from '../../utils/download';
 
 export function EventDetailPage() {
   const eventId = Number(useParams().eventId);
@@ -54,6 +56,8 @@ export function EventDetailPage() {
   const [photoForm, setPhotoForm] = useState({ accessPassword: '', photographerName: '', tags: '', visibility: 'public' as Photo['visibility'] });
   const [copyMessage, setCopyMessage] = useState('');
   const [deleteConfirm, setDeleteConfirm] = useState<{ type: 'batch' } | { type: 'single'; photo: Photo } | null>(null);
+  const [downloadId, setDownloadId] = useState<number | null>(null);
+  const [batchDownloadOpen, setBatchDownloadOpen] = useState(false);
 
   function load() {
     setLoading(true);
@@ -130,6 +134,30 @@ export function EventDetailPage() {
   function togglePhotoSelection(photoId: number) {
     setSelectedIds((prev) => (prev.includes(photoId) ? prev.filter((id) => id !== photoId) : [...prev, photoId]));
   }
+
+  async function handleSingleDownload(photo: Photo) {
+    setDownloadId(photo.id);
+    try {
+      await downloadPhoto(photo.url, downloadFilename(event?.title ?? 'fluffcatch', photo));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : '下载失败');
+    } finally {
+      setDownloadId(null);
+    }
+  }
+
+  function handleBatchDownload() {
+    if (!selectedIds.length || !event) return;
+    setBatchDownloadOpen(true);
+  }
+
+  const batchDownloadItems = useMemo(() => {
+    if (!event) return [];
+    return selectedIds
+      .map((id) => photos.find((p) => p.id === id))
+      .filter((p): p is Photo => !!p)
+      .map((p) => ({ url: p.url, filename: downloadFilename(event.title, p) }));
+  }, [event, photos, selectedIds]);
 
   async function handleBatchDelete() {
     if (!selectedIds.length) return;
@@ -344,16 +372,27 @@ export function EventDetailPage() {
               已选择 {selectedIds.length} 张
             </Typography>
           </Stack>
-          <Button
-            color="error"
-            disabled={!selectedIds.length}
-            onClick={handleBatchDelete}
-            size="small"
-            startIcon={<Delete />}
-            variant="outlined"
-          >
-            批量删除{selectedIds.length ? ` (${selectedIds.length})` : ''}
-          </Button>
+          <Stack direction="row" sx={{ gap: 1 }}>
+            <Button
+              disabled={!selectedIds.length}
+              onClick={handleBatchDownload}
+              size="small"
+              startIcon={<CloudDownload />}
+              variant="outlined"
+            >
+              批量下载{selectedIds.length ? ` (${selectedIds.length})` : ''}
+            </Button>
+            <Button
+              color="error"
+              disabled={!selectedIds.length}
+              onClick={handleBatchDelete}
+              size="small"
+              startIcon={<Delete />}
+              variant="outlined"
+            >
+              批量删除{selectedIds.length ? ` (${selectedIds.length})` : ''}
+            </Button>
+          </Stack>
         </Stack>
       )}
 
@@ -404,13 +443,10 @@ export function EventDetailPage() {
                   </Stack>
                   {!manageMode && (
                     <Button
-                      component="a"
-                      download={downloadFilename(event.title, photo)}
-                      href={photo.url}
-                      onClick={(clickEvent) => clickEvent.stopPropagation()}
+                      disabled={downloadId === photo.id}
+                      onClick={(clickEvent) => { clickEvent.stopPropagation(); void handleSingleDownload(photo); }}
                       size="small"
-                      startIcon={<CloudDownload />}
-                      target="_blank"
+                      startIcon={downloadId === photo.id ? <CircularProgress size={16} /> : <CloudDownload />}
                       variant="outlined"
                     >
                       下载原图
@@ -498,6 +534,13 @@ export function EventDetailPage() {
           </Stack>
         </Stack>
       </Paper>
+
+      <BatchDownloadDialog
+        items={batchDownloadItems}
+        onClose={() => setBatchDownloadOpen(false)}
+        open={batchDownloadOpen}
+        zipName={event ? `${event.title}-fluffcatch.zip` : 'fluffcatch.zip'}
+      />
 
       <ConfirmDialog
         onCancel={() => setDeleteConfirm(null)}

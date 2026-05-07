@@ -41,7 +41,7 @@ func (store *CaptchaStore) NewChallenge(ctx context.Context) (CaptchaChallenge, 
 		return CaptchaChallenge{}, err
 	}
 
-	answer, err := randomDigits(4)
+	answer, err := randomDigits(6)
 	if err != nil {
 		return CaptchaChallenge{}, err
 	}
@@ -102,10 +102,10 @@ func randomDigits(length int) (string, error) {
 
 func captchaSVG(answer string) string {
 	escaped := html.EscapeString(answer)
-	return fmt.Sprintf(`<svg xmlns="http://www.w3.org/2000/svg" width="150" height="54" viewBox="0 0 150 54">
-  <rect width="150" height="54" rx="12" fill="#e3f2fd"/>
+	return fmt.Sprintf(`<svg xmlns="http://www.w3.org/2000/svg" width="180" height="54" viewBox="0 0 180 54">
+  <rect width="180" height="54" rx="12" fill="#e3f2fd"/>
   <path d="M8 42 C32 10, 52 60, 82 20 S124 44, 142 12" fill="none" stroke="#90caf9" stroke-width="3"/>
-  <path d="M14 16 L138 39 M20 43 L132 12" stroke="#bbdefb" stroke-width="2"/>
-  <text x="50%%" y="50%%" dominant-baseline="middle" text-anchor="middle" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="28" font-weight="800" letter-spacing="8" fill="#1565c0">%s</text>
+  <path d="M14 16 L168 39 M20 43 L164 12" stroke="#bbdefb" stroke-width="2"/>
+  <text x="50%%" y="50%%" dominant-baseline="middle" text-anchor="middle" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="26" font-weight="800" letter-spacing="6" fill="#1565c0">%s</text>
 </svg>`, escaped)
 }

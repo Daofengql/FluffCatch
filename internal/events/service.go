@@ -12,11 +12,12 @@ import (
 )
 
 type Service struct {
-	db *sql.DB
+	db             *sql.DB
+	storageManager *storage.Manager
 }
 
-func NewService(dbConn *sql.DB) *Service {
-	return &Service{db: dbConn}
+func NewService(dbConn *sql.DB, storageManager *storage.Manager) *Service {
+	return &Service{db: dbConn, storageManager: storageManager}
 }
 
 func (service *Service) ListPublic(ctx context.Context) ([]Event, error) {
@@ -217,7 +218,7 @@ func (service *Service) listWithOptions(ctx context.Context, where string, inclu
 
 	events := []Event{}
 	for rows.Next() {
-		event, err := scanEvent(rows)
+		event, err := service.scanEvent(rows)
 		if err != nil {
 			return nil, err
 		}
@@ -266,7 +267,7 @@ func (service *Service) getWithOptions(ctx context.Context, id int64, onlyPublic
 	query += " LIMIT 1"
 
 	row := service.db.QueryRowContext(ctx, query, args...)
-	event, err := scanEvent(row)
+	event, err := service.scanEvent(row)
 	if err == sql.ErrNoRows {
 		return Event{}, false, nil
 	}
@@ -335,7 +336,7 @@ type eventScanner interface {
 	Scan(dest ...any) error
 }
 
-func scanEvent(scanner eventScanner) (Event, error) {
+func (service *Service) scanEvent(scanner eventScanner) (Event, error) {
 	var event Event
 	var startsAt sql.NullTime
 	var endsAt sql.NullTime
@@ -378,15 +379,40 @@ func scanEvent(scanner eventScanner) (Event, error) {
 		event.CoverObjectKey = coverObjectKey.String
 	}
 	if event.CoverPolicyID != "" && event.CoverObjectKey != "" {
-		event.CoverURL = storage.MediaURL(event.CoverPolicyID, event.CoverObjectKey)
+		if store, err := service.storageManager.StoreForPolicy(event.CoverPolicyID); err == nil {
+			event.CoverURL = store.PublicURL(event.CoverObjectKey)
+		} else {
+			event.CoverURL = storage.MediaURL(event.CoverPolicyID, event.CoverObjectKey)
+		}
 	}
 
 	return event, nil
 }
 
 func requestToEvent(req CreateEventRequest) (Event, error) {
-	if strings.TrimSpace(req.Title) == "" {
+	req.Title = strings.TrimSpace(req.Title)
+	if req.Title == "" {
 		return Event{}, fmt.Errorf("title is required")
+	}
+	if len(req.Title) > 200 {
+		return Event{}, fmt.Errorf("title must be 200 characters or fewer")
+	}
+
+	req.Description = strings.TrimSpace(req.Description)
+	if len(req.Description) > 10000 {
+		return Event{}, fmt.Errorf("description must be 10000 characters or fewer")
+	}
+	req.Location = strings.TrimSpace(req.Location)
+	if len(req.Location) > 500 {
+		return Event{}, fmt.Errorf("location must be 500 characters or fewer")
+	}
+
+	req.ProvinceCode = strings.TrimSpace(req.ProvinceCode)
+	req.ProvinceName = strings.TrimSpace(req.ProvinceName)
+	req.CityCode = strings.TrimSpace(req.CityCode)
+	req.CityName = strings.TrimSpace(req.CityName)
+	if len(req.ProvinceCode) > 20 || len(req.CityCode) > 20 {
+		return Event{}, fmt.Errorf("province/city code is too long")
 	}
 
 	startTime, err := parseOptionalTime(req.StartTime)
@@ -399,13 +425,13 @@ func requestToEvent(req CreateEventRequest) (Event, error) {
 	}
 
 	return Event{
-		Title:             strings.TrimSpace(req.Title),
-		Description:       strings.TrimSpace(req.Description),
-		Location:          strings.TrimSpace(req.Location),
-		ProvinceCode:      strings.TrimSpace(req.ProvinceCode),
-		ProvinceName:      strings.TrimSpace(req.ProvinceName),
-		CityCode:          strings.TrimSpace(req.CityCode),
-		CityName:          strings.TrimSpace(req.CityName),
+		Title:             req.Title,
+		Description:       req.Description,
+		Location:          req.Location,
+		ProvinceCode:      req.ProvinceCode,
+		ProvinceName:      req.ProvinceName,
+		CityCode:          req.CityCode,
+		CityName:          req.CityName,
 		StartTime:         startTime,
 		EndTime:           endTime,
 		CoverPolicyID:     strings.TrimSpace(req.CoverPolicyID),

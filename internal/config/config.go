@@ -20,6 +20,11 @@ type Config struct {
 	Auth     AuthConfig
 	OIDC     OIDCConfig
 	Frontend FrontendConfig
+	Upload   UploadConfig
+}
+
+type UploadConfig struct {
+	MaxSizeMB int
 }
 
 type AppConfig struct {
@@ -183,6 +188,9 @@ func Load() (Config, error) {
 		Frontend: FrontendConfig{
 			Mode:       getEnv("FRONTEND_MODE", "auto"),
 			StaticRoot: getEnv("FRONTEND_STATIC_ROOT", getEnv("STATIC_ROOT", "www/dist")),
+		},
+		Upload: UploadConfig{
+			MaxSizeMB: getIntEnv("UPLOAD_MAX_SIZE_MB", 20),
 		},
 	}
 

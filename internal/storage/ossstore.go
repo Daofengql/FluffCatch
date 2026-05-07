@@ -1,10 +1,8 @@
 package storage
 
 import (
-	"bytes"
 	"context"
 	"fmt"
-	"io"
 	"strings"
 
 	oss "github.com/aliyun/aliyun-oss-go-sdk/oss"
@@ -43,12 +41,7 @@ func NewOSSStore(cfg S3Config, publicBaseURL string) (*OSSStore, error) {
 }
 
 func (store *OSSStore) Put(ctx context.Context, object Object) (StoredObject, error) {
-	data, err := io.ReadAll(object.Content)
-	if err != nil {
-		return StoredObject{}, fmt.Errorf("oss read content: %w", err)
-	}
-
-	err = store.bucket.PutObject(object.Key, bytes.NewReader(data), oss.ContentType(object.ContentType))
+	err := store.bucket.PutObject(object.Key, object.Content, oss.ContentType(object.ContentType))
 	if err != nil {
 		return StoredObject{}, fmt.Errorf("oss put %s: %w", object.Key, err)
 	}

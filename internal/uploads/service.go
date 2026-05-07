@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"mime/multipart"
+	"net/http"
 	"path/filepath"
 	"strings"
 
@@ -22,6 +23,7 @@ import (
 type Service struct {
 	db             *sql.DB
 	storageManager *storage.Manager
+	maxSizeBytes   int64
 }
 
 type FileUpload struct {
@@ -41,10 +43,11 @@ type storedUpload struct {
 	SizeBytes    int64
 }
 
-func NewService(dbConn *sql.DB, storageManager *storage.Manager) *Service {
+func NewService(dbConn *sql.DB, storageManager *storage.Manager, maxSizeMB int) *Service {
 	return &Service{
 		db:             dbConn,
 		storageManager: storageManager,
+		maxSizeBytes:   int64(maxSizeMB) * 1024 * 1024,
 	}
 }
 
@@ -151,12 +154,33 @@ func (service *Service) CreateApproved(ctx context.Context, eventID int64, uploa
 }
 
 func (service *Service) storeUpload(ctx context.Context, eventID int64, upload FileUpload) (storedUpload, storage.Store, error) {
-	content, err := io.ReadAll(upload.File)
+	if upload.Header.Size > service.maxSizeBytes {
+		return storedUpload{}, nil, fmt.Errorf("file exceeds maximum upload size of %d MB", service.maxSizeBytes/(1024*1024))
+	}
+
+	limited := io.LimitReader(upload.File, service.maxSizeBytes+1)
+
+	// Detect actual content type from magic bytes.
+	head := make([]byte, 512)
+	n, err := io.ReadFull(limited, head)
+	if err != nil && err != io.ErrUnexpectedEOF {
+		return storedUpload{}, nil, fmt.Errorf("read upload file: %w", err)
+	}
+	head = head[:n]
+	detectedType := http.DetectContentType(head)
+	if !strings.HasPrefix(detectedType, "image/") {
+		return storedUpload{}, nil, fmt.Errorf("file is not a supported image format")
+	}
+
+	content, err := io.ReadAll(io.MultiReader(bytes.NewReader(head), limited))
 	if err != nil {
 		return storedUpload{}, nil, fmt.Errorf("read upload file: %w", err)
 	}
 	if len(content) == 0 {
 		return storedUpload{}, nil, fmt.Errorf("empty file is not allowed")
+	}
+	if int64(len(content)) > service.maxSizeBytes {
+		return storedUpload{}, nil, fmt.Errorf("file exceeds maximum upload size of %d MB", service.maxSizeBytes/(1024*1024))
 	}
 
 	hash := sha256.Sum256(content)
