@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"fluffcatch/internal/auth"
 	"fluffcatch/internal/gallery"
@@ -129,10 +130,10 @@ func (service *Service) CreateApprovedWithLimit(ctx context.Context, eventID int
 	result, err := tx.ExecContext(ctx, `
 		INSERT INTO photos (
 			event_id, storage_policy_id, object_key, thumbnail_key, content_hash,
-			content_type, size_bytes, photographer_name, visibility
+			content_type, size_bytes, photographer_name, visibility, sort_at
 		)
-		VALUES (?, ?, ?, NULLIF(?, ''), ?, ?, ?, NULLIF(?, ''), 'public')
-	`, eventID, storedUpload.PolicyID, storedUpload.ObjectKey, storedUpload.ThumbnailKey, storedUpload.ContentHash, storedUpload.ContentType, storedUpload.SizeBytes, strings.TrimSpace(upload.PhotographerName))
+		VALUES (?, ?, ?, NULLIF(?, ''), ?, ?, ?, NULLIF(?, ''), 'public', ?)
+	`, eventID, storedUpload.PolicyID, storedUpload.ObjectKey, storedUpload.ThumbnailKey, storedUpload.ContentHash, storedUpload.ContentType, storedUpload.SizeBytes, strings.TrimSpace(upload.PhotographerName), time.Now())
 	if err != nil {
 		service.deleteStoredUpload(ctx, store, storedUpload)
 		return gallery.Photo{}, fmt.Errorf("create approved photo: %w", err)
@@ -465,10 +466,10 @@ func (service *Service) approveOne(ctx context.Context, id int64) (bool, error) 
 	result, err := tx.ExecContext(ctx, `
 		INSERT INTO photos (
 			event_id, storage_policy_id, object_key, thumbnail_key, content_hash,
-			content_type, size_bytes, photographer_name, visibility
+			content_type, size_bytes, photographer_name, visibility, sort_at
 		)
-		VALUES (?, ?, ?, NULLIF(?, ''), ?, ?, ?, NULLIF(?, ''), 'public')
-	`, submission.EventID, submission.StoragePolicyID, submission.ObjectKey, submission.ThumbnailKey, submission.ContentHash, submission.ContentType, submission.SizeBytes, submission.PhotographerName)
+		VALUES (?, ?, ?, NULLIF(?, ''), ?, ?, ?, NULLIF(?, ''), 'public', ?)
+	`, submission.EventID, submission.StoragePolicyID, submission.ObjectKey, submission.ThumbnailKey, submission.ContentHash, submission.ContentType, submission.SizeBytes, submission.PhotographerName, time.Now())
 	if err != nil {
 		return false, fmt.Errorf("create photo from submission: %w", err)
 	}

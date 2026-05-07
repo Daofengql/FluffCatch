@@ -32,6 +32,10 @@ CREATE TABLE events (
   title varchar(191) NOT NULL,
   description text NOT NULL,
   location varchar(191) NOT NULL,
+  province_code varchar(12) NULL,
+  province_name varchar(64) NULL,
+  city_code varchar(12) NULL,
+  city_name varchar(64) NULL,
   starts_at datetime NULL,
   ends_at datetime NULL,
   cover_storage_policy_id varchar(191) NULL,
@@ -40,10 +44,17 @@ CREATE TABLE events (
   is_public boolean NOT NULL DEFAULT true,
   submission_enabled boolean NOT NULL DEFAULT true,
   submission_password_hash varchar(255) NULL,
+  submission_password_plain varchar(191) NULL,
+  private_password_hash varchar(255) NULL,
+  private_password_plain varchar(191) NULL,
+  sort_at datetime NOT NULL,
   created_at timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   PRIMARY KEY (id),
-  KEY events_public_starts_at_index (is_public, starts_at)
+  KEY events_sort_index (sort_at, id),
+  KEY events_public_sort_index (is_public, sort_at, id),
+  KEY events_region_index (province_code, city_code),
+  KEY events_cover_policy_object_public_index (cover_storage_policy_id, cover_object_key(191), is_public)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 CREATE TABLE photos (
@@ -52,20 +63,24 @@ CREATE TABLE photos (
   storage_policy_id varchar(191) NOT NULL,
   object_key varchar(512) NOT NULL,
   thumbnail_key varchar(512) NULL,
-  original_filename varchar(255) NOT NULL,
+  content_hash char(64) NOT NULL,
   content_type varchar(100) NOT NULL,
   size_bytes bigint unsigned NOT NULL DEFAULT 0,
+  like_count bigint unsigned NOT NULL DEFAULT 0,
   photographer_name varchar(191) NULL,
-  visibility enum('public', 'protected', 'private') NOT NULL DEFAULT 'public',
-  access_password_hash varchar(255) NULL,
+  visibility enum('public', 'private') NOT NULL DEFAULT 'public',
   exif json NULL,
   taken_at datetime NULL,
+  sort_at datetime NOT NULL,
   created_at timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   PRIMARY KEY (id),
-  KEY photos_event_visibility_index (event_id, visibility),
+  UNIQUE KEY photos_event_hash_unique (event_id, content_hash),
+  KEY photos_event_sort_index (event_id, sort_at, id),
+  KEY photos_event_visibility_sort_index (event_id, visibility, sort_at, id),
   KEY photos_storage_policy_id_index (storage_policy_id),
-  KEY photos_taken_at_index (taken_at),
+  KEY photos_policy_object_public_index (storage_policy_id, object_key(191), visibility, event_id),
+  KEY photos_policy_thumbnail_public_index (storage_policy_id, thumbnail_key(191), visibility, event_id),
   CONSTRAINT photos_event_id_foreign FOREIGN KEY (event_id) REFERENCES events (id) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
@@ -75,7 +90,7 @@ CREATE TABLE submissions (
   storage_policy_id varchar(191) NOT NULL,
   object_key varchar(512) NOT NULL,
   thumbnail_key varchar(512) NULL,
-  original_filename varchar(255) NOT NULL,
+  content_hash char(64) NOT NULL,
   content_type varchar(100) NOT NULL,
   size_bytes bigint unsigned NOT NULL DEFAULT 0,
   photographer_name varchar(191) NULL,
@@ -85,7 +100,9 @@ CREATE TABLE submissions (
   created_at timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP,
   approved_at timestamp NULL,
   PRIMARY KEY (id),
-  KEY submissions_event_status_index (event_id, status),
+  UNIQUE KEY submissions_event_hash_unique (event_id, content_hash),
+  KEY submissions_event_status_created_index (event_id, status, created_at, id),
+  KEY submissions_status_created_index (status, created_at, id),
   KEY submissions_storage_policy_id_index (storage_policy_id),
   CONSTRAINT submissions_event_id_foreign FOREIGN KEY (event_id) REFERENCES events (id) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
@@ -106,6 +123,15 @@ CREATE TABLE photo_tags (
   KEY photo_tags_tag_id_index (tag_id),
   CONSTRAINT photo_tags_photo_id_foreign FOREIGN KEY (photo_id) REFERENCES photos (id) ON DELETE CASCADE,
   CONSTRAINT photo_tags_tag_id_foreign FOREIGN KEY (tag_id) REFERENCES tags (id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE photo_likes (
+  photo_id bigint unsigned NOT NULL,
+  fingerprint_hash char(64) NOT NULL,
+  created_at timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (photo_id, fingerprint_hash),
+  KEY photo_likes_created_at_index (created_at),
+  CONSTRAINT photo_likes_photo_id_foreign FOREIGN KEY (photo_id) REFERENCES photos (id) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 CREATE TABLE access_grants (

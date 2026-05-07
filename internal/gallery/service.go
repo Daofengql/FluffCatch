@@ -86,7 +86,7 @@ func (service *Service) ListForEventPageWithAccess(ctx context.Context, eventID 
 			content_hash, content_type, size_bytes, like_count, COALESCE(photographer_name, ''), visibility, taken_at, created_at, updated_at
 		FROM photos
 		` + where + `
-		ORDER BY COALESCE(taken_at, created_at) DESC, id DESC
+		ORDER BY sort_at DESC, id DESC
 		LIMIT ? OFFSET ?
 	`
 	offset := (page - 1) * pageSize

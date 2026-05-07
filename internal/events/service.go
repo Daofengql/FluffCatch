@@ -60,10 +60,10 @@ func (service *Service) Create(ctx context.Context, req CreateEventRequest) (Eve
 			title, description, location, province_code, province_name, city_code, city_name, starts_at, ends_at,
 			cover_storage_policy_id, cover_object_key,
 			is_public, submission_enabled, submission_password_hash, submission_password_plain,
-			private_password_hash, private_password_plain
+			private_password_hash, private_password_plain, sort_at
 		)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-	`, event.Title, event.Description, event.Location, nullableString(event.ProvinceCode), nullableString(event.ProvinceName), nullableString(event.CityCode), nullableString(event.CityName), nullableTime(event.StartTime), nullableTime(event.EndTime), nullableString(event.CoverPolicyID), nullableString(event.CoverObjectKey), event.IsPublic, event.SubmissionEnabled, nullableString(passwordHash), nullableString(req.SubmissionPass), nullableString(privatePasswordHash), nullableString(req.PrivatePassword))
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	`, event.Title, event.Description, event.Location, nullableString(event.ProvinceCode), nullableString(event.ProvinceName), nullableString(event.CityCode), nullableString(event.CityName), nullableTime(event.StartTime), nullableTime(event.EndTime), nullableString(event.CoverPolicyID), nullableString(event.CoverObjectKey), event.IsPublic, event.SubmissionEnabled, nullableString(passwordHash), nullableString(req.SubmissionPass), nullableString(privatePasswordHash), nullableString(req.PrivatePassword), eventSortTime(event.StartTime))
 	if err != nil {
 		return Event{}, friendlySQLError("create event", err)
 	}
@@ -112,9 +112,10 @@ func (service *Service) Update(ctx context.Context, id int64, req CreateEventReq
 				submission_password_hash = COALESCE(NULLIF(?, ''), submission_password_hash),
 				submission_password_plain = COALESCE(NULLIF(?, ''), submission_password_plain),
 				private_password_hash = COALESCE(NULLIF(?, ''), private_password_hash),
-				private_password_plain = COALESCE(NULLIF(?, ''), private_password_plain)
+				private_password_plain = COALESCE(NULLIF(?, ''), private_password_plain),
+				sort_at = COALESCE(?, created_at)
 			WHERE id = ?
-		`, event.Title, event.Description, event.Location, nullableString(event.ProvinceCode), nullableString(event.ProvinceName), nullableString(event.CityCode), nullableString(event.CityName), nullableTime(event.StartTime), nullableTime(event.EndTime), nullableString(event.CoverPolicyID), nullableString(event.CoverObjectKey), event.IsPublic, event.SubmissionEnabled, nullableString(passwordHash), nullableString(req.SubmissionPass), nullableString(privatePasswordHash), nullableString(req.PrivatePassword), id)
+		`, event.Title, event.Description, event.Location, nullableString(event.ProvinceCode), nullableString(event.ProvinceName), nullableString(event.CityCode), nullableString(event.CityName), nullableTime(event.StartTime), nullableTime(event.EndTime), nullableString(event.CoverPolicyID), nullableString(event.CoverObjectKey), event.IsPublic, event.SubmissionEnabled, nullableString(passwordHash), nullableString(req.SubmissionPass), nullableString(privatePasswordHash), nullableString(req.PrivatePassword), nullableTime(event.StartTime), id)
 	} else {
 		_, err = service.db.ExecContext(ctx, `
 			UPDATE events
@@ -123,9 +124,10 @@ func (service *Service) Update(ctx context.Context, id int64, req CreateEventReq
 				submission_password_hash = COALESCE(NULLIF(?, ''), submission_password_hash),
 				submission_password_plain = COALESCE(NULLIF(?, ''), submission_password_plain),
 				private_password_hash = COALESCE(NULLIF(?, ''), private_password_hash),
-				private_password_plain = COALESCE(NULLIF(?, ''), private_password_plain)
+				private_password_plain = COALESCE(NULLIF(?, ''), private_password_plain),
+				sort_at = COALESCE(?, created_at)
 			WHERE id = ?
-		`, event.Title, event.Description, event.Location, nullableString(event.ProvinceCode), nullableString(event.ProvinceName), nullableString(event.CityCode), nullableString(event.CityName), nullableTime(event.StartTime), nullableTime(event.EndTime), event.IsPublic, event.SubmissionEnabled, nullableString(passwordHash), nullableString(req.SubmissionPass), nullableString(privatePasswordHash), nullableString(req.PrivatePassword), id)
+		`, event.Title, event.Description, event.Location, nullableString(event.ProvinceCode), nullableString(event.ProvinceName), nullableString(event.CityCode), nullableString(event.CityName), nullableTime(event.StartTime), nullableTime(event.EndTime), event.IsPublic, event.SubmissionEnabled, nullableString(passwordHash), nullableString(req.SubmissionPass), nullableString(privatePasswordHash), nullableString(req.PrivatePassword), nullableTime(event.StartTime), id)
 	}
 	if err != nil {
 		return Event{}, friendlySQLError("update event", err)
@@ -205,7 +207,7 @@ func (service *Service) listWithOptions(ctx context.Context, where string, inclu
 	query += `created_at, updated_at
 		FROM events
 		` + where + `
-		ORDER BY COALESCE(starts_at, created_at) DESC, id DESC
+		ORDER BY sort_at DESC, id DESC
 	`
 
 	rows, err := service.db.QueryContext(ctx, query)
@@ -476,6 +478,13 @@ func nullableTime(value *time.Time) any {
 		return nil
 	}
 	return *value
+}
+
+func eventSortTime(startTime *time.Time) time.Time {
+	if startTime != nil {
+		return *startTime
+	}
+	return time.Now()
 }
 
 func nullableString(value string) any {

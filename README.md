@@ -181,10 +181,10 @@ npm run dev
 
 ## 数据库迁移
 
-使用你偏好的 MySQL 客户端执行初始迁移：
+迁移 SQL 会编译进二进制文件，发布包不需要额外携带 `migrations/` 目录。首次部署或升级时运行：
 
 ```bash
-mysql -u fluffcatch -p fluffcatch < migrations/001_initial_schema.sql
+./fluffcatch --migrate
 ```
 
 ## 常用命令
