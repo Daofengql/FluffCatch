@@ -25,6 +25,7 @@ type cliOptions struct {
 	resetAdminPassword bool
 	adminPassword      string
 	frontendMode       string
+	configFile         string
 }
 
 func main() {
@@ -33,7 +34,7 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	cfg, err := config.Load()
+	cfg, err := config.LoadFile(options.configFile)
 	if err != nil {
 		slog.Error("failed to load config", "error", err)
 		os.Exit(1)
@@ -112,6 +113,7 @@ func parseFlags() cliOptions {
 	flag.BoolVar(&options.migrateOnly, "migrate", false, "run database migrations and exit")
 	flag.BoolVar(&options.resetAdminPassword, "reset-admin-password", false, "reset admin password and exit")
 	flag.StringVar(&options.adminPassword, "admin-password", "", "admin password to set with --reset-admin-password; generated when omitted")
+	flag.StringVar(&options.configFile, "config", "config.yaml", "YAML config file to load")
 	flag.StringVar(&options.frontendMode, "frontend-mode", "", "frontend serving mode: auto, embedded, disk, external, disabled")
 	flag.Parse()
 	return options
@@ -207,7 +209,7 @@ func storageConfigFromPolicy(policy settings.StoragePolicy) storage.Config {
 
 func mustOpenDatabase(ctx context.Context, cfg config.Config) *sql.DB {
 	if !cfg.Database.ConnectOnStart {
-		slog.Info("mysql connection skipped", "reason", "MYSQL_CONNECT_ON_START is false")
+		slog.Info("mysql connection skipped", "reason", "database.connect_on_start is false")
 		return nil
 	}
 

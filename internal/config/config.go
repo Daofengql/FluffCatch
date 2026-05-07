@@ -1,7 +1,6 @@
 package config
 
 import (
-	"bufio"
 	"fmt"
 	"net"
 	"os"
@@ -10,54 +9,55 @@ import (
 	"time"
 
 	"github.com/go-sql-driver/mysql"
+	"gopkg.in/yaml.v3"
 )
 
 type Config struct {
-	App      AppConfig
-	HTTP     HTTPConfig
-	Database DatabaseConfig
-	Storage  StorageConfig
-	Auth     AuthConfig
-	OIDC     OIDCConfig
-	Frontend FrontendConfig
-	Upload   UploadConfig
+	App      AppConfig      `yaml:"app"`
+	HTTP     HTTPConfig     `yaml:"http"`
+	Database DatabaseConfig `yaml:"database"`
+	Storage  StorageConfig  `yaml:"storage"`
+	Auth     AuthConfig     `yaml:"auth"`
+	OIDC     OIDCConfig     `yaml:"oidc"`
+	Frontend FrontendConfig `yaml:"frontend"`
+	Upload   UploadConfig   `yaml:"upload"`
 }
 
 type UploadConfig struct {
-	MaxSizeMB         int
-	MaxFilesPerUpload int
+	MaxSizeMB         int `yaml:"max_size_mb"`
+	MaxFilesPerUpload int `yaml:"max_files_per_upload"`
 }
 
 type AppConfig struct {
-	Name string
-	Env  string
+	Name string `yaml:"name"`
+	Env  string `yaml:"env"`
 }
 
 type HTTPConfig struct {
-	Addr         string
-	ReadTimeout  time.Duration
-	WriteTimeout time.Duration
+	Addr         string        `yaml:"addr"`
+	ReadTimeout  time.Duration `yaml:"read_timeout"`
+	WriteTimeout time.Duration `yaml:"write_timeout"`
 }
 
 type DatabaseConfig struct {
-	Host              string
-	Port              int
-	User              string
-	Password          string
-	Database          string
-	Charset           string
-	Location          string
-	ParseTime         bool
-	ConnectOnStart    bool
-	MaxOpenConns      int
-	MaxIdleConns      int
-	ConnMaxLifetime   time.Duration
-	ConnMaxIdleTime   time.Duration
-	Timeout           time.Duration
-	ReadTimeout       time.Duration
-	WriteTimeout      time.Duration
-	ConnectRetries    int
-	ConnectRetryDelay time.Duration
+	Host              string        `yaml:"host"`
+	Port              int           `yaml:"port"`
+	User              string        `yaml:"user"`
+	Password          string        `yaml:"password"`
+	Database          string        `yaml:"database"`
+	Charset           string        `yaml:"charset"`
+	Location          string        `yaml:"location"`
+	ParseTime         bool          `yaml:"parse_time"`
+	ConnectOnStart    bool          `yaml:"connect_on_start"`
+	MaxOpenConns      int           `yaml:"max_open_conns"`
+	MaxIdleConns      int           `yaml:"max_idle_conns"`
+	ConnMaxLifetime   time.Duration `yaml:"conn_max_lifetime"`
+	ConnMaxIdleTime   time.Duration `yaml:"conn_max_idle_time"`
+	Timeout           time.Duration `yaml:"timeout"`
+	ReadTimeout       time.Duration `yaml:"read_timeout"`
+	WriteTimeout      time.Duration `yaml:"write_timeout"`
+	ConnectRetries    int           `yaml:"connect_retries"`
+	ConnectRetryDelay time.Duration `yaml:"connect_retry_delay"`
 }
 
 func (database DatabaseConfig) DSN() (string, error) {
@@ -89,122 +89,198 @@ func (database DatabaseConfig) DSN() (string, error) {
 }
 
 type StorageConfig struct {
-	Driver        string
-	LocalPath     string
-	PublicPrefix  string
-	PublicBaseURL string
-	S3            S3Config
+	Driver        string   `yaml:"driver"`
+	LocalPath     string   `yaml:"local_path"`
+	PublicPrefix  string   `yaml:"public_prefix"`
+	PublicBaseURL string   `yaml:"public_base_url"`
+	S3            S3Config `yaml:"s3"`
 }
 
 type S3Config struct {
-	Endpoint  string
-	Bucket    string
-	Region    string
-	AccessKey string
-	SecretKey string
-	UseSSL    bool
-	AccountID string
+	Endpoint  string `yaml:"endpoint"`
+	Bucket    string `yaml:"bucket"`
+	Region    string `yaml:"region"`
+	AccessKey string `yaml:"access_key"`
+	SecretKey string `yaml:"secret_key"`
+	UseSSL    bool   `yaml:"use_ssl"`
+	AccountID string `yaml:"account_id"`
 }
 
 type AuthConfig struct {
-	AdminUsername string
-	SessionSecret string
+	AdminUsername string `yaml:"admin_username"`
+	SessionSecret string `yaml:"session_secret"`
 }
 
 type OIDCConfig struct {
-	Enabled      bool
-	Provider     string
-	IssuerURL    string
-	ClientID     string
-	ClientSecret string
-	RedirectURL  string
+	Enabled      bool   `yaml:"enabled"`
+	Provider     string `yaml:"provider"`
+	IssuerURL    string `yaml:"issuer_url"`
+	ClientID     string `yaml:"client_id"`
+	ClientSecret string `yaml:"client_secret"`
+	RedirectURL  string `yaml:"redirect_url"`
 }
 
 type FrontendConfig struct {
-	Mode       string
-	StaticRoot string
+	Mode       string `yaml:"mode"`
+	StaticRoot string `yaml:"static_root"`
 }
 
 func Load() (Config, error) {
-	if err := loadDotEnv(".env"); err != nil {
-		return Config{}, err
+	return LoadFile("config.yaml")
+}
+
+func LoadFile(path string) (Config, error) {
+	if strings.TrimSpace(path) == "" {
+		path = "config.yaml"
 	}
 
-	cfg := Config{
+	cfg := defaultConfig()
+	if err := loadYAML(path, &cfg); err != nil {
+		return Config{}, err
+	}
+	applyEnvOverrides(&cfg)
+
+	return normalizeAndValidate(cfg)
+}
+
+func defaultConfig() Config {
+	return Config{
 		App: AppConfig{
 			Name: "FluffCatch",
-			Env:  getEnv("APP_ENV", "development"),
+			Env:  "development",
 		},
 		HTTP: HTTPConfig{
-			Addr:         getEnv("HTTP_ADDR", ":8080"),
-			ReadTimeout:  getDurationEnv("HTTP_READ_TIMEOUT", 10*time.Second),
-			WriteTimeout: getDurationEnv("HTTP_WRITE_TIMEOUT", 30*time.Second),
+			Addr:         ":8080",
+			ReadTimeout:  10 * time.Second,
+			WriteTimeout: 30 * time.Second,
 		},
 		Database: DatabaseConfig{
-			Host:              getEnv("MYSQL_HOST", "127.0.0.1"),
-			Port:              getIntEnv("MYSQL_PORT", 3306),
-			User:              getEnv("MYSQL_USER", "fluffcatch"),
-			Password:          getEnv("MYSQL_PASSWORD", "fluffcatch"),
-			Database:          getEnv("MYSQL_DATABASE", "fluffcatch"),
-			Charset:           getEnv("MYSQL_CHARSET", "utf8mb4"),
-			Location:          getEnv("MYSQL_LOCATION", "Local"),
-			ParseTime:         getBoolEnv("MYSQL_PARSE_TIME", true),
-			ConnectOnStart:    getBoolEnv("MYSQL_CONNECT_ON_START", true),
-			MaxOpenConns:      getIntEnv("MYSQL_MAX_OPEN_CONNS", 20),
-			MaxIdleConns:      getIntEnv("MYSQL_MAX_IDLE_CONNS", 10),
-			ConnMaxLifetime:   getDurationEnv("MYSQL_CONN_MAX_LIFETIME", 25*time.Minute),
-			ConnMaxIdleTime:   getDurationEnv("MYSQL_CONN_MAX_IDLE_TIME", 5*time.Minute),
-			Timeout:           getDurationEnv("MYSQL_TIMEOUT", 5*time.Second),
-			ReadTimeout:       getDurationEnv("MYSQL_READ_TIMEOUT", 30*time.Second),
-			WriteTimeout:      getDurationEnv("MYSQL_WRITE_TIMEOUT", 30*time.Second),
-			ConnectRetries:    getIntEnv("MYSQL_CONNECT_RETRIES", 5),
-			ConnectRetryDelay: getDurationEnv("MYSQL_CONNECT_RETRY_DELAY", 2*time.Second),
+			Host:              "127.0.0.1",
+			Port:              3306,
+			User:              "fluffcatch",
+			Password:          "fluffcatch",
+			Database:          "fluffcatch",
+			Charset:           "utf8mb4",
+			Location:          "Local",
+			ParseTime:         true,
+			ConnectOnStart:    true,
+			MaxOpenConns:      20,
+			MaxIdleConns:      10,
+			ConnMaxLifetime:   25 * time.Minute,
+			ConnMaxIdleTime:   5 * time.Minute,
+			Timeout:           5 * time.Second,
+			ReadTimeout:       30 * time.Second,
+			WriteTimeout:      30 * time.Second,
+			ConnectRetries:    5,
+			ConnectRetryDelay: 2 * time.Second,
 		},
 		Storage: StorageConfig{
-			Driver:        getEnv("STORAGE_DRIVER", "local"),
-			LocalPath:     getEnv("STORAGE_LOCAL_PATH", "data/uploads"),
-			PublicPrefix:  getEnv("STORAGE_PUBLIC_PREFIX", "/media"),
-			PublicBaseURL: strings.TrimRight(getEnv("STORAGE_PUBLIC_BASE_URL", ""), "/"),
+			Driver:        "local",
+			LocalPath:     "data/uploads",
+			PublicPrefix:  "/media",
+			PublicBaseURL: "",
 			S3: S3Config{
-				Endpoint:  getEnv("S3_ENDPOINT", ""),
-				Bucket:    getEnv("S3_BUCKET", ""),
-				Region:    getEnv("S3_REGION", "us-east-1"),
-				AccessKey: getEnv("S3_ACCESS_KEY", ""),
-				SecretKey: getEnv("S3_SECRET_KEY", ""),
-				UseSSL:    getBoolEnv("S3_USE_SSL", false),
+				Region: "us-east-1",
 			},
 		},
 		Auth: AuthConfig{
-			AdminUsername: getEnv("ADMIN_USERNAME", "admin"),
-			SessionSecret: getEnv("SESSION_SECRET", "change-me-in-production"),
-		},
-		OIDC: OIDCConfig{
-			Enabled:      getBoolEnv("OIDC_ENABLED", false),
-			Provider:     getEnv("OIDC_PROVIDER", ""),
-			IssuerURL:    getEnv("OIDC_ISSUER_URL", ""),
-			ClientID:     getEnv("OIDC_CLIENT_ID", ""),
-			ClientSecret: getEnv("OIDC_CLIENT_SECRET", ""),
-			RedirectURL:  getEnv("OIDC_REDIRECT_URL", ""),
+			AdminUsername: "admin",
+			SessionSecret: "change-me-in-production",
 		},
 		Frontend: FrontendConfig{
-			Mode:       getEnv("FRONTEND_MODE", "auto"),
-			StaticRoot: getEnv("FRONTEND_STATIC_ROOT", getEnv("STATIC_ROOT", "www/dist")),
+			Mode:       "auto",
+			StaticRoot: "www/dist",
 		},
 		Upload: UploadConfig{
-			MaxSizeMB:         getIntEnv("UPLOAD_MAX_SIZE_MB", 20),
-			MaxFilesPerUpload: getIntEnv("UPLOAD_MAX_FILES_PER_UPLOAD", 20),
+			MaxSizeMB:         20,
+			MaxFilesPerUpload: 20,
 		},
 	}
+}
 
+func loadYAML(path string, cfg *Config) error {
+	file, err := os.Open(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return fmt.Errorf("open %s: %w", path, err)
+	}
+	defer file.Close()
+
+	decoder := yaml.NewDecoder(file)
+	decoder.KnownFields(true)
+	if err := decoder.Decode(cfg); err != nil {
+		return fmt.Errorf("decode %s: %w", path, err)
+	}
+
+	return nil
+}
+
+func applyEnvOverrides(cfg *Config) {
+	cfg.App.Env = getEnv("APP_ENV", cfg.App.Env)
+	cfg.HTTP.Addr = getEnv("HTTP_ADDR", cfg.HTTP.Addr)
+	cfg.HTTP.ReadTimeout = getDurationEnv("HTTP_READ_TIMEOUT", cfg.HTTP.ReadTimeout)
+	cfg.HTTP.WriteTimeout = getDurationEnv("HTTP_WRITE_TIMEOUT", cfg.HTTP.WriteTimeout)
+
+	cfg.Database.Host = getEnv("MYSQL_HOST", cfg.Database.Host)
+	cfg.Database.Port = getIntEnv("MYSQL_PORT", cfg.Database.Port)
+	cfg.Database.User = getEnv("MYSQL_USER", cfg.Database.User)
+	cfg.Database.Password = getEnv("MYSQL_PASSWORD", cfg.Database.Password)
+	cfg.Database.Database = getEnv("MYSQL_DATABASE", cfg.Database.Database)
+	cfg.Database.Charset = getEnv("MYSQL_CHARSET", cfg.Database.Charset)
+	cfg.Database.Location = getEnv("MYSQL_LOCATION", cfg.Database.Location)
+	cfg.Database.ParseTime = getBoolEnv("MYSQL_PARSE_TIME", cfg.Database.ParseTime)
+	cfg.Database.ConnectOnStart = getBoolEnv("MYSQL_CONNECT_ON_START", cfg.Database.ConnectOnStart)
+	cfg.Database.MaxOpenConns = getIntEnv("MYSQL_MAX_OPEN_CONNS", cfg.Database.MaxOpenConns)
+	cfg.Database.MaxIdleConns = getIntEnv("MYSQL_MAX_IDLE_CONNS", cfg.Database.MaxIdleConns)
+	cfg.Database.ConnMaxLifetime = getDurationEnv("MYSQL_CONN_MAX_LIFETIME", cfg.Database.ConnMaxLifetime)
+	cfg.Database.ConnMaxIdleTime = getDurationEnv("MYSQL_CONN_MAX_IDLE_TIME", cfg.Database.ConnMaxIdleTime)
+	cfg.Database.Timeout = getDurationEnv("MYSQL_TIMEOUT", cfg.Database.Timeout)
+	cfg.Database.ReadTimeout = getDurationEnv("MYSQL_READ_TIMEOUT", cfg.Database.ReadTimeout)
+	cfg.Database.WriteTimeout = getDurationEnv("MYSQL_WRITE_TIMEOUT", cfg.Database.WriteTimeout)
+	cfg.Database.ConnectRetries = getIntEnv("MYSQL_CONNECT_RETRIES", cfg.Database.ConnectRetries)
+	cfg.Database.ConnectRetryDelay = getDurationEnv("MYSQL_CONNECT_RETRY_DELAY", cfg.Database.ConnectRetryDelay)
+
+	cfg.Storage.Driver = getEnv("STORAGE_DRIVER", cfg.Storage.Driver)
+	cfg.Storage.LocalPath = getEnv("STORAGE_LOCAL_PATH", cfg.Storage.LocalPath)
+	cfg.Storage.PublicPrefix = getEnv("STORAGE_PUBLIC_PREFIX", cfg.Storage.PublicPrefix)
+	cfg.Storage.PublicBaseURL = getEnv("STORAGE_PUBLIC_BASE_URL", cfg.Storage.PublicBaseURL)
+	cfg.Storage.S3.Endpoint = getEnv("S3_ENDPOINT", cfg.Storage.S3.Endpoint)
+	cfg.Storage.S3.Bucket = getEnv("S3_BUCKET", cfg.Storage.S3.Bucket)
+	cfg.Storage.S3.Region = getEnv("S3_REGION", cfg.Storage.S3.Region)
+	cfg.Storage.S3.AccessKey = getEnv("S3_ACCESS_KEY", cfg.Storage.S3.AccessKey)
+	cfg.Storage.S3.SecretKey = getEnv("S3_SECRET_KEY", cfg.Storage.S3.SecretKey)
+	cfg.Storage.S3.UseSSL = getBoolEnv("S3_USE_SSL", cfg.Storage.S3.UseSSL)
+	cfg.Storage.S3.AccountID = getEnv("S3_ACCOUNT_ID", cfg.Storage.S3.AccountID)
+
+	cfg.Auth.AdminUsername = getEnv("ADMIN_USERNAME", cfg.Auth.AdminUsername)
+	cfg.Auth.SessionSecret = getEnv("SESSION_SECRET", cfg.Auth.SessionSecret)
+
+	cfg.OIDC.Enabled = getBoolEnv("OIDC_ENABLED", cfg.OIDC.Enabled)
+	cfg.OIDC.Provider = getEnv("OIDC_PROVIDER", cfg.OIDC.Provider)
+	cfg.OIDC.IssuerURL = getEnv("OIDC_ISSUER_URL", cfg.OIDC.IssuerURL)
+	cfg.OIDC.ClientID = getEnv("OIDC_CLIENT_ID", cfg.OIDC.ClientID)
+	cfg.OIDC.ClientSecret = getEnv("OIDC_CLIENT_SECRET", cfg.OIDC.ClientSecret)
+	cfg.OIDC.RedirectURL = getEnv("OIDC_REDIRECT_URL", cfg.OIDC.RedirectURL)
+
+	cfg.Frontend.Mode = getEnv("FRONTEND_MODE", cfg.Frontend.Mode)
+	cfg.Frontend.StaticRoot = getEnv("FRONTEND_STATIC_ROOT", getEnv("STATIC_ROOT", cfg.Frontend.StaticRoot))
+	cfg.Upload.MaxSizeMB = getIntEnv("UPLOAD_MAX_SIZE_MB", cfg.Upload.MaxSizeMB)
+	cfg.Upload.MaxFilesPerUpload = getIntEnv("UPLOAD_MAX_FILES_PER_UPLOAD", cfg.Upload.MaxFilesPerUpload)
+}
+
+func normalizeAndValidate(cfg Config) (Config, error) {
 	if cfg.App.Env == "production" && cfg.Auth.SessionSecret == "change-me-in-production" {
-		return Config{}, fmt.Errorf("SESSION_SECRET must be set in production")
+		return Config{}, fmt.Errorf("auth.session_secret must be set in production")
 	}
 
 	cfg.Storage.Driver = strings.ToLower(cfg.Storage.Driver)
+	cfg.Storage.PublicBaseURL = strings.TrimRight(cfg.Storage.PublicBaseURL, "/")
 	switch cfg.Storage.Driver {
 	case "local", "s3", "minio", "aws-s3", "aliyun-oss", "tencent-cos", "cf-r2":
 	default:
-		return Config{}, fmt.Errorf("unsupported STORAGE_DRIVER %q", cfg.Storage.Driver)
+		return Config{}, fmt.Errorf("unsupported storage.driver %q", cfg.Storage.Driver)
 	}
 
 	if err := cfg.SetFrontendMode(cfg.Frontend.Mode); err != nil {
@@ -225,62 +301,8 @@ func (cfg *Config) SetFrontendMode(mode string) error {
 		cfg.Frontend.Mode = normalized
 		return nil
 	default:
-		return fmt.Errorf("unsupported FRONTEND_MODE %q", mode)
+		return fmt.Errorf("unsupported frontend.mode %q", mode)
 	}
-}
-
-func loadDotEnv(path string) error {
-	file, err := os.Open(path)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return nil
-		}
-		return fmt.Errorf("open %s: %w", path, err)
-	}
-	defer file.Close()
-
-	scanner := bufio.NewScanner(file)
-	lineNumber := 0
-	for scanner.Scan() {
-		lineNumber++
-		line := strings.TrimSpace(scanner.Text())
-		if line == "" || strings.HasPrefix(line, "#") {
-			continue
-		}
-
-		key, value, ok := strings.Cut(line, "=")
-		if !ok {
-			return fmt.Errorf("invalid .env line %d", lineNumber)
-		}
-
-		key = strings.TrimSpace(key)
-		if key == "" {
-			return fmt.Errorf("invalid .env line %d", lineNumber)
-		}
-
-		if _, exists := os.LookupEnv(key); exists {
-			continue
-		}
-
-		os.Setenv(key, trimEnvValue(value))
-	}
-
-	if err := scanner.Err(); err != nil {
-		return fmt.Errorf("read %s: %w", path, err)
-	}
-
-	return nil
-}
-
-func trimEnvValue(value string) string {
-	value = strings.TrimSpace(value)
-	if len(value) >= 2 {
-		if (value[0] == '"' && value[len(value)-1] == '"') || (value[0] == '\'' && value[len(value)-1] == '\'') {
-			return value[1 : len(value)-1]
-		}
-	}
-
-	return value
 }
 
 func getEnv(key string, fallback string) string {

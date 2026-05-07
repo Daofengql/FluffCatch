@@ -1,6 +1,8 @@
 .env
 .env.*
-!.env.example
+config.yaml
+config.*.yaml
+!config.example.yaml
 
 bin/
 data/

@@ -16,7 +16,7 @@ FluffCatch 是一个自部署的兽聚返图收集与画廊应用。它面向单
 ## 快速开始
 
 ```bash
-cp .env.example .env
+cp config.example.yaml config.yaml
 go mod tidy
 go run ./cmd/fluffcatch
 ```
@@ -33,29 +33,29 @@ npm run dev
 - 前端开发服务器：`http://localhost:5173`
 - 健康检查：`http://localhost:8080/api/v1/health`
 
-数据库连接使用分项配置，不需要手写 DSN URL。请在 `.env` 中分别填写：
+数据库连接使用分项配置，不需要手写 DSN URL。请在 `config.yaml` 中分别填写：
 
-- `MYSQL_HOST`
-- `MYSQL_PORT`
-- `MYSQL_USER`
-- `MYSQL_PASSWORD`
-- `MYSQL_DATABASE`
+- `database.host`
+- `database.port`
+- `database.user`
+- `database.password`
+- `database.database`
 
 默认情况下，后端启动时会连接 MySQL，但不会自动建表。建表需要显式进入迁移模式。
 
-后端使用 Go 标准库连接池管理 MySQL 连接。默认会启用驱动连接存活检查，并设置连接、读取、写入超时；如果 MySQL 临时断开，后续请求会从池中重新获取可用连接。启动连接失败时会按 `MYSQL_CONNECT_RETRIES` 和 `MYSQL_CONNECT_RETRY_DELAY` 自动重试。
+后端使用 Go 标准库连接池管理 MySQL 连接。默认会启用驱动连接存活检查，并设置连接、读取、写入超时；如果 MySQL 临时断开，后续请求会从池中重新获取可用连接。启动连接失败时会按 `database.connect_retries` 和 `database.connect_retry_delay` 自动重试。
 
-如遇到本机 MySQL、代理或防火墙偶发断开，可以按需在 `.env` 中增加这些可选项：
+如遇到本机 MySQL、代理或防火墙偶发断开，可以按需在 `config.yaml` 中增加这些可选项：
 
-- `MYSQL_MAX_OPEN_CONNS`：最大打开连接数，默认 `20`。
-- `MYSQL_MAX_IDLE_CONNS`：最大空闲连接数，默认 `10`。
-- `MYSQL_CONN_MAX_LIFETIME`：连接最长生命周期，默认 `25m`。
-- `MYSQL_CONN_MAX_IDLE_TIME`：连接最大空闲时间，默认 `5m`。
-- `MYSQL_TIMEOUT`：建立连接超时，默认 `5s`。
-- `MYSQL_READ_TIMEOUT`：读取超时，默认 `30s`。
-- `MYSQL_WRITE_TIMEOUT`：写入超时，默认 `30s`。
-- `MYSQL_CONNECT_RETRIES`：启动连接重试次数，默认 `5`。
-- `MYSQL_CONNECT_RETRY_DELAY`：启动连接重试间隔，默认 `2s`。
+- `database.max_open_conns`：最大打开连接数，默认 `20`。
+- `database.max_idle_conns`：最大空闲连接数，默认 `10`。
+- `database.conn_max_lifetime`：连接最长生命周期，默认 `25m`。
+- `database.conn_max_idle_time`：连接最大空闲时间，默认 `5m`。
+- `database.timeout`：建立连接超时，默认 `5s`。
+- `database.read_timeout`：读取超时，默认 `30s`。
+- `database.write_timeout`：写入超时，默认 `30s`。
+- `database.connect_retries`：启动连接重试次数，默认 `5`。
+- `database.connect_retry_delay`：启动连接重试间隔，默认 `2s`。
 
 如果只想执行数据库迁移，不进入主系统，可以运行：
 
@@ -64,6 +64,15 @@ go run ./cmd/fluffcatch --migrate
 ```
 
 迁移完成后进程会提示重新启动，然后退出；再次不带 `--migrate` 启动即可进入主系统。
+
+如果需要使用非默认配置文件，可以通过 `--config` 指定：
+
+```bash
+go run ./cmd/fluffcatch --config config.production.yaml
+go run ./cmd/fluffcatch --config config.production.yaml --migrate
+```
+
+不指定时默认读取 `config.yaml`。配置优先级为：默认值 < YAML 文件 < 系统环境变量，便于 Docker 或 systemd 注入密码、端口等部署参数。
 
 首次迁移会自动创建管理员账号，并在终端输出一次随机密码：
 
@@ -87,7 +96,7 @@ go run ./cmd/fluffcatch --reset-admin-password --admin-password "new-password"
 
 重置完成后进程会提示重新启动，然后退出。
 
-`.env` 只保留启动必需项和首次兜底配置。站点名称、站点副标题、Logo、存储策略与 OIDC 配置会保存到数据库 `settings` 表，运行时可通过后台接口更新。
+`config.yaml` 只保留启动必需项和首次兜底配置。站点名称、站点副标题、Logo、存储策略与 OIDC 配置会保存到数据库 `settings` 表，运行时可通过后台接口更新。
 
 ## 生产构建
 

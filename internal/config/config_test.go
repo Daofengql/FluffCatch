@@ -8,8 +8,7 @@ import (
 )
 
 func TestLoadDefaults(t *testing.T) {
-	t.Setenv("APP_ENV", "development")
-	t.Setenv("STORAGE_DRIVER", "")
+	t.Chdir(t.TempDir())
 
 	cfg, err := Load()
 	if err != nil {
@@ -79,6 +78,7 @@ func TestLoadDefaults(t *testing.T) {
 
 func TestLoadRejectsUnknownStorageDriver(t *testing.T) {
 	t.Setenv("STORAGE_DRIVER", "ftp")
+	t.Chdir(t.TempDir())
 
 	_, err := Load()
 	if err == nil {
@@ -86,13 +86,64 @@ func TestLoadRejectsUnknownStorageDriver(t *testing.T) {
 	}
 }
 
-func TestLoadDotEnvDoesNotOverrideEnvironment(t *testing.T) {
-	t.Setenv("HTTP_ADDR", ":8088")
-	t.Setenv("STORAGE_DRIVER", "local")
+func TestLoadFileReadsSpecifiedYAMLFile(t *testing.T) {
 	t.Chdir(t.TempDir())
 
-	if err := os.WriteFile(".env", []byte("HTTP_ADDR=\":9090\"\nAPP_ENV=testing\n"), 0644); err != nil {
-		t.Fatalf("write .env: %v", err)
+	if err := os.WriteFile("config.production.yaml", []byte(`
+app:
+  env: production
+http:
+  addr: :8092
+  read_timeout: 11s
+database:
+  user: fluffcatch
+  password: ""
+  database: fluffcatch
+  conn_max_lifetime: 26m
+auth:
+  session_secret: secret
+`), 0644); err != nil {
+		t.Fatalf("write config.production.yaml: %v", err)
+	}
+
+	cfg, err := LoadFile("config.production.yaml")
+	if err != nil {
+		t.Fatalf("LoadFile() returned error: %v", err)
+	}
+
+	if cfg.HTTP.Addr != ":8092" {
+		t.Fatalf("expected HTTP addr from YAML, got %q", cfg.HTTP.Addr)
+	}
+
+	if cfg.App.Env != "production" {
+		t.Fatalf("expected app env from YAML, got %q", cfg.App.Env)
+	}
+
+	if cfg.Database.Password != "" {
+		t.Fatalf("expected blank mysql password from YAML, got %q", cfg.Database.Password)
+	}
+
+	if cfg.HTTP.ReadTimeout != 11*time.Second {
+		t.Fatalf("expected HTTP read timeout from YAML, got %s", cfg.HTTP.ReadTimeout)
+	}
+
+	if cfg.Database.ConnMaxLifetime != 26*time.Minute {
+		t.Fatalf("expected mysql conn max lifetime from YAML, got %s", cfg.Database.ConnMaxLifetime)
+	}
+}
+
+func TestEnvironmentOverridesYAML(t *testing.T) {
+	t.Setenv("HTTP_ADDR", ":9999")
+	t.Setenv("MYSQL_USER", "from_env")
+	t.Chdir(t.TempDir())
+
+	if err := os.WriteFile("config.yaml", []byte(`
+http:
+  addr: :8092
+database:
+  user: from_yaml
+`), 0644); err != nil {
+		t.Fatalf("write config.yaml: %v", err)
 	}
 
 	cfg, err := Load()
@@ -100,12 +151,12 @@ func TestLoadDotEnvDoesNotOverrideEnvironment(t *testing.T) {
 		t.Fatalf("Load() returned error: %v", err)
 	}
 
-	if cfg.HTTP.Addr != ":8088" {
-		t.Fatalf("expected environment to win, got %q", cfg.HTTP.Addr)
+	if cfg.HTTP.Addr != ":9999" {
+		t.Fatalf("expected environment HTTP_ADDR to win, got %q", cfg.HTTP.Addr)
 	}
 
-	if cfg.App.Env != "testing" {
-		t.Fatalf("expected APP_ENV from .env, got %q", cfg.App.Env)
+	if cfg.Database.User != "from_env" {
+		t.Fatalf("expected environment MYSQL_USER to win, got %q", cfg.Database.User)
 	}
 }
 

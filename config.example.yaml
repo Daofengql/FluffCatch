@@ -1,0 +1,61 @@
+app:
+  env: development
+
+http:
+  addr: :8080
+  read_timeout: 10s
+  write_timeout: 30s
+
+database:
+  host: 127.0.0.1
+  port: 3306
+  user: fluffcatch
+  password: fluffcatch
+  database: fluffcatch
+  charset: utf8mb4
+  location: Local
+  parse_time: true
+  connect_on_start: true
+  max_open_conns: 20
+  max_idle_conns: 10
+  conn_max_lifetime: 25m
+  conn_max_idle_time: 5m
+  timeout: 5s
+  read_timeout: 30s
+  write_timeout: 30s
+  connect_retries: 5
+  connect_retry_delay: 2s
+
+storage:
+  driver: local
+  local_path: data/uploads
+  public_prefix: /media
+  public_base_url: ""
+  s3:
+    endpoint: ""
+    bucket: ""
+    region: us-east-1
+    access_key: ""
+    secret_key: ""
+    use_ssl: false
+    account_id: ""
+
+auth:
+  admin_username: admin
+  session_secret: change-me-in-production
+
+oidc:
+  enabled: false
+  provider: ""
+  issuer_url: ""
+  client_id: ""
+  client_secret: ""
+  redirect_url: ""
+
+upload:
+  max_size_mb: 20
+  max_files_per_upload: 20
+
+frontend:
+  mode: auto
+  static_root: www/dist
