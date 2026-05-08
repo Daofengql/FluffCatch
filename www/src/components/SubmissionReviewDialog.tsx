@@ -55,6 +55,7 @@ export function SubmissionReviewDialog({ event, onChanged, onClose, open }: Subm
   const previewItems = useMemo<ImagePreviewItem[]>(
     () =>
       submissions.map((submission) => ({
+        contentType: submission.contentType,
         src: submission.url,
         subtitle: submission.photographerName ? `摄影师：${submission.photographerName}` : '匿名投稿',
         title: `投稿 #${submission.id}`
@@ -104,6 +105,10 @@ export function SubmissionReviewDialog({ event, onChanged, onClose, open }: Subm
   const allSelected = submissions.length > 0 && selected.length === submissions.length;
   const someSelected = selected.length > 0 && selected.length < submissions.length;
 
+  function isVideoSubmission(submission: Submission) {
+    return submission.contentType.toLowerCase().startsWith('video/');
+  }
+
   return (
     <Dialog fullWidth maxWidth="lg" onClose={onClose} open={open}>
       <DialogTitle>
@@ -113,7 +118,7 @@ export function SubmissionReviewDialog({ event, onChanged, onClose, open }: Subm
               审核返图
             </Typography>
             <Typography color="text.secondary" variant="body2">
-              {event?.title || '当前兽聚'} / 当前待审核 {submissions.length} 张
+              {event?.title || '当前兽聚'} / 当前待审核 {submissions.length} 个
             </Typography>
           </Box>
           <Stack direction="row" sx={{ gap: 1 }}>
@@ -152,12 +157,23 @@ export function SubmissionReviewDialog({ event, onChanged, onClose, open }: Subm
             {submissions.map((submission, index) => (
               <Grid key={submission.id} size={{ xs: 6, sm: 4, md: 2.4 }}>
                 <Card>
-                  <CardMedia
-                    component="img"
-                    image={submission.thumbnailUrl || submission.url}
-                    onClick={() => setPreviewIndex(index)}
-                    sx={{ aspectRatio: '1 / 1', cursor: 'zoom-in', objectFit: 'cover' }}
-                  />
+                  {isVideoSubmission(submission) ? (
+                    <Box
+                      component="video"
+                      muted
+                      onClick={() => setPreviewIndex(index)}
+                      preload="metadata"
+                      src={submission.url}
+                      sx={{ aspectRatio: '1 / 1', bgcolor: 'common.black', cursor: 'zoom-in', display: 'block', objectFit: 'cover', width: '100%' }}
+                    />
+                  ) : (
+                    <CardMedia
+                      component="img"
+                      image={submission.thumbnailUrl || submission.url}
+                      onClick={() => setPreviewIndex(index)}
+                      sx={{ aspectRatio: '1 / 1', cursor: 'zoom-in', objectFit: 'cover' }}
+                    />
+                  )}
                   <CardContent sx={{ p: 1 }}>
                     <Stack direction="row" sx={{ alignItems: 'center', gap: 0.5 }}>
                       <Checkbox checked={selected.includes(submission.id)} onChange={(event) => toggleSubmission(submission.id, event.target.checked)} size="small" />
@@ -190,7 +206,7 @@ export function SubmissionReviewDialog({ event, onChanged, onClose, open }: Subm
                   <TableCell padding="checkbox">
                     <Checkbox checked={allSelected} indeterminate={someSelected} onChange={(event) => toggleAll(event.target.checked)} />
                   </TableCell>
-                  <TableCell>图片</TableCell>
+                  <TableCell>媒体</TableCell>
                   <TableCell>投稿</TableCell>
                   <TableCell>摄影师</TableCell>
                   <TableCell>Hash</TableCell>
@@ -204,12 +220,23 @@ export function SubmissionReviewDialog({ event, onChanged, onClose, open }: Subm
                       <Checkbox checked={selected.includes(submission.id)} onChange={(event) => toggleSubmission(submission.id, event.target.checked)} />
                     </TableCell>
                     <TableCell>
-                      <Box
-                        component="img"
-                        onClick={() => setPreviewIndex(index)}
-                        src={submission.thumbnailUrl || submission.url}
-                        sx={{ borderRadius: 1, cursor: 'zoom-in', height: 56, objectFit: 'cover', width: 76 }}
-                      />
+                      {isVideoSubmission(submission) ? (
+                        <Box
+                          component="video"
+                          muted
+                          onClick={() => setPreviewIndex(index)}
+                          preload="metadata"
+                          src={submission.url}
+                          sx={{ bgcolor: 'common.black', borderRadius: 1, cursor: 'zoom-in', height: 56, objectFit: 'cover', width: 76 }}
+                        />
+                      ) : (
+                        <Box
+                          component="img"
+                          onClick={() => setPreviewIndex(index)}
+                          src={submission.thumbnailUrl || submission.url}
+                          sx={{ borderRadius: 1, cursor: 'zoom-in', height: 56, objectFit: 'cover', width: 76 }}
+                        />
+                      )}
                     </TableCell>
                     <TableCell>#{submission.id}</TableCell>
                     <TableCell>{submission.photographerName || '匿名'}</TableCell>
@@ -233,7 +260,7 @@ export function SubmissionReviewDialog({ event, onChanged, onClose, open }: Subm
       </DialogContent>
       <DialogActions sx={{ justifyContent: 'space-between', px: 3 }}>
         <Typography color="text.secondary" variant="body2">
-          已选择 {selected.length} 张
+          已选择 {selected.length} 个
         </Typography>
         <Button onClick={onClose}>关闭</Button>
       </DialogActions>

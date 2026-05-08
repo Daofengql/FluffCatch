@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"database/sql"
 	"errors"
 	"flag"
 	"log/slog"
@@ -18,6 +17,8 @@ import (
 	apphttp "fluffcatch/internal/http"
 	"fluffcatch/internal/settings"
 	"fluffcatch/internal/storage"
+
+	"gorm.io/gorm"
 )
 
 type cliOptions struct {
@@ -57,14 +58,19 @@ func main() {
 		return
 	}
 
-	dbConn := mustOpenDatabase(ctx, cfg)
-	if dbConn != nil {
-		defer dbConn.Close()
+	gormDB := mustOpenDatabase(ctx, cfg)
+	if gormDB != nil {
+		sqlDB, err := gormDB.DB()
+		if err != nil {
+			slog.Error("failed to access mysql handle", "error", err)
+			os.Exit(1)
+		}
+		defer sqlDB.Close()
 	}
 
 	settingsService := settings.NewServiceWithReferences(
-		settings.NewStore(dbConn, settings.FromConfig(cfg)),
-		settings.NewSQLPolicyReferenceChecker(dbConn),
+		settings.NewStore(gormDB, settings.FromConfig(cfg)),
+		settings.NewGORMPolicyReferenceChecker(gormDB),
 	)
 	runtimeSettings, err := settingsService.Load(ctx)
 	if err != nil {
@@ -81,7 +87,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	appServer := apphttp.NewServer(cfg, dbConn, storageManager, settingsService)
+	appServer := apphttp.NewServer(cfg, gormDB, storageManager, settingsService)
 	httpServer := &stdhttp.Server{
 		Addr:         cfg.HTTP.Addr,
 		Handler:      appServer.Routes(),
@@ -126,19 +132,24 @@ func runMigrationsAndExit(ctx context.Context, cfg config.Config) {
 		os.Exit(1)
 	}
 
-	dbConn, err := db.Open(ctx, dsn, databaseOptionsFromConfig(cfg.Database))
+	gormDB, err := db.OpenGORM(ctx, dsn, databaseOptionsFromConfig(cfg.Database))
 	if err != nil {
 		slog.Error("failed to connect mysql", "error", err)
 		os.Exit(1)
 	}
-	defer dbConn.Close()
+	sqlDB, err := gormDB.DB()
+	if err != nil {
+		slog.Error("failed to access mysql handle", "error", err)
+		os.Exit(1)
+	}
+	defer sqlDB.Close()
 
-	if err := db.Migrate(ctx, dbConn); err != nil {
+	if err := db.Migrate(ctx, sqlDB); err != nil {
 		slog.Error("database migration failed", "error", err)
 		os.Exit(1)
 	}
 
-	password, created, err := auth.EnsureInitialAdmin(ctx, dbConn, cfg.Auth.AdminUsername)
+	password, created, err := auth.EnsureInitialAdmin(ctx, gormDB, cfg.Auth.AdminUsername)
 	if err != nil {
 		slog.Error("failed to ensure initial admin", "error", err)
 		os.Exit(1)
@@ -161,14 +172,19 @@ func resetAdminPasswordAndExit(ctx context.Context, cfg config.Config, password 
 		os.Exit(1)
 	}
 
-	dbConn, err := db.Open(ctx, dsn, databaseOptionsFromConfig(cfg.Database))
+	gormDB, err := db.OpenGORM(ctx, dsn, databaseOptionsFromConfig(cfg.Database))
 	if err != nil {
 		slog.Error("failed to connect mysql", "error", err)
 		os.Exit(1)
 	}
-	defer dbConn.Close()
+	sqlDB, err := gormDB.DB()
+	if err != nil {
+		slog.Error("failed to access mysql handle", "error", err)
+		os.Exit(1)
+	}
+	defer sqlDB.Close()
 
-	password, err = auth.ResetAdminPassword(ctx, dbConn, cfg.Auth.AdminUsername, password)
+	password, err = auth.ResetAdminPassword(ctx, gormDB, cfg.Auth.AdminUsername, password)
 	if err != nil {
 		slog.Error("failed to reset admin password", "error", err)
 		os.Exit(1)
@@ -207,7 +223,7 @@ func storageConfigFromPolicy(policy settings.StoragePolicy) storage.Config {
 	}
 }
 
-func mustOpenDatabase(ctx context.Context, cfg config.Config) *sql.DB {
+func mustOpenDatabase(ctx context.Context, cfg config.Config) *gorm.DB {
 	if !cfg.Database.ConnectOnStart {
 		slog.Info("mysql connection skipped", "reason", "database.connect_on_start is false")
 		return nil
@@ -219,7 +235,7 @@ func mustOpenDatabase(ctx context.Context, cfg config.Config) *sql.DB {
 		os.Exit(1)
 	}
 
-	dbConn, err := db.Open(ctx, dsn, databaseOptionsFromConfig(cfg.Database))
+	dbConn, err := db.OpenGORM(ctx, dsn, databaseOptionsFromConfig(cfg.Database))
 	if err != nil {
 		slog.Error("failed to connect mysql", "error", err)
 		os.Exit(1)

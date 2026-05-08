@@ -15,6 +15,7 @@ type ImagePreviewDialogProps = {
 
 export type ImagePreviewItem = {
   src: string;
+  contentType?: string;
   title?: string;
   subtitle?: string;
 };
@@ -27,6 +28,7 @@ export function ImagePreviewDialog({ images, index = 0, onClose, onIndexChange, 
   const currentIndex = Math.min(Math.max(index, 0), Math.max(slides.length - 1, 0));
   const current = slides[currentIndex] ?? { src: '', title, subtitle };
   const hasMany = slides.length > 1;
+  const isVideo = current.contentType?.toLowerCase().startsWith('video/') || false;
 
   useEffect(() => {
     if (open) {
@@ -89,13 +91,13 @@ export function ImagePreviewDialog({ images, index = 0, onClose, onIndexChange, 
               value={zoom}
             />
           </Stack>
-          <IconButton color="inherit" onClick={() => setZoom((value) => Math.max(0.5, Number((value - 0.1).toFixed(1))))}>
+          <IconButton color="inherit" disabled={isVideo} onClick={() => setZoom((value) => Math.max(0.5, Number((value - 0.1).toFixed(1))))}>
             <ZoomOut />
           </IconButton>
-          <IconButton color="inherit" onClick={() => setZoom((value) => Math.min(3, Number((value + 0.1).toFixed(1))))}>
+          <IconButton color="inherit" disabled={isVideo} onClick={() => setZoom((value) => Math.min(3, Number((value + 0.1).toFixed(1))))}>
             <ZoomIn />
           </IconButton>
-          <IconButton color="inherit" onClick={() => setRotation((value) => (value + 90) % 360)}>
+          <IconButton color="inherit" disabled={isVideo} onClick={() => setRotation((value) => (value + 90) % 360)}>
             <RotateRight />
           </IconButton>
           <IconButton color="inherit" onClick={() => setFullscreen((value) => !value)}>
@@ -127,22 +129,38 @@ export function ImagePreviewDialog({ images, index = 0, onClose, onIndexChange, 
           )}
           {current.src && (
             <Box sx={{ alignItems: 'center', display: 'flex', height: '100%', justifyContent: 'center', maxHeight: '100%', maxWidth: '100%', overflow: 'hidden', width: '100%' }}>
-              <Box
-                alt={current.title || title || 'preview'}
-                component="img"
-                src={current.src}
-                sx={{
-                  display: 'block',
-                  height: zoom === 1 ? '100%' : 'auto',
-                  maxHeight: '100%',
-                  maxWidth: '100%',
-                  objectFit: 'contain',
-                  transform: `scale(${zoom}) rotate(${rotation}deg)`,
-                  transformOrigin: 'center center',
-                  transition: 'transform 120ms ease',
-                  width: zoom === 1 ? '100%' : 'auto'
-                }}
-              />
+              {isVideo ? (
+                <Box
+                  component="video"
+                  controls
+                  preload="metadata"
+                  src={current.src}
+                  sx={{
+                    bgcolor: 'common.black',
+                    display: 'block',
+                    maxHeight: '100%',
+                    maxWidth: '100%',
+                    objectFit: 'contain'
+                  }}
+                />
+              ) : (
+                <Box
+                  alt={current.title || title || 'preview'}
+                  component="img"
+                  src={current.src}
+                  sx={{
+                    display: 'block',
+                    height: zoom === 1 ? '100%' : 'auto',
+                    maxHeight: '100%',
+                    maxWidth: '100%',
+                    objectFit: 'contain',
+                    transform: `scale(${zoom}) rotate(${rotation}deg)`,
+                    transformOrigin: 'center center',
+                    transition: 'transform 120ms ease',
+                    width: zoom === 1 ? '100%' : 'auto'
+                  }}
+                />
+              )}
             </Box>
           )}
           {hasMany && (

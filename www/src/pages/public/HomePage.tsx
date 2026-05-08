@@ -1,4 +1,5 @@
-import MDEditor from '@uiw/react-md-editor';
+import MDEditor from '@uiw/react-md-editor/nohighlight';
+import '@uiw/react-markdown-preview/markdown.css';
 import {
   Alert,
   Box,

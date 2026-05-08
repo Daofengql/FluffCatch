@@ -2,30 +2,33 @@ package events
 
 import (
 	"context"
-	"database/sql"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
 
 	"fluffcatch/internal/auth"
+	appdb "fluffcatch/internal/db"
 	"fluffcatch/internal/storage"
+
+	"gorm.io/gorm"
 )
 
 type Service struct {
-	db             *sql.DB
+	db             *gorm.DB
 	storageManager *storage.Manager
 }
 
-func NewService(dbConn *sql.DB, storageManager *storage.Manager) *Service {
+func NewService(dbConn *gorm.DB, storageManager *storage.Manager) *Service {
 	return &Service{db: dbConn, storageManager: storageManager}
 }
 
 func (service *Service) ListPublic(ctx context.Context) ([]Event, error) {
-	return service.list(ctx, "WHERE is_public = true")
+	return service.listWithOptions(ctx, true, false)
 }
 
 func (service *Service) ListAdmin(ctx context.Context) ([]Event, error) {
-	return service.listWithOptions(ctx, "", true)
+	return service.listWithOptions(ctx, false, true)
 }
 
 func (service *Service) GetPublic(ctx context.Context, id int64) (Event, bool, error) {
@@ -55,25 +58,32 @@ func (service *Service) Create(ctx context.Context, req CreateEventRequest) (Eve
 		return Event{}, err
 	}
 
-	result, err := service.db.ExecContext(ctx, `
-		INSERT INTO events (
-			title, description, location, province_code, province_name, city_code, city_name, starts_at, ends_at,
-			cover_storage_policy_id, cover_object_key,
-			is_public, submission_enabled, submission_password_hash, submission_password_plain,
-			private_password_hash, private_password_plain, sort_at
-		)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-	`, event.Title, event.Description, event.Location, nullableString(event.ProvinceCode), nullableString(event.ProvinceName), nullableString(event.CityCode), nullableString(event.CityName), nullableTime(event.StartTime), nullableTime(event.EndTime), nullableString(event.CoverPolicyID), nullableString(event.CoverObjectKey), event.IsPublic, event.SubmissionEnabled, nullableString(passwordHash), nullableString(req.SubmissionPass), nullableString(privatePasswordHash), nullableString(req.PrivatePassword), eventSortTime(event.StartTime))
+	record := appdb.Event{
+		Title:                   event.Title,
+		Description:             event.Description,
+		Location:                event.Location,
+		ProvinceCode:            stringPtr(event.ProvinceCode),
+		ProvinceName:            stringPtr(event.ProvinceName),
+		CityCode:                stringPtr(event.CityCode),
+		CityName:                stringPtr(event.CityName),
+		StartsAt:                event.StartTime,
+		EndsAt:                  event.EndTime,
+		CoverStoragePolicyID:    stringPtr(event.CoverPolicyID),
+		CoverObjectKey:          stringPtr(event.CoverObjectKey),
+		IsPublic:                event.IsPublic,
+		SubmissionEnabled:       event.SubmissionEnabled,
+		SubmissionPasswordHash:  stringPtr(passwordHash),
+		SubmissionPasswordPlain: stringPtr(req.SubmissionPass),
+		PrivatePasswordHash:     stringPtr(privatePasswordHash),
+		PrivatePasswordPlain:    stringPtr(req.PrivatePassword),
+		SortAt:                  eventSortTime(event.StartTime),
+	}
+	err = service.db.WithContext(ctx).Create(&record).Error
 	if err != nil {
 		return Event{}, friendlySQLError("create event", err)
 	}
 
-	id, err := result.LastInsertId()
-	if err != nil {
-		return Event{}, fmt.Errorf("read event id: %w", err)
-	}
-
-	created, found, err := service.GetAdmin(ctx, id)
+	created, found, err := service.GetAdmin(ctx, record.ID)
 	if err != nil {
 		return Event{}, err
 	}
@@ -103,32 +113,45 @@ func (service *Service) Update(ctx context.Context, id int64, req CreateEventReq
 		return Event{}, err
 	}
 
-	if req.RemoveCover || event.CoverPolicyID != "" || event.CoverObjectKey != "" {
-		_, err = service.db.ExecContext(ctx, `
-			UPDATE events
-			SET title = ?, description = ?, location = ?, province_code = ?, province_name = ?, city_code = ?, city_name = ?, starts_at = ?, ends_at = ?,
-				cover_storage_policy_id = ?, cover_object_key = ?,
-				is_public = ?, submission_enabled = ?,
-				submission_password_hash = COALESCE(NULLIF(?, ''), submission_password_hash),
-				submission_password_plain = COALESCE(NULLIF(?, ''), submission_password_plain),
-				private_password_hash = COALESCE(NULLIF(?, ''), private_password_hash),
-				private_password_plain = COALESCE(NULLIF(?, ''), private_password_plain),
-				sort_at = COALESCE(?, created_at)
-			WHERE id = ?
-		`, event.Title, event.Description, event.Location, nullableString(event.ProvinceCode), nullableString(event.ProvinceName), nullableString(event.CityCode), nullableString(event.CityName), nullableTime(event.StartTime), nullableTime(event.EndTime), nullableString(event.CoverPolicyID), nullableString(event.CoverObjectKey), event.IsPublic, event.SubmissionEnabled, nullableString(passwordHash), nullableString(req.SubmissionPass), nullableString(privatePasswordHash), nullableString(req.PrivatePassword), nullableTime(event.StartTime), id)
-	} else {
-		_, err = service.db.ExecContext(ctx, `
-			UPDATE events
-			SET title = ?, description = ?, location = ?, province_code = ?, province_name = ?, city_code = ?, city_name = ?, starts_at = ?, ends_at = ?,
-				is_public = ?, submission_enabled = ?,
-				submission_password_hash = COALESCE(NULLIF(?, ''), submission_password_hash),
-				submission_password_plain = COALESCE(NULLIF(?, ''), submission_password_plain),
-				private_password_hash = COALESCE(NULLIF(?, ''), private_password_hash),
-				private_password_plain = COALESCE(NULLIF(?, ''), private_password_plain),
-				sort_at = COALESCE(?, created_at)
-			WHERE id = ?
-		`, event.Title, event.Description, event.Location, nullableString(event.ProvinceCode), nullableString(event.ProvinceName), nullableString(event.CityCode), nullableString(event.CityName), nullableTime(event.StartTime), nullableTime(event.EndTime), event.IsPublic, event.SubmissionEnabled, nullableString(passwordHash), nullableString(req.SubmissionPass), nullableString(privatePasswordHash), nullableString(req.PrivatePassword), nullableTime(event.StartTime), id)
+	var existing appdb.Event
+	if err := service.db.WithContext(ctx).Where("id = ?", id).Take(&existing).Error; errors.Is(err, gorm.ErrRecordNotFound) {
+		return Event{}, fmt.Errorf("event not found")
+	} else if err != nil {
+		return Event{}, fmt.Errorf("load event: %w", err)
 	}
+
+	sortAt := existing.CreatedAt
+	if event.StartTime != nil {
+		sortAt = *event.StartTime
+	}
+	updates := map[string]any{
+		"title":              event.Title,
+		"description":        event.Description,
+		"location":           event.Location,
+		"province_code":      stringPtr(event.ProvinceCode),
+		"province_name":      stringPtr(event.ProvinceName),
+		"city_code":          stringPtr(event.CityCode),
+		"city_name":          stringPtr(event.CityName),
+		"starts_at":          event.StartTime,
+		"ends_at":            event.EndTime,
+		"is_public":          event.IsPublic,
+		"submission_enabled": event.SubmissionEnabled,
+		"sort_at":            sortAt,
+	}
+	if req.RemoveCover || event.CoverPolicyID != "" || event.CoverObjectKey != "" {
+		updates["cover_storage_policy_id"] = stringPtr(event.CoverPolicyID)
+		updates["cover_object_key"] = stringPtr(event.CoverObjectKey)
+	}
+	if passwordHash != "" {
+		updates["submission_password_hash"] = passwordHash
+		updates["submission_password_plain"] = strings.TrimSpace(req.SubmissionPass)
+	}
+	if privatePasswordHash != "" {
+		updates["private_password_hash"] = privatePasswordHash
+		updates["private_password_plain"] = strings.TrimSpace(req.PrivatePassword)
+	}
+
+	err = service.db.WithContext(ctx).Model(&appdb.Event{}).Where("id = ?", id).Updates(updates).Error
 	if err != nil {
 		return Event{}, friendlySQLError("update event", err)
 	}
@@ -154,78 +177,51 @@ func (service *Service) Delete(ctx context.Context, id int64) (bool, []storage.S
 		return false, nil, err
 	}
 
-	result, err := service.db.ExecContext(ctx, "DELETE FROM events WHERE id = ?", id)
-	if err != nil {
-		return false, nil, fmt.Errorf("delete event: %w", err)
+	result := service.db.WithContext(ctx).Where("id = ?", id).Delete(&appdb.Event{})
+	if result.Error != nil {
+		return false, nil, fmt.Errorf("delete event: %w", result.Error)
 	}
 
-	affected, err := result.RowsAffected()
-	if err != nil {
-		return true, objects, nil
-	}
-	return affected > 0, objects, nil
+	return result.RowsAffected > 0, objects, nil
 }
 
 func (service *Service) SubmissionPasswordHash(ctx context.Context, eventID int64) (string, bool, bool, error) {
-	var enabled bool
-	var passwordHash sql.NullString
-	err := service.db.QueryRowContext(ctx, "SELECT submission_enabled, submission_password_hash FROM events WHERE id = ? LIMIT 1", eventID).Scan(&enabled, &passwordHash)
-	if err == sql.ErrNoRows {
+	var event appdb.Event
+	err := service.db.WithContext(ctx).Select("submission_enabled", "submission_password_hash").Where("id = ?", eventID).Take(&event).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
 		return "", false, false, nil
 	}
 	if err != nil {
 		return "", false, false, fmt.Errorf("load submission password: %w", err)
 	}
 
-	return passwordHash.String, passwordHash.Valid, enabled, nil
+	if event.SubmissionPasswordHash == nil {
+		return "", false, event.SubmissionEnabled, nil
+	}
+	return *event.SubmissionPasswordHash, strings.TrimSpace(*event.SubmissionPasswordHash) != "", event.SubmissionEnabled, nil
 }
 
-func (service *Service) list(ctx context.Context, where string) ([]Event, error) {
-	return service.listWithOptions(ctx, where, false)
-}
-
-func (service *Service) listWithOptions(ctx context.Context, where string, includeSubmissionPassword bool) ([]Event, error) {
+func (service *Service) listWithOptions(ctx context.Context, onlyPublic bool, includeSubmissionPassword bool) ([]Event, error) {
 	if service.db == nil {
 		return []Event{}, nil
 	}
 
-	query := `
-		SELECT id, title, description, location,
-			COALESCE(province_code, ''), COALESCE(province_name, ''), COALESCE(city_code, ''), COALESCE(city_name, ''),
-			starts_at, ends_at,
-			cover_storage_policy_id, cover_object_key, is_public, submission_enabled,
-			(SELECT COUNT(*) FROM photos WHERE photos.event_id = events.id`
-	if !includeSubmissionPassword {
-		query += ` AND photos.visibility = 'public'`
+	var records []appdb.Event
+	query := service.db.WithContext(ctx).Order("sort_at DESC").Order("id DESC")
+	if onlyPublic {
+		query = query.Where("is_public = ?", true)
 	}
-	query += `), `
-	if includeSubmissionPassword {
-		query += `COALESCE(submission_password_plain, ''), COALESCE(private_password_plain, ''), `
-	} else {
-		query += `'', '', `
-	}
-	query += `created_at, updated_at
-		FROM events
-		` + where + `
-		ORDER BY sort_at DESC, id DESC
-	`
-
-	rows, err := service.db.QueryContext(ctx, query)
-	if err != nil {
+	if err := query.Find(&records).Error; err != nil {
 		return nil, fmt.Errorf("list events: %w", err)
 	}
-	defer rows.Close()
 
-	events := []Event{}
-	for rows.Next() {
-		event, err := service.scanEvent(rows)
+	events := make([]Event, 0, len(records))
+	for _, record := range records {
+		event, err := service.eventFromRecord(ctx, record, includeSubmissionPassword)
 		if err != nil {
 			return nil, err
 		}
 		events = append(events, event)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("iterate events: %w", err)
 	}
 
 	return events, nil
@@ -240,145 +236,111 @@ func (service *Service) getWithOptions(ctx context.Context, id int64, onlyPublic
 		return Event{}, false, nil
 	}
 
-	query := `
-		SELECT id, title, description, location,
-			COALESCE(province_code, ''), COALESCE(province_name, ''), COALESCE(city_code, ''), COALESCE(city_name, ''),
-			starts_at, ends_at,
-			cover_storage_policy_id, cover_object_key, is_public, submission_enabled,
-			(SELECT COUNT(*) FROM photos WHERE photos.event_id = events.id`
-	if includeSubmissionPassword {
-		query += `), `
-	} else {
-		query += ` AND photos.visibility = 'public'), `
-	}
-	if includeSubmissionPassword {
-		query += `COALESCE(submission_password_plain, ''), COALESCE(private_password_plain, ''), `
-	} else {
-		query += `'', '', `
-	}
-	query += `created_at, updated_at
-		FROM events
-		WHERE id = ?
-	`
-	args := []any{id}
+	var record appdb.Event
+	query := service.db.WithContext(ctx).Where("id = ?", id)
 	if onlyPublic {
-		query += " AND is_public = true"
+		query = query.Where("is_public = ?", true)
 	}
-	query += " LIMIT 1"
-
-	row := service.db.QueryRowContext(ctx, query, args...)
-	event, err := service.scanEvent(row)
-	if err == sql.ErrNoRows {
+	err := query.Take(&record).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
 		return Event{}, false, nil
 	}
 	if err != nil {
 		return Event{}, false, err
 	}
 
+	event, err := service.eventFromRecord(ctx, record, includeSubmissionPassword)
+	if err != nil {
+		return Event{}, false, err
+	}
 	return event, true, nil
 }
 
 func (service *Service) objectsForEvent(ctx context.Context, id int64) ([]storage.StoredObject, error) {
 	objects := []storage.StoredObject{}
 
-	var coverPolicyID sql.NullString
-	var coverObjectKey sql.NullString
-	err := service.db.QueryRowContext(ctx, `
-		SELECT cover_storage_policy_id, cover_object_key
-		FROM events
-		WHERE id = ?
-		LIMIT 1
-	`, id).Scan(&coverPolicyID, &coverObjectKey)
-	if err == sql.ErrNoRows {
+	var event appdb.Event
+	err := service.db.WithContext(ctx).Select("cover_storage_policy_id", "cover_object_key").Where("id = ?", id).Take(&event).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
 		return objects, nil
 	}
 	if err != nil {
 		return nil, fmt.Errorf("load event cover objects: %w", err)
 	}
-	if coverPolicyID.Valid && coverObjectKey.Valid {
-		objects = append(objects, storage.StoredObject{PolicyID: coverPolicyID.String, Key: coverObjectKey.String})
+	if event.CoverStoragePolicyID != nil && event.CoverObjectKey != nil {
+		objects = append(objects, storage.StoredObject{PolicyID: *event.CoverStoragePolicyID, Key: *event.CoverObjectKey})
 	}
 
-	if err := service.appendEventObjects(ctx, &objects, "SELECT storage_policy_id, object_key, COALESCE(thumbnail_key, '') FROM photos WHERE event_id = ?", id); err != nil {
+	if err := service.appendPhotoObjects(ctx, &objects, id); err != nil {
 		return nil, err
 	}
-	if err := service.appendEventObjects(ctx, &objects, "SELECT storage_policy_id, object_key, COALESCE(thumbnail_key, '') FROM submissions WHERE event_id = ?", id); err != nil {
+	if err := service.appendSubmissionObjects(ctx, &objects, id); err != nil {
 		return nil, err
 	}
 
 	return objects, nil
 }
 
-func (service *Service) appendEventObjects(ctx context.Context, objects *[]storage.StoredObject, query string, args ...any) error {
-	rows, err := service.db.QueryContext(ctx, query, args...)
-	if err != nil {
-		return fmt.Errorf("load event objects: %w", err)
+func (service *Service) appendPhotoObjects(ctx context.Context, objects *[]storage.StoredObject, eventID int64) error {
+	var photos []appdb.Photo
+	if err := service.db.WithContext(ctx).Select("storage_policy_id", "object_key", "thumbnail_key").Where("event_id = ?", eventID).Find(&photos).Error; err != nil {
+		return fmt.Errorf("load event photo objects: %w", err)
 	}
-	defer rows.Close()
-
-	for rows.Next() {
-		var policyID string
-		var objectKey string
-		var thumbnailKey string
-		if err := rows.Scan(&policyID, &objectKey, &thumbnailKey); err != nil {
-			return fmt.Errorf("scan event object: %w", err)
-		}
-		*objects = append(*objects, storage.StoredObject{PolicyID: policyID, Key: objectKey})
-		if strings.TrimSpace(thumbnailKey) != "" {
-			*objects = append(*objects, storage.StoredObject{PolicyID: policyID, Key: thumbnailKey})
+	for _, photo := range photos {
+		*objects = append(*objects, storage.StoredObject{PolicyID: photo.StoragePolicyID, Key: photo.ObjectKey})
+		if photo.ThumbnailKey != nil && strings.TrimSpace(*photo.ThumbnailKey) != "" {
+			*objects = append(*objects, storage.StoredObject{PolicyID: photo.StoragePolicyID, Key: *photo.ThumbnailKey})
 		}
 	}
-
-	return rows.Err()
+	return nil
 }
 
-type eventScanner interface {
-	Scan(dest ...any) error
+func (service *Service) appendSubmissionObjects(ctx context.Context, objects *[]storage.StoredObject, eventID int64) error {
+	var submissions []appdb.Submission
+	if err := service.db.WithContext(ctx).Select("storage_policy_id", "object_key", "thumbnail_key").Where("event_id = ?", eventID).Find(&submissions).Error; err != nil {
+		return fmt.Errorf("load event submission objects: %w", err)
+	}
+	for _, submission := range submissions {
+		*objects = append(*objects, storage.StoredObject{PolicyID: submission.StoragePolicyID, Key: submission.ObjectKey})
+		if submission.ThumbnailKey != nil && strings.TrimSpace(*submission.ThumbnailKey) != "" {
+			*objects = append(*objects, storage.StoredObject{PolicyID: submission.StoragePolicyID, Key: *submission.ThumbnailKey})
+		}
+	}
+	return nil
 }
 
-func (service *Service) scanEvent(scanner eventScanner) (Event, error) {
-	var event Event
-	var startsAt sql.NullTime
-	var endsAt sql.NullTime
-	var coverPolicyID sql.NullString
-	var coverObjectKey sql.NullString
-
-	if err := scanner.Scan(
-		&event.ID,
-		&event.Title,
-		&event.Description,
-		&event.Location,
-		&event.ProvinceCode,
-		&event.ProvinceName,
-		&event.CityCode,
-		&event.CityName,
-		&startsAt,
-		&endsAt,
-		&coverPolicyID,
-		&coverObjectKey,
-		&event.IsPublic,
-		&event.SubmissionEnabled,
-		&event.PhotoCount,
-		&event.SubmissionPassword,
-		&event.PrivatePassword,
-		&event.CreatedAt,
-		&event.UpdatedAt,
-	); err != nil {
-		return Event{}, err
+func (service *Service) eventFromRecord(ctx context.Context, record appdb.Event, includeSubmissionPassword bool) (Event, error) {
+	event := Event{
+		ID:                record.ID,
+		Title:             record.Title,
+		Description:       record.Description,
+		Location:          record.Location,
+		ProvinceCode:      stringValue(record.ProvinceCode),
+		ProvinceName:      stringValue(record.ProvinceName),
+		CityCode:          stringValue(record.CityCode),
+		CityName:          stringValue(record.CityName),
+		StartTime:         record.StartsAt,
+		EndTime:           record.EndsAt,
+		CoverPolicyID:     stringValue(record.CoverStoragePolicyID),
+		CoverObjectKey:    stringValue(record.CoverObjectKey),
+		IsPublic:          record.IsPublic,
+		SubmissionEnabled: record.SubmissionEnabled,
+		CreatedAt:         record.CreatedAt,
+		UpdatedAt:         record.UpdatedAt,
+	}
+	if includeSubmissionPassword {
+		event.SubmissionPassword = stringValue(record.SubmissionPasswordPlain)
+		event.PrivatePassword = stringValue(record.PrivatePasswordPlain)
 	}
 
-	if startsAt.Valid {
-		event.StartTime = &startsAt.Time
+	countQuery := service.db.WithContext(ctx).Model(&appdb.Photo{}).Where("event_id = ?", record.ID)
+	if !includeSubmissionPassword {
+		countQuery = countQuery.Where("visibility = ?", "public")
 	}
-	if endsAt.Valid {
-		event.EndTime = &endsAt.Time
+	if err := countQuery.Count(&event.PhotoCount).Error; err != nil {
+		return Event{}, fmt.Errorf("count event photos: %w", err)
 	}
-	if coverPolicyID.Valid {
-		event.CoverPolicyID = coverPolicyID.String
-	}
-	if coverObjectKey.Valid {
-		event.CoverObjectKey = coverObjectKey.String
-	}
+
 	if event.CoverPolicyID != "" && event.CoverObjectKey != "" {
 		if store, err := service.storageManager.StoreForPolicy(event.CoverPolicyID); err == nil {
 			event.CoverURL = store.PublicURL(event.CoverObjectKey)
@@ -473,13 +435,6 @@ func optionalPasswordHash(password string) (string, error) {
 	return auth.HashPassword(password)
 }
 
-func nullableTime(value *time.Time) any {
-	if value == nil {
-		return nil
-	}
-	return *value
-}
-
 func eventSortTime(startTime *time.Time) time.Time {
 	if startTime != nil {
 		return *startTime
@@ -487,9 +442,17 @@ func eventSortTime(startTime *time.Time) time.Time {
 	return time.Now()
 }
 
-func nullableString(value string) any {
+func stringPtr(value string) *string {
 	if strings.TrimSpace(value) == "" {
 		return nil
 	}
-	return value
+	trimmed := strings.TrimSpace(value)
+	return &trimmed
+}
+
+func stringValue(value *string) string {
+	if value == nil {
+		return ""
+	}
+	return *value
 }

@@ -2,21 +2,26 @@ package gallery
 
 import (
 	"context"
-	"database/sql"
+	"errors"
 	"fmt"
 	"math"
 	"strings"
+	"time"
 
 	"fluffcatch/internal/auth"
+	appdb "fluffcatch/internal/db"
 	"fluffcatch/internal/storage"
+
+	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 type Service struct {
-	db             *sql.DB
+	db             *gorm.DB
 	storageManager *storage.Manager
 }
 
-func NewService(dbConn *sql.DB, storageManager *storage.Manager) *Service {
+func NewService(dbConn *gorm.DB, storageManager *storage.Manager) *Service {
 	return &Service{
 		db:             dbConn,
 		storageManager: storageManager,
@@ -70,40 +75,24 @@ func (service *Service) ListForEventPageWithAccess(ctx context.Context, eventID 
 		}
 	}
 
-	where := "WHERE event_id = ?"
-	args := []any{eventID}
-	if !admin {
-		where += " AND visibility IN ('public', 'private')"
-	}
-
 	var total int64
-	if err := service.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM photos "+where, args...).Scan(&total); err != nil {
+	baseQuery := service.db.WithContext(ctx).Model(&appdb.Photo{}).Where("event_id = ?", eventID)
+	if !admin {
+		baseQuery = baseQuery.Where("visibility IN ?", []string{string(VisibilityPublic), string(VisibilityPrivate)})
+	}
+	if err := baseQuery.Count(&total).Error; err != nil {
 		return Page{}, fmt.Errorf("count photos: %w", err)
 	}
 
-	query := `
-		SELECT id, event_id, storage_policy_id, object_key, COALESCE(thumbnail_key, ''),
-			content_hash, content_type, size_bytes, like_count, COALESCE(photographer_name, ''), visibility, taken_at, created_at, updated_at
-		FROM photos
-		` + where + `
-		ORDER BY sort_at DESC, id DESC
-		LIMIT ? OFFSET ?
-	`
 	offset := (page - 1) * pageSize
-	queryArgs := append(args, pageSize, offset)
-
-	rows, err := service.db.QueryContext(ctx, query, queryArgs...)
-	if err != nil {
+	var records []appdb.Photo
+	if err := baseQuery.Order("sort_at DESC").Order("id DESC").Limit(pageSize).Offset(offset).Find(&records).Error; err != nil {
 		return Page{}, fmt.Errorf("list photos: %w", err)
 	}
-	defer rows.Close()
 
-	photos := []Photo{}
-	for rows.Next() {
-		photo, err := service.scanPhoto(rows)
-		if err != nil {
-			return Page{}, err
-		}
+	photos := make([]Photo, 0, len(records))
+	for _, record := range records {
+		photo := service.photoFromRecord(record)
 		if !admin && photo.Visibility == VisibilityPrivate && privateAccess {
 			photo.AccessGranted = true
 		}
@@ -112,9 +101,6 @@ func (service *Service) ListForEventPageWithAccess(ctx context.Context, eventID 
 		}
 		service.applyPhotoURLs(&photo)
 		photos = append(photos, photo)
-	}
-	if err := rows.Err(); err != nil {
-		return Page{}, fmt.Errorf("iterate photos: %w", err)
 	}
 
 	if err := service.attachTags(ctx, photos); err != nil {
@@ -141,26 +127,24 @@ func (service *Service) UpdatePhoto(ctx context.Context, photoID int64, req Upda
 		return Photo{}, fmt.Errorf("unsupported visibility %q", req.Visibility)
 	}
 
-	tx, err := service.db.BeginTx(ctx, nil)
-	if err != nil {
-		return Photo{}, fmt.Errorf("begin update photo: %w", err)
-	}
-	defer tx.Rollback()
+	err := service.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if err := tx.Model(&appdb.Photo{}).Where("id = ?", photoID).Updates(map[string]any{
+			"visibility":        req.Visibility,
+			"photographer_name": stringPtr(req.PhotographerName),
+		}).Error; err != nil {
+			return fmt.Errorf("update photo: %w", err)
+		}
 
-	_, err = tx.ExecContext(ctx, "UPDATE photos SET visibility = ?, photographer_name = NULLIF(?, '') WHERE id = ?", req.Visibility, strings.TrimSpace(req.PhotographerName), photoID)
+		if err := tx.Where("photo_id = ?", photoID).Delete(&appdb.PhotoTag{}).Error; err != nil {
+			return fmt.Errorf("clear photo tags: %w", err)
+		}
+		if err := upsertPhotoTags(ctx, tx, photoID, req.Tags); err != nil {
+			return err
+		}
+		return nil
+	})
 	if err != nil {
-		return Photo{}, fmt.Errorf("update photo: %w", err)
-	}
-
-	if _, err := tx.ExecContext(ctx, "DELETE FROM photo_tags WHERE photo_id = ?", photoID); err != nil {
-		return Photo{}, fmt.Errorf("clear photo tags: %w", err)
-	}
-	if err := upsertPhotoTags(ctx, tx, photoID, req.Tags); err != nil {
 		return Photo{}, err
-	}
-
-	if err := tx.Commit(); err != nil {
-		return Photo{}, fmt.Errorf("commit update photo: %w", err)
 	}
 
 	photo, found, err := service.Get(ctx, photoID)
@@ -186,28 +170,18 @@ func (service *Service) BatchUpdatePhotos(ctx context.Context, req BatchUpdatePh
 		return 0, nil
 	}
 
-	placeholders := make([]string, len(req.PhotoIDs))
-	idArgs := make([]any, len(req.PhotoIDs))
-	for i, id := range req.PhotoIDs {
-		placeholders[i] = "?"
-		idArgs[i] = id
-	}
-
-	countArgs := make([]any, 0, len(req.PhotoIDs)+1)
-	countArgs = append(countArgs, req.Visibility)
-	countArgs = append(countArgs, idArgs...)
-	var matched int
-	if err := service.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM photos WHERE visibility <> ? AND id IN ("+strings.Join(placeholders, ",")+")", countArgs...).Scan(&matched); err != nil {
+	var matched int64
+	if err := service.db.WithContext(ctx).Model(&appdb.Photo{}).Where("visibility <> ? AND id IN ?", req.Visibility, req.PhotoIDs).Count(&matched).Error; err != nil {
 		return 0, fmt.Errorf("count photos for batch update: %w", err)
 	}
 	if matched == 0 {
 		return 0, nil
 	}
 
-	if _, err := service.db.ExecContext(ctx, "UPDATE photos SET visibility = ? WHERE id IN ("+strings.Join(placeholders, ",")+")", countArgs...); err != nil {
+	if err := service.db.WithContext(ctx).Model(&appdb.Photo{}).Where("visibility <> ? AND id IN ?", req.Visibility, req.PhotoIDs).Update("visibility", req.Visibility).Error; err != nil {
 		return 0, fmt.Errorf("batch update photos: %w", err)
 	}
-	return matched, nil
+	return int(matched), nil
 }
 
 func (service *Service) DeletePhoto(ctx context.Context, photoID int64) (bool, []storage.StoredObject, error) {
@@ -224,32 +198,23 @@ func (service *Service) DeletePhoto(ctx context.Context, photoID int64) (bool, [
 		objects = append(objects, storage.StoredObject{PolicyID: photo.StoragePolicyID, Key: photo.ThumbnailKey})
 	}
 
-	result, err := service.db.ExecContext(ctx, "DELETE FROM photos WHERE id = ?", photoID)
-	if err != nil {
-		return false, nil, fmt.Errorf("delete photo: %w", err)
+	result := service.db.WithContext(ctx).Where("id = ?", photoID).Delete(&appdb.Photo{})
+	if result.Error != nil {
+		return false, nil, fmt.Errorf("delete photo: %w", result.Error)
 	}
-	affected, err := result.RowsAffected()
-	if err != nil {
-		return true, objects, nil
-	}
-	return affected > 0, objects, nil
+	return result.RowsAffected > 0, objects, nil
 }
 
 func (service *Service) Get(ctx context.Context, photoID int64) (Photo, bool, error) {
-	row := service.db.QueryRowContext(ctx, `
-		SELECT id, event_id, storage_policy_id, object_key, COALESCE(thumbnail_key, ''),
-			content_hash, content_type, size_bytes, like_count, COALESCE(photographer_name, ''), visibility, taken_at, created_at, updated_at
-		FROM photos
-		WHERE id = ?
-		LIMIT 1
-	`, photoID)
-	photo, err := service.scanPhoto(row)
-	if err == sql.ErrNoRows {
+	var record appdb.Photo
+	err := service.db.WithContext(ctx).Where("id = ?", photoID).Take(&record).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
 		return Photo{}, false, nil
 	}
 	if err != nil {
 		return Photo{}, false, err
 	}
+	photo := service.photoFromRecord(record)
 	photos := []Photo{photo}
 	if err := service.attachTags(ctx, photos); err != nil {
 		return Photo{}, false, err
@@ -266,57 +231,41 @@ func (service *Service) Like(ctx context.Context, photoID int64, fingerprintHash
 		return LikeResult{}, fmt.Errorf("viewer fingerprint is required")
 	}
 
-	var visibility string
-	var likeCount int64
-	var isPublic bool
-	err := service.db.QueryRowContext(ctx, `
-		SELECT photos.visibility, photos.like_count, events.is_public
-		FROM photos
-		INNER JOIN events ON events.id = photos.event_id
-		WHERE photos.id = ?
-		LIMIT 1
-	`, photoID).Scan(&visibility, &likeCount, &isPublic)
-	if err == sql.ErrNoRows {
+	var photoRecord appdb.Photo
+	err := service.db.WithContext(ctx).Where("id = ?", photoID).Take(&photoRecord).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
 		return LikeResult{}, fmt.Errorf("photo not found")
 	}
 	if err != nil {
 		return LikeResult{}, fmt.Errorf("load photo for like: %w", err)
 	}
-	if !isPublic || visibility != string(VisibilityPublic) {
+	var event appdb.Event
+	if err := service.db.WithContext(ctx).Select("is_public").Where("id = ?", photoRecord.EventID).Take(&event).Error; err != nil {
+		return LikeResult{}, fmt.Errorf("load photo event for like: %w", err)
+	}
+	if !event.IsPublic || photoRecord.Visibility != string(VisibilityPublic) {
 		return LikeResult{}, fmt.Errorf("photo is not public")
 	}
 
-	tx, err := service.db.BeginTx(ctx, nil)
-	if err != nil {
-		return LikeResult{}, fmt.Errorf("begin like photo: %w", err)
-	}
-	defer tx.Rollback()
-
-	result, err := tx.ExecContext(ctx, `
-		INSERT IGNORE INTO photo_likes (photo_id, fingerprint_hash)
-		VALUES (?, ?)
-	`, photoID, fingerprintHash)
-	if err != nil {
-		return LikeResult{}, fmt.Errorf("record photo like: %w", err)
-	}
-
-	affected, err := result.RowsAffected()
-	if err != nil {
-		return LikeResult{}, fmt.Errorf("read like result: %w", err)
-	}
-	justLiked := affected > 0
-	if justLiked {
-		if _, err := tx.ExecContext(ctx, "UPDATE photos SET like_count = like_count + 1 WHERE id = ?", photoID); err != nil {
-			return LikeResult{}, fmt.Errorf("increment photo like count: %w", err)
+	var likeCount int64
+	justLiked := false
+	if err := service.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		result := tx.Clauses(clause.Insert{Modifier: "IGNORE"}).Create(&appdb.PhotoLike{PhotoID: photoID, FingerprintHash: fingerprintHash})
+		if result.Error != nil {
+			return fmt.Errorf("record photo like: %w", result.Error)
 		}
-	}
-
-	if err := tx.QueryRowContext(ctx, "SELECT like_count FROM photos WHERE id = ? LIMIT 1", photoID).Scan(&likeCount); err != nil {
-		return LikeResult{}, fmt.Errorf("load photo like count: %w", err)
-	}
-
-	if err := tx.Commit(); err != nil {
-		return LikeResult{}, fmt.Errorf("commit photo like: %w", err)
+		justLiked = result.RowsAffected > 0
+		if justLiked {
+			if err := tx.Model(&appdb.Photo{}).Where("id = ?", photoID).Update("like_count", gorm.Expr("like_count + 1")).Error; err != nil {
+				return fmt.Errorf("increment photo like count: %w", err)
+			}
+		}
+		if err := tx.Model(&appdb.Photo{}).Select("like_count").Where("id = ?", photoID).Take(&likeCount).Error; err != nil {
+			return fmt.Errorf("load photo like count: %w", err)
+		}
+		return nil
+	}); err != nil {
+		return LikeResult{}, err
 	}
 
 	return LikeResult{
@@ -379,15 +328,15 @@ func (service *Service) VerifyEventPrivatePassword(ctx context.Context, eventID 
 }
 
 func (service *Service) eventIsPublic(ctx context.Context, eventID int64) (bool, error) {
-	var public bool
-	err := service.db.QueryRowContext(ctx, "SELECT is_public FROM events WHERE id = ? LIMIT 1", eventID).Scan(&public)
-	if err == sql.ErrNoRows {
+	var event appdb.Event
+	err := service.db.WithContext(ctx).Select("is_public").Where("id = ?", eventID).Take(&event).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
 		return false, nil
 	}
 	if err != nil {
 		return false, fmt.Errorf("load event visibility: %w", err)
 	}
-	return public, nil
+	return event.IsPublic, nil
 }
 
 func (service *Service) verifyEventPrivatePassword(ctx context.Context, eventID int64, password string) (bool, error) {
@@ -396,64 +345,45 @@ func (service *Service) verifyEventPrivatePassword(ctx context.Context, eventID 
 		return false, nil
 	}
 
-	var passwordHash sql.NullString
-	err := service.db.QueryRowContext(ctx, "SELECT private_password_hash FROM events WHERE id = ? LIMIT 1", eventID).Scan(&passwordHash)
-	if err == sql.ErrNoRows {
+	var event appdb.Event
+	err := service.db.WithContext(ctx).Select("private_password_hash").Where("id = ?", eventID).Take(&event).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
 		return false, nil
 	}
 	if err != nil {
 		return false, fmt.Errorf("load event private password: %w", err)
 	}
-	if !passwordHash.Valid || passwordHash.String == "" {
+	if event.PrivatePasswordHash == nil || *event.PrivatePasswordHash == "" {
 		return false, nil
 	}
 
-	ok, err := auth.VerifyPassword(password, passwordHash.String)
+	ok, err := auth.VerifyPassword(password, *event.PrivatePasswordHash)
 	if err != nil {
 		return false, nil
 	}
 	return ok, nil
 }
 
-type photoScanner interface {
-	Scan(dest ...any) error
-}
-
-func (service *Service) scanPhoto(scanner photoScanner) (Photo, error) {
-	var photo Photo
-	var thumbnailKey string
-	var takenAt sql.NullTime
-	var visibility string
-
-	if err := scanner.Scan(
-		&photo.ID,
-		&photo.EventID,
-		&photo.StoragePolicyID,
-		&photo.ObjectKey,
-		&thumbnailKey,
-		&photo.ContentHash,
-		&photo.ContentType,
-		&photo.SizeBytes,
-		&photo.LikeCount,
-		&photo.PhotographerName,
-		&visibility,
-		&takenAt,
-		&photo.CreatedAt,
-		&photo.UpdatedAt,
-	); err != nil {
-		return Photo{}, err
+func (service *Service) photoFromRecord(record appdb.Photo) Photo {
+	photo := Photo{
+		ID:               record.ID,
+		EventID:          record.EventID,
+		StoragePolicyID:  record.StoragePolicyID,
+		ObjectKey:        record.ObjectKey,
+		ThumbnailKey:     stringValue(record.ThumbnailKey),
+		ContentHash:      record.ContentHash,
+		ContentType:      record.ContentType,
+		SizeBytes:        record.SizeBytes,
+		LikeCount:        record.LikeCount,
+		PhotographerName: stringValue(record.PhotographerName),
+		Visibility:       Visibility(record.Visibility),
+		Tags:             []Tag{},
+		TakenAt:          record.TakenAt,
+		CreatedAt:        record.CreatedAt,
+		UpdatedAt:        record.UpdatedAt,
 	}
-
-	photo.Tags = []Tag{}
-	photo.Visibility = Visibility(visibility)
-	photo.ThumbnailKey = thumbnailKey
-	if takenAt.Valid {
-		photo.TakenAt = &takenAt.Time
-	}
-
 	service.applyPhotoURLs(&photo)
-
-	return photo, nil
+	return photo
 }
 
 func (service *Service) applyPhotoURLs(photo *Photo) {
@@ -489,38 +419,28 @@ func (service *Service) attachLiked(ctx context.Context, photos []Photo, fingerp
 		return nil
 	}
 
-	ids := make([]string, len(photos))
-	args := make([]any, 0, len(photos)+1)
+	ids := make([]int64, len(photos))
 	indexByID := map[int64]int{}
 	for index, photo := range photos {
-		ids[index] = "?"
-		args = append(args, photo.ID)
+		ids[index] = photo.ID
 		indexByID[photo.ID] = index
 	}
-	args = append(args, fingerprintHash)
 
-	rows, err := service.db.QueryContext(ctx, `
-		SELECT photo_id
-		FROM photo_likes
-		WHERE photo_id IN (`+strings.Join(ids, ",")+`)
-			AND fingerprint_hash = ?
-	`, args...)
-	if err != nil {
+	var likes []appdb.PhotoLike
+	if err := service.db.WithContext(ctx).
+		Select("photo_id").
+		Where("photo_id IN ? AND fingerprint_hash = ?", ids, fingerprintHash).
+		Find(&likes).Error; err != nil {
 		return fmt.Errorf("load liked photos: %w", err)
 	}
-	defer rows.Close()
 
-	for rows.Next() {
-		var photoID int64
-		if err := rows.Scan(&photoID); err != nil {
-			return fmt.Errorf("scan liked photo: %w", err)
-		}
-		if index, ok := indexByID[photoID]; ok {
+	for _, like := range likes {
+		if index, ok := indexByID[like.PhotoID]; ok {
 			photos[index].Liked = true
 		}
 	}
 
-	return rows.Err()
+	return nil
 }
 
 func (service *Service) attachTags(ctx context.Context, photos []Photo) error {
@@ -528,60 +448,75 @@ func (service *Service) attachTags(ctx context.Context, photos []Photo) error {
 		return nil
 	}
 
-	ids := make([]string, len(photos))
-	args := make([]any, len(photos))
+	ids := make([]int64, len(photos))
 	indexByID := map[int64]int{}
 	for index, photo := range photos {
-		ids[index] = "?"
-		args[index] = photo.ID
+		ids[index] = photo.ID
 		indexByID[photo.ID] = index
 	}
 
-	rows, err := service.db.QueryContext(ctx, `
-		SELECT photo_tags.photo_id, tags.id, tags.name, tags.created_at
-		FROM photo_tags
-		INNER JOIN tags ON tags.id = photo_tags.tag_id
-		WHERE photo_tags.photo_id IN (`+strings.Join(ids, ",")+`)
-		ORDER BY tags.name
-	`, args...)
-	if err != nil {
+	type tagRow struct {
+		PhotoID   int64
+		ID        int64
+		Name      string
+		CreatedAt time.Time
+	}
+	var rows []tagRow
+	if err := service.db.WithContext(ctx).
+		Table("photo_tags").
+		Select("photo_tags.photo_id, tags.id, tags.name, tags.created_at").
+		Joins("INNER JOIN tags ON tags.id = photo_tags.tag_id").
+		Where("photo_tags.photo_id IN ?", ids).
+		Order("tags.name").
+		Scan(&rows).Error; err != nil {
 		return fmt.Errorf("load photo tags: %w", err)
 	}
-	defer rows.Close()
 
-	for rows.Next() {
-		var photoID int64
-		var tag Tag
-		if err := rows.Scan(&photoID, &tag.ID, &tag.Name, &tag.CreatedAt); err != nil {
-			return fmt.Errorf("scan photo tag: %w", err)
-		}
-		if index, ok := indexByID[photoID]; ok {
+	for _, row := range rows {
+		if index, ok := indexByID[row.PhotoID]; ok {
+			tag := Tag{ID: row.ID, Name: row.Name, CreatedAt: row.CreatedAt}
 			photos[index].Tags = append(photos[index].Tags, tag)
 		}
 	}
 
-	return rows.Err()
+	return nil
 }
 
-func upsertPhotoTags(ctx context.Context, tx *sql.Tx, photoID int64, tags []string) error {
+func upsertPhotoTags(ctx context.Context, tx *gorm.DB, photoID int64, tags []string) error {
 	for _, tag := range normalizeTags(tags) {
-		result, err := tx.ExecContext(ctx, "INSERT INTO tags (name) VALUES (?) ON DUPLICATE KEY UPDATE name = VALUES(name)", tag)
-		if err != nil {
+		tagRecord := appdb.Tag{Name: tag}
+		if err := tx.WithContext(ctx).Clauses(clause.OnConflict{
+			Columns:   []clause.Column{{Name: "name"}},
+			DoNothing: true,
+		}).Create(&tagRecord).Error; err != nil {
 			return fmt.Errorf("upsert tag: %w", err)
 		}
-
-		tagID, err := result.LastInsertId()
-		if err != nil || tagID == 0 {
-			if err := tx.QueryRowContext(ctx, "SELECT id FROM tags WHERE name = ? LIMIT 1", tag).Scan(&tagID); err != nil {
+		if tagRecord.ID == 0 {
+			if err := tx.WithContext(ctx).Where("name = ?", tag).Take(&tagRecord).Error; err != nil {
 				return fmt.Errorf("load tag id: %w", err)
 			}
 		}
 
-		if _, err := tx.ExecContext(ctx, "INSERT IGNORE INTO photo_tags (photo_id, tag_id) VALUES (?, ?)", photoID, tagID); err != nil {
+		if err := tx.WithContext(ctx).Clauses(clause.Insert{Modifier: "IGNORE"}).Create(&appdb.PhotoTag{PhotoID: photoID, TagID: tagRecord.ID}).Error; err != nil {
 			return fmt.Errorf("link photo tag: %w", err)
 		}
 	}
 	return nil
+}
+
+func stringPtr(value string) *string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return nil
+	}
+	return &value
+}
+
+func stringValue(value *string) string {
+	if value == nil {
+		return ""
+	}
+	return *value
 }
 
 func normalizeTags(tags []string) []string {

@@ -25,6 +25,7 @@ type Config struct {
 
 type UploadConfig struct {
 	MaxSizeMB         int `yaml:"max_size_mb"`
+	MaxVideoSizeMB    int `yaml:"max_video_size_mb"`
 	MaxFilesPerUpload int `yaml:"max_files_per_upload"`
 }
 
@@ -193,6 +194,7 @@ func defaultConfig() Config {
 		},
 		Upload: UploadConfig{
 			MaxSizeMB:         20,
+			MaxVideoSizeMB:    500,
 			MaxFilesPerUpload: 20,
 		},
 	}
@@ -267,6 +269,7 @@ func applyEnvOverrides(cfg *Config) {
 	cfg.Frontend.Mode = getEnv("FRONTEND_MODE", cfg.Frontend.Mode)
 	cfg.Frontend.StaticRoot = getEnv("FRONTEND_STATIC_ROOT", getEnv("STATIC_ROOT", cfg.Frontend.StaticRoot))
 	cfg.Upload.MaxSizeMB = getIntEnv("UPLOAD_MAX_SIZE_MB", cfg.Upload.MaxSizeMB)
+	cfg.Upload.MaxVideoSizeMB = getIntEnv("UPLOAD_MAX_VIDEO_SIZE_MB", cfg.Upload.MaxVideoSizeMB)
 	cfg.Upload.MaxFilesPerUpload = getIntEnv("UPLOAD_MAX_FILES_PER_UPLOAD", cfg.Upload.MaxFilesPerUpload)
 }
 

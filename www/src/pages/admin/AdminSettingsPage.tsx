@@ -1,4 +1,6 @@
-import MDEditor from '@uiw/react-md-editor';
+import MDEditor from '@uiw/react-md-editor/nohighlight';
+import '@uiw/react-md-editor/markdown-editor.css';
+import '@uiw/react-markdown-preview/markdown.css';
 import { Article, ColorLens, Image, Info, Key, Storage, UploadFile } from '@mui/icons-material';
 import {
   Alert,
@@ -71,6 +73,7 @@ const fallbackSite: SiteSettings = {
 
 const fallbackUpload: UploadSettings = {
   maxFileSizeMb: 20,
+  maxVideoSizeMb: 500,
   maxFilesPerUpload: 20
 };
 
@@ -679,17 +682,27 @@ export function AdminSettingsPage() {
           {activeSection === 'upload' && (
             <Stack component="form" onSubmit={handleUploadSubmit} sx={{ gap: 2.5 }}>
               <Grid container spacing={2}>
-                <Grid size={{ xs: 12, sm: 6 }}>
+                <Grid size={{ xs: 12, sm: 4 }}>
                   <TextField
                     fullWidth
-                    label="单文件最大大小（MB）"
+                    label="图片单文件最大大小（MB）"
                     onChange={(event) => setUpload((prev) => ({ ...prev, maxFileSizeMb: Number(event.target.value) }))}
                     slotProps={{ htmlInput: { min: 1, max: 1024, step: 1 } }}
                     type="number"
                     value={upload.maxFileSizeMb}
                   />
                 </Grid>
-                <Grid size={{ xs: 12, sm: 6 }}>
+                <Grid size={{ xs: 12, sm: 4 }}>
+                  <TextField
+                    fullWidth
+                    label="视频单文件最大大小（MB）"
+                    onChange={(event) => setUpload((prev) => ({ ...prev, maxVideoSizeMb: Number(event.target.value) }))}
+                    slotProps={{ htmlInput: { min: 1, max: 10240, step: 1 } }}
+                    type="number"
+                    value={upload.maxVideoSizeMb}
+                  />
+                </Grid>
+                <Grid size={{ xs: 12, sm: 4 }}>
                   <TextField
                     fullWidth
                     label="单次上传最大数量"

@@ -71,6 +71,10 @@ func TestLoadDefaults(t *testing.T) {
 		t.Fatalf("expected default upload max size 20, got %d", cfg.Upload.MaxSizeMB)
 	}
 
+	if cfg.Upload.MaxVideoSizeMB != 500 {
+		t.Fatalf("expected default upload max video size 500, got %d", cfg.Upload.MaxVideoSizeMB)
+	}
+
 	if cfg.Upload.MaxFilesPerUpload != 20 {
 		t.Fatalf("expected default upload max files 20, got %d", cfg.Upload.MaxFilesPerUpload)
 	}

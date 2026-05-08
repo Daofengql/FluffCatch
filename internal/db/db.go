@@ -12,6 +12,8 @@ import (
 	"fluffcatch/migrations"
 
 	_ "github.com/go-sql-driver/mysql"
+	"gorm.io/driver/mysql"
+	"gorm.io/gorm"
 )
 
 type Options struct {
@@ -41,6 +43,21 @@ func Open(ctx context.Context, dsn string, options Options) (*sql.DB, error) {
 	}
 
 	return conn, nil
+}
+
+func OpenGORM(ctx context.Context, dsn string, options Options) (*gorm.DB, error) {
+	sqlDB, err := Open(ctx, dsn, options)
+	if err != nil {
+		return nil, err
+	}
+
+	gormDB, err := gorm.Open(mysql.New(mysql.Config{Conn: sqlDB}), &gorm.Config{})
+	if err != nil {
+		_ = sqlDB.Close()
+		return nil, fmt.Errorf("open gorm mysql: %w", err)
+	}
+
+	return gormDB.WithContext(ctx), nil
 }
 
 func normalizeOptions(options Options) Options {

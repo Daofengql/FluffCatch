@@ -4,27 +4,34 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
-	"database/sql"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"hash"
 	"io"
 	"mime/multipart"
 	"net/http"
+	"os"
 	"path/filepath"
 	"strings"
 	"time"
 
 	"fluffcatch/internal/auth"
+	appdb "fluffcatch/internal/db"
 	"fluffcatch/internal/gallery"
 	appimage "fluffcatch/internal/image"
 	"fluffcatch/internal/storage"
+
+	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 type Service struct {
-	db             *sql.DB
+	db             *gorm.DB
 	storageManager *storage.Manager
-	maxSizeBytes   int64
+	maxImageBytes  int64
+	maxVideoBytes  int64
 }
 
 type FileUpload struct {
@@ -45,19 +52,41 @@ type storedUpload struct {
 	SizeBytes    int64
 }
 
-func NewService(dbConn *sql.DB, storageManager *storage.Manager, maxSizeMB int) *Service {
+type bufferedUpload struct {
+	File        *os.File
+	SizeBytes   int64
+	ContentHash string
+	ContentType string
+	IsImage     bool
+}
+
+type uploadLimits struct {
+	MaxImageBytes int64
+	MaxVideoBytes int64
+}
+
+func NewService(dbConn *gorm.DB, storageManager *storage.Manager, maxSizeMB int) *Service {
+	return NewServiceWithLimits(dbConn, storageManager, maxSizeMB, maxSizeMB)
+}
+
+func NewServiceWithLimits(dbConn *gorm.DB, storageManager *storage.Manager, maxImageSizeMB int, maxVideoSizeMB int) *Service {
 	return &Service{
 		db:             dbConn,
 		storageManager: storageManager,
-		maxSizeBytes:   int64(maxSizeMB) * 1024 * 1024,
+		maxImageBytes:  int64(maxImageSizeMB) * 1024 * 1024,
+		maxVideoBytes:  int64(maxVideoSizeMB) * 1024 * 1024,
 	}
 }
 
 func (service *Service) Create(ctx context.Context, eventID int64, upload FileUpload) (Submission, error) {
-	return service.CreateWithLimit(ctx, eventID, upload, service.maxSizeBytes)
+	return service.CreateWithLimits(ctx, eventID, upload, service.maxImageBytes, service.maxVideoBytes)
 }
 
 func (service *Service) CreateWithLimit(ctx context.Context, eventID int64, upload FileUpload, maxSizeBytes int64) (Submission, error) {
+	return service.CreateWithLimits(ctx, eventID, upload, maxSizeBytes, maxSizeBytes)
+}
+
+func (service *Service) CreateWithLimits(ctx context.Context, eventID int64, upload FileUpload, maxImageBytes int64, maxVideoBytes int64) (Submission, error) {
 	if service.db == nil {
 		return Submission{}, fmt.Errorf("database is required")
 	}
@@ -65,7 +94,7 @@ func (service *Service) CreateWithLimit(ctx context.Context, eventID int64, uplo
 	if err := service.verifySubmissionPassword(ctx, eventID, upload.SubmissionPassword); err != nil {
 		return Submission{}, err
 	}
-	storedUpload, store, err := service.storeUpload(ctx, eventID, upload, maxSizeBytes)
+	storedUpload, store, err := service.storeUpload(ctx, eventID, upload, uploadLimits{MaxImageBytes: maxImageBytes, MaxVideoBytes: maxVideoBytes})
 	if err != nil {
 		return Submission{}, err
 	}
@@ -76,24 +105,25 @@ func (service *Service) CreateWithLimit(ctx context.Context, eventID int64, uplo
 		return Submission{}, fmt.Errorf("encode tags: %w", err)
 	}
 
-	result, err := service.db.ExecContext(ctx, `
-		INSERT INTO submissions (
-			event_id, storage_policy_id, object_key, thumbnail_key, content_hash,
-			content_type, size_bytes, photographer_name, tags, status
-		)
-		VALUES (?, ?, ?, NULLIF(?, ''), ?, ?, ?, ?, ?, 'pending')
-	`, eventID, storedUpload.PolicyID, storedUpload.ObjectKey, storedUpload.ThumbnailKey, storedUpload.ContentHash, storedUpload.ContentType, storedUpload.SizeBytes, nullableString(upload.PhotographerName), string(tagsJSON))
+	record := appdb.Submission{
+		EventID:          eventID,
+		StoragePolicyID:  storedUpload.PolicyID,
+		ObjectKey:        storedUpload.ObjectKey,
+		ThumbnailKey:     stringPtr(storedUpload.ThumbnailKey),
+		ContentHash:      storedUpload.ContentHash,
+		ContentType:      storedUpload.ContentType,
+		SizeBytes:        storedUpload.SizeBytes,
+		PhotographerName: stringPtr(upload.PhotographerName),
+		Tags:             tagsJSON,
+		Status:           string(SubmissionPending),
+	}
+	err = service.db.WithContext(ctx).Create(&record).Error
 	if err != nil {
 		service.deleteStoredUpload(ctx, store, storedUpload)
 		return Submission{}, fmt.Errorf("create submission: %w", err)
 	}
 
-	id, err := result.LastInsertId()
-	if err != nil {
-		return Submission{}, fmt.Errorf("read submission id: %w", err)
-	}
-
-	created, found, err := service.Get(ctx, id)
+	created, found, err := service.Get(ctx, record.ID)
 	if err != nil {
 		return Submission{}, err
 	}
@@ -112,10 +142,14 @@ func visibilityOrDefault(v string) string {
 }
 
 func (service *Service) CreateApproved(ctx context.Context, eventID int64, upload FileUpload) (gallery.Photo, error) {
-	return service.CreateApprovedWithLimit(ctx, eventID, upload, service.maxSizeBytes)
+	return service.CreateApprovedWithLimits(ctx, eventID, upload, service.maxImageBytes, service.maxVideoBytes)
 }
 
 func (service *Service) CreateApprovedWithLimit(ctx context.Context, eventID int64, upload FileUpload, maxSizeBytes int64) (gallery.Photo, error) {
+	return service.CreateApprovedWithLimits(ctx, eventID, upload, maxSizeBytes, maxSizeBytes)
+}
+
+func (service *Service) CreateApprovedWithLimits(ctx context.Context, eventID int64, upload FileUpload, maxImageBytes int64, maxVideoBytes int64) (gallery.Photo, error) {
 	if service.db == nil {
 		return gallery.Photo{}, fmt.Errorf("database is required")
 	}
@@ -123,46 +157,39 @@ func (service *Service) CreateApprovedWithLimit(ctx context.Context, eventID int
 	if err := service.verifyEventAllowsSubmission(ctx, eventID); err != nil {
 		return gallery.Photo{}, err
 	}
-	storedUpload, store, err := service.storeUpload(ctx, eventID, upload, maxSizeBytes)
+	storedUpload, store, err := service.storeUpload(ctx, eventID, upload, uploadLimits{MaxImageBytes: maxImageBytes, MaxVideoBytes: maxVideoBytes})
 	if err != nil {
 		return gallery.Photo{}, err
 	}
 
 	visibility := visibilityOrDefault(upload.Visibility)
 
-	tx, err := service.db.BeginTx(ctx, nil)
+	var photoID int64
+	err = service.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		record := appdb.Photo{
+			EventID:          eventID,
+			StoragePolicyID:  storedUpload.PolicyID,
+			ObjectKey:        storedUpload.ObjectKey,
+			ThumbnailKey:     stringPtr(storedUpload.ThumbnailKey),
+			ContentHash:      storedUpload.ContentHash,
+			ContentType:      storedUpload.ContentType,
+			SizeBytes:        storedUpload.SizeBytes,
+			PhotographerName: stringPtr(upload.PhotographerName),
+			Visibility:       visibility,
+			SortAt:           time.Now(),
+		}
+		if err := tx.Create(&record).Error; err != nil {
+			return fmt.Errorf("create approved photo: %w", err)
+		}
+		photoID = record.ID
+		if err := upsertPhotoTags(ctx, tx, photoID, upload.Tags); err != nil {
+			return err
+		}
+		return nil
+	})
 	if err != nil {
-		service.deleteStoredUpload(ctx, store, storedUpload)
-		return gallery.Photo{}, fmt.Errorf("begin create approved photo: %w", err)
-	}
-	defer tx.Rollback()
-
-	result, err := tx.ExecContext(ctx, `
-		INSERT INTO photos (
-			event_id, storage_policy_id, object_key, thumbnail_key, content_hash,
-			content_type, size_bytes, photographer_name, visibility, sort_at
-		)
-		VALUES (?, ?, ?, NULLIF(?, ''), ?, ?, ?, NULLIF(?, ''), ?, ?)
-	`, eventID, storedUpload.PolicyID, storedUpload.ObjectKey, storedUpload.ThumbnailKey, storedUpload.ContentHash, storedUpload.ContentType, storedUpload.SizeBytes, strings.TrimSpace(upload.PhotographerName), visibility, time.Now())
-	if err != nil {
-		service.deleteStoredUpload(ctx, store, storedUpload)
-		return gallery.Photo{}, fmt.Errorf("create approved photo: %w", err)
-	}
-
-	photoID, err := result.LastInsertId()
-	if err != nil {
-		service.deleteStoredUpload(ctx, store, storedUpload)
-		return gallery.Photo{}, fmt.Errorf("read photo id: %w", err)
-	}
-
-	if err := upsertPhotoTags(ctx, tx, photoID, upload.Tags); err != nil {
 		service.deleteStoredUpload(ctx, store, storedUpload)
 		return gallery.Photo{}, err
-	}
-
-	if err := tx.Commit(); err != nil {
-		service.deleteStoredUpload(ctx, store, storedUpload)
-		return gallery.Photo{}, fmt.Errorf("commit create approved photo: %w", err)
 	}
 
 	photo, err := service.photoByID(ctx, photoID)
@@ -172,48 +199,42 @@ func (service *Service) CreateApprovedWithLimit(ctx context.Context, eventID int
 	return photo, nil
 }
 
-func (service *Service) storeUpload(ctx context.Context, eventID int64, upload FileUpload, maxSizeBytes int64) (storedUpload, storage.Store, error) {
+func (service *Service) storeUpload(ctx context.Context, eventID int64, upload FileUpload, limits uploadLimits) (storedUpload, storage.Store, error) {
 	if upload.Header == nil || upload.File == nil {
 		return storedUpload{}, nil, fmt.Errorf("file is required")
 	}
-	if maxSizeBytes <= 0 {
-		maxSizeBytes = 20 * 1024 * 1024
+	if limits.MaxImageBytes <= 0 {
+		limits.MaxImageBytes = 20 * 1024 * 1024
 	}
-	if upload.Header.Size > maxSizeBytes {
-		return storedUpload{}, nil, fmt.Errorf("file exceeds maximum upload size of %d MB", maxSizeBytes/(1024*1024))
+	if limits.MaxVideoBytes <= 0 {
+		limits.MaxVideoBytes = limits.MaxImageBytes
 	}
-
-	limited := io.LimitReader(upload.File, maxSizeBytes+1)
-
-	// Detect actual content type from magic bytes.
-	head := make([]byte, 512)
-	n, err := io.ReadFull(limited, head)
-	if err != nil && err != io.ErrUnexpectedEOF {
-		return storedUpload{}, nil, fmt.Errorf("read upload file: %w", err)
-	}
-	head = head[:n]
-	detectedType := http.DetectContentType(head)
-	if !isAllowedImageContentType(detectedType) {
-		return storedUpload{}, nil, fmt.Errorf("file is not a supported image format")
+	maxPossibleBytes := max(limits.MaxImageBytes, limits.MaxVideoBytes)
+	if upload.Header.Size > maxPossibleBytes {
+		return storedUpload{}, nil, fmt.Errorf("file exceeds maximum upload size of %d MB", maxPossibleBytes/(1024*1024))
 	}
 
-	content, err := io.ReadAll(io.MultiReader(bytes.NewReader(head), limited))
+	buffered, err := bufferUploadToTemp(upload.File, maxPossibleBytes)
 	if err != nil {
-		return storedUpload{}, nil, fmt.Errorf("read upload file: %w", err)
+		return storedUpload{}, nil, err
 	}
-	if len(content) == 0 {
-		return storedUpload{}, nil, fmt.Errorf("empty file is not allowed")
+	defer func() {
+		name := buffered.File.Name()
+		_ = buffered.File.Close()
+		_ = os.Remove(name)
+	}()
+
+	if !isAllowedMediaContentType(buffered.ContentType) {
+		return storedUpload{}, nil, fmt.Errorf("file is not a supported image or video format")
 	}
-	if int64(len(content)) > maxSizeBytes {
-		return storedUpload{}, nil, fmt.Errorf("file exceeds maximum upload size of %d MB", maxSizeBytes/(1024*1024))
+	if limit := limitForContentType(buffered.ContentType, limits); limit > 0 && buffered.SizeBytes > limit {
+		return storedUpload{}, nil, fmt.Errorf("%s exceeds maximum upload size of %d MB", mediaKind(buffered.ContentType), limit/(1024*1024))
 	}
 
-	hash := sha256.Sum256(content)
-	contentHash := hex.EncodeToString(hash[:])
-	if exists, err := service.eventHashExists(ctx, eventID, contentHash); err != nil {
+	if exists, err := service.eventHashExists(ctx, eventID, buffered.ContentHash); err != nil {
 		return storedUpload{}, nil, err
 	} else if exists {
-		return storedUpload{}, nil, fmt.Errorf("duplicate image already exists in this event")
+		return storedUpload{}, nil, fmt.Errorf("duplicate media already exists in this event")
 	}
 
 	store, err := service.storageManager.ActiveStore()
@@ -221,44 +242,59 @@ func (service *Service) storeUpload(ctx context.Context, eventID int64, upload F
 		return storedUpload{}, nil, err
 	}
 
-	contentType := detectedType
-	objectKey := imageObjectKey(eventID, contentHash, upload.Header.Filename)
-	thumbnailKey := thumbnailObjectKey(eventID, contentHash)
+	contentType := buffered.ContentType
+	objectKey := mediaObjectKey(eventID, buffered.ContentHash, upload.Header.Filename, contentType)
+	thumbnailKey := ""
 
+	if _, err := buffered.File.Seek(0, io.SeekStart); err != nil {
+		return storedUpload{}, nil, fmt.Errorf("prepare upload file: %w", err)
+	}
 	stored, err := store.Put(ctx, storage.Object{
 		Key:         objectKey,
-		Content:     bytes.NewReader(content),
+		Content:     buffered.File,
 		ContentType: contentType,
-		Size:        int64(len(content)),
+		Size:        buffered.SizeBytes,
 	})
 	if err != nil {
 		return storedUpload{}, nil, err
 	}
 
 	var storedThumbnail storage.StoredObject
-	thumbnail, thumbnailContentType, err := appimage.GenerateThumbnailBytes(content, 640)
-	if err == nil && len(thumbnail) > 0 {
-		storedThumbnail, err = store.Put(ctx, storage.Object{
-			Key:         thumbnailKey,
-			Content:     bytes.NewReader(thumbnail),
-			ContentType: thumbnailContentType,
-			Size:        int64(len(thumbnail)),
-		})
+	if buffered.IsImage {
+		if _, err := buffered.File.Seek(0, io.SeekStart); err != nil {
+			_ = store.Delete(ctx, stored.Key)
+			return storedUpload{}, nil, fmt.Errorf("prepare thumbnail source: %w", err)
+		}
+		content, err := io.ReadAll(buffered.File)
 		if err != nil {
 			_ = store.Delete(ctx, stored.Key)
-			return storedUpload{}, nil, fmt.Errorf("store thumbnail: %w", err)
+			return storedUpload{}, nil, fmt.Errorf("read image for thumbnail: %w", err)
 		}
-	} else {
-		thumbnailKey = ""
+		thumbnailKey = thumbnailObjectKey(eventID, buffered.ContentHash)
+		thumbnail, thumbnailContentType, err := appimage.GenerateThumbnailBytes(content, 640)
+		if err == nil && len(thumbnail) > 0 {
+			storedThumbnail, err = store.Put(ctx, storage.Object{
+				Key:         thumbnailKey,
+				Content:     bytes.NewReader(thumbnail),
+				ContentType: thumbnailContentType,
+				Size:        int64(len(thumbnail)),
+			})
+			if err != nil {
+				_ = store.Delete(ctx, stored.Key)
+				return storedUpload{}, nil, fmt.Errorf("store thumbnail: %w", err)
+			}
+		} else {
+			thumbnailKey = ""
+		}
 	}
 
 	return storedUpload{
 		PolicyID:     stored.PolicyID,
 		ObjectKey:    stored.Key,
 		ThumbnailKey: storedThumbnail.Key,
-		ContentHash:  contentHash,
+		ContentHash:  buffered.ContentHash,
 		ContentType:  contentType,
-		SizeBytes:    int64(len(content)),
+		SizeBytes:    buffered.SizeBytes,
 	}, store, nil
 }
 
@@ -273,38 +309,29 @@ func (service *Service) deleteStoredUpload(ctx context.Context, store storage.St
 }
 
 func (service *Service) eventHashExists(ctx context.Context, eventID int64, contentHash string) (bool, error) {
-	var exists int
-	err := service.db.QueryRowContext(ctx, `
-		SELECT 1
-		FROM (
-			SELECT content_hash FROM photos WHERE event_id = ? AND content_hash = ?
-			UNION ALL
-			SELECT content_hash FROM submissions WHERE event_id = ? AND content_hash = ? AND status = 'pending'
-		) AS image_hashes
-		LIMIT 1
-	`, eventID, contentHash, eventID, contentHash).Scan(&exists)
-	if err == sql.ErrNoRows {
-		return false, nil
+	var count int64
+	if err := service.db.WithContext(ctx).Model(&appdb.Photo{}).
+		Where("event_id = ? AND content_hash = ?", eventID, contentHash).
+		Count(&count).Error; err != nil {
+		return false, fmt.Errorf("check duplicate photo: %w", err)
 	}
-	if err != nil {
-		return false, fmt.Errorf("check duplicate image: %w", err)
+	if count > 0 {
+		return true, nil
 	}
-	return true, nil
+	if err := service.db.WithContext(ctx).Model(&appdb.Submission{}).
+		Where("event_id = ? AND content_hash = ? AND status = ?", eventID, contentHash, string(SubmissionPending)).
+		Count(&count).Error; err != nil {
+		return false, fmt.Errorf("check duplicate submission: %w", err)
+	}
+	return count > 0, nil
 }
 
 func (service *Service) photoByID(ctx context.Context, photoID int64) (gallery.Photo, error) {
-	row := service.db.QueryRowContext(ctx, `
-		SELECT id, event_id, storage_policy_id, object_key, COALESCE(thumbnail_key, ''),
-			content_hash, content_type, size_bytes, like_count, COALESCE(photographer_name, ''), visibility, taken_at, created_at, updated_at
-		FROM photos
-		WHERE id = ?
-		LIMIT 1
-	`, photoID)
-
-	photo, err := scanPhoto(row, service.storageManager)
-	if err != nil {
+	var record appdb.Photo
+	if err := service.db.WithContext(ctx).Where("id = ?", photoID).Take(&record).Error; err != nil {
 		return gallery.Photo{}, err
 	}
+	photo := scanPhoto(record, service.storageManager)
 
 	photos := []gallery.Photo{photo}
 	if err := attachPhotoTags(ctx, service.db, photos); err != nil {
@@ -314,24 +341,16 @@ func (service *Service) photoByID(ctx context.Context, photoID int64) (gallery.P
 }
 
 func (service *Service) Get(ctx context.Context, id int64) (Submission, bool, error) {
-	row := service.db.QueryRowContext(ctx, `
-		SELECT id, event_id, storage_policy_id, object_key, COALESCE(thumbnail_key, ''),
-			content_hash, content_type, size_bytes, COALESCE(photographer_name, ''),
-			tags, status, created_at
-		FROM submissions
-		WHERE id = ?
-		LIMIT 1
-	`, id)
-
-	submission, err := service.scanSubmission(row)
-	if err == sql.ErrNoRows {
+	var record appdb.Submission
+	err := service.db.WithContext(ctx).Where("id = ?", id).Take(&record).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
 		return Submission{}, false, nil
 	}
 	if err != nil {
 		return Submission{}, false, err
 	}
 
-	return submission, true, nil
+	return service.submissionFromRecord(record), true, nil
 }
 
 func (service *Service) ListPending(ctx context.Context) ([]Submission, error) {
@@ -343,36 +362,19 @@ func (service *Service) ListPendingForEvent(ctx context.Context, eventID int64) 
 		return []Submission{}, nil
 	}
 
-	where := "WHERE status = 'pending'"
-	args := []any{}
+	query := service.db.WithContext(ctx).Where("status = ?", string(SubmissionPending))
 	if eventID > 0 {
-		where += " AND event_id = ?"
-		args = append(args, eventID)
+		query = query.Where("event_id = ?", eventID)
 	}
 
-	rows, err := service.db.QueryContext(ctx, `
-		SELECT id, event_id, storage_policy_id, object_key, COALESCE(thumbnail_key, ''),
-			content_hash, content_type, size_bytes, COALESCE(photographer_name, ''),
-			tags, status, created_at
-		FROM submissions
-		`+where+`
-		ORDER BY created_at DESC, id DESC
-	`, args...)
-	if err != nil {
+	var records []appdb.Submission
+	if err := query.Order("created_at DESC").Order("id DESC").Find(&records).Error; err != nil {
 		return nil, fmt.Errorf("list pending submissions: %w", err)
 	}
-	defer rows.Close()
 
-	submissions := []Submission{}
-	for rows.Next() {
-		submission, err := service.scanSubmission(rows)
-		if err != nil {
-			return nil, err
-		}
-		submissions = append(submissions, submission)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("iterate submissions: %w", err)
+	submissions := make([]Submission, 0, len(records))
+	for _, record := range records {
+		submissions = append(submissions, service.submissionFromRecord(record))
 	}
 
 	return submissions, nil
@@ -410,28 +412,22 @@ func (service *Service) DeleteBatch(ctx context.Context, ids []int64) (BatchResp
 }
 
 func (service *Service) verifySubmissionPassword(ctx context.Context, eventID int64, password string) error {
-	var enabled bool
-	var passwordHash sql.NullString
-	err := service.db.QueryRowContext(ctx, `
-		SELECT submission_enabled, submission_password_hash
-		FROM events
-		WHERE id = ?
-		LIMIT 1
-	`, eventID).Scan(&enabled, &passwordHash)
-	if err == sql.ErrNoRows {
+	var event appdb.Event
+	err := service.db.WithContext(ctx).Select("submission_enabled", "submission_password_hash").Where("id = ?", eventID).Take(&event).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
 		return fmt.Errorf("event not found")
 	}
 	if err != nil {
 		return fmt.Errorf("load event submission settings: %w", err)
 	}
-	if !enabled {
+	if !event.SubmissionEnabled {
 		return fmt.Errorf("submissions are closed")
 	}
-	if !passwordHash.Valid || passwordHash.String == "" {
+	if event.SubmissionPasswordHash == nil || *event.SubmissionPasswordHash == "" {
 		return nil
 	}
 
-	ok, err := auth.VerifyPassword(password, passwordHash.String)
+	ok, err := auth.VerifyPassword(password, *event.SubmissionPasswordHash)
 	if err != nil || !ok {
 		return fmt.Errorf("invalid submission password")
 	}
@@ -440,20 +436,15 @@ func (service *Service) verifySubmissionPassword(ctx context.Context, eventID in
 }
 
 func (service *Service) verifyEventAllowsSubmission(ctx context.Context, eventID int64) error {
-	var enabled bool
-	err := service.db.QueryRowContext(ctx, `
-		SELECT submission_enabled
-		FROM events
-		WHERE id = ?
-		LIMIT 1
-	`, eventID).Scan(&enabled)
-	if err == sql.ErrNoRows {
+	var event appdb.Event
+	err := service.db.WithContext(ctx).Select("submission_enabled").Where("id = ?", eventID).Take(&event).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
 		return fmt.Errorf("event not found")
 	}
 	if err != nil {
 		return fmt.Errorf("load event submission settings: %w", err)
 	}
-	if !enabled {
+	if !event.SubmissionEnabled {
 		return fmt.Errorf("submissions are closed")
 	}
 	return nil
@@ -468,40 +459,32 @@ func (service *Service) approveOne(ctx context.Context, id int64, visibility str
 		return false, nil
 	}
 
-	tx, err := service.db.BeginTx(ctx, nil)
-	if err != nil {
-		return false, fmt.Errorf("begin approve submission: %w", err)
-	}
-	defer tx.Rollback()
-
-	result, err := tx.ExecContext(ctx, `
-		INSERT INTO photos (
-			event_id, storage_policy_id, object_key, thumbnail_key, content_hash,
-			content_type, size_bytes, photographer_name, visibility, sort_at
-		)
-		VALUES (?, ?, ?, NULLIF(?, ''), ?, ?, ?, NULLIF(?, ''), ?, ?)
-	`, submission.EventID, submission.StoragePolicyID, submission.ObjectKey, submission.ThumbnailKey, submission.ContentHash, submission.ContentType, submission.SizeBytes, submission.PhotographerName, visibility, time.Now())
-	if err != nil {
-		return false, fmt.Errorf("create photo from submission: %w", err)
-	}
-
-	photoID, err := result.LastInsertId()
-	if err != nil {
-		return false, fmt.Errorf("read photo id: %w", err)
-	}
-
-	if err := upsertPhotoTags(ctx, tx, photoID, submission.Tags); err != nil {
+	if err := service.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		record := appdb.Photo{
+			EventID:          submission.EventID,
+			StoragePolicyID:  submission.StoragePolicyID,
+			ObjectKey:        submission.ObjectKey,
+			ThumbnailKey:     stringPtr(submission.ThumbnailKey),
+			ContentHash:      submission.ContentHash,
+			ContentType:      submission.ContentType,
+			SizeBytes:        submission.SizeBytes,
+			PhotographerName: stringPtr(submission.PhotographerName),
+			Visibility:       visibility,
+			SortAt:           time.Now(),
+		}
+		if err := tx.Create(&record).Error; err != nil {
+			return fmt.Errorf("create photo from submission: %w", err)
+		}
+		if err := upsertPhotoTags(ctx, tx, record.ID, submission.Tags); err != nil {
+			return err
+		}
+		if err := tx.Where("id = ?", id).Delete(&appdb.Submission{}).Error; err != nil {
+			return fmt.Errorf("remove approved submission: %w", err)
+		}
+		return nil
+	}); err != nil {
 		return false, err
 	}
-
-	if _, err := tx.ExecContext(ctx, "DELETE FROM submissions WHERE id = ?", id); err != nil {
-		return false, fmt.Errorf("remove approved submission: %w", err)
-	}
-
-	if err := tx.Commit(); err != nil {
-		return false, fmt.Errorf("commit approve submission: %w", err)
-	}
-
 	return true, nil
 }
 
@@ -522,40 +505,27 @@ func (service *Service) deleteOne(ctx context.Context, id int64) (bool, error) {
 		}
 	}
 
-	if _, err := service.db.ExecContext(ctx, "DELETE FROM submissions WHERE id = ?", id); err != nil {
-		return false, fmt.Errorf("delete submission: %w", err)
+	result := service.db.WithContext(ctx).Where("id = ?", id).Delete(&appdb.Submission{})
+	if result.Error != nil {
+		return false, fmt.Errorf("delete submission: %w", result.Error)
 	}
-
-	return true, nil
+	return result.RowsAffected > 0, nil
 }
 
-type submissionScanner interface {
-	Scan(dest ...any) error
-}
-
-func (service *Service) scanSubmission(scanner submissionScanner) (Submission, error) {
-	var submission Submission
-	var tagsRaw []byte
-	var status string
-
-	if err := scanner.Scan(
-		&submission.ID,
-		&submission.EventID,
-		&submission.StoragePolicyID,
-		&submission.ObjectKey,
-		&submission.ThumbnailKey,
-		&submission.ContentHash,
-		&submission.ContentType,
-		&submission.SizeBytes,
-		&submission.PhotographerName,
-		&tagsRaw,
-		&status,
-		&submission.CreatedAt,
-	); err != nil {
-		return Submission{}, err
+func (service *Service) submissionFromRecord(record appdb.Submission) Submission {
+	submission := Submission{
+		ID:               record.ID,
+		EventID:          record.EventID,
+		StoragePolicyID:  record.StoragePolicyID,
+		ObjectKey:        record.ObjectKey,
+		ThumbnailKey:     stringValue(record.ThumbnailKey),
+		ContentHash:      record.ContentHash,
+		ContentType:      record.ContentType,
+		SizeBytes:        record.SizeBytes,
+		PhotographerName: stringValue(record.PhotographerName),
+		Status:           SubmissionStatus(record.Status),
+		CreatedAt:        record.CreatedAt,
 	}
-
-	submission.Status = SubmissionStatus(status)
 	if store, err := service.storageManager.StoreForPolicy(submission.StoragePolicyID); err == nil {
 		submission.URL = store.PublicURL(submission.ObjectKey)
 		if submission.ThumbnailKey != "" {
@@ -564,28 +534,29 @@ func (service *Service) scanSubmission(scanner submissionScanner) (Submission, e
 	} else {
 		submission.URL = storage.MediaURL(submission.StoragePolicyID, submission.ObjectKey)
 	}
-	if len(tagsRaw) > 0 {
-		_ = json.Unmarshal(tagsRaw, &submission.Tags)
+	if len(record.Tags) > 0 {
+		_ = json.Unmarshal(record.Tags, &submission.Tags)
 	}
 
-	return submission, nil
+	return submission
 }
 
-func upsertPhotoTags(ctx context.Context, tx *sql.Tx, photoID int64, tags []string) error {
+func upsertPhotoTags(ctx context.Context, tx *gorm.DB, photoID int64, tags []string) error {
 	for _, tag := range normalizeTags(tags) {
-		result, err := tx.ExecContext(ctx, "INSERT INTO tags (name) VALUES (?) ON DUPLICATE KEY UPDATE name = VALUES(name)", tag)
-		if err != nil {
+		tagRecord := appdb.Tag{Name: tag}
+		if err := tx.WithContext(ctx).Clauses(clause.OnConflict{
+			Columns:   []clause.Column{{Name: "name"}},
+			DoNothing: true,
+		}).Create(&tagRecord).Error; err != nil {
 			return fmt.Errorf("upsert tag: %w", err)
 		}
-
-		tagID, err := result.LastInsertId()
-		if err != nil || tagID == 0 {
-			if err := tx.QueryRowContext(ctx, "SELECT id FROM tags WHERE name = ? LIMIT 1", tag).Scan(&tagID); err != nil {
+		if tagRecord.ID == 0 {
+			if err := tx.WithContext(ctx).Where("name = ?", tag).Take(&tagRecord).Error; err != nil {
 				return fmt.Errorf("load tag id: %w", err)
 			}
 		}
 
-		if _, err := tx.ExecContext(ctx, "INSERT IGNORE INTO photo_tags (photo_id, tag_id) VALUES (?, ?)", photoID, tagID); err != nil {
+		if err := tx.WithContext(ctx).Clauses(clause.Insert{Modifier: "IGNORE"}).Create(&appdb.PhotoTag{PhotoID: photoID, TagID: tagRecord.ID}).Error; err != nil {
 			return fmt.Errorf("link photo tag: %w", err)
 		}
 	}
@@ -593,41 +564,24 @@ func upsertPhotoTags(ctx context.Context, tx *sql.Tx, photoID int64, tags []stri
 	return nil
 }
 
-type photoScanner interface {
-	Scan(dest ...any) error
-}
-
-func scanPhoto(scanner photoScanner, storageManager *storage.Manager) (gallery.Photo, error) {
-	var photo gallery.Photo
-	var thumbnailKey string
-	var takenAt sql.NullTime
-	var visibility string
-
-	if err := scanner.Scan(
-		&photo.ID,
-		&photo.EventID,
-		&photo.StoragePolicyID,
-		&photo.ObjectKey,
-		&thumbnailKey,
-		&photo.ContentHash,
-		&photo.ContentType,
-		&photo.SizeBytes,
-		&photo.LikeCount,
-		&photo.PhotographerName,
-		&visibility,
-		&takenAt,
-		&photo.CreatedAt,
-		&photo.UpdatedAt,
-	); err != nil {
-		return gallery.Photo{}, err
-	}
-
-	photo.Tags = []gallery.Tag{}
-	photo.Visibility = gallery.Visibility(visibility)
-	photo.AccessGranted = true
-	photo.ThumbnailKey = thumbnailKey
-	if takenAt.Valid {
-		photo.TakenAt = &takenAt.Time
+func scanPhoto(record appdb.Photo, storageManager *storage.Manager) gallery.Photo {
+	photo := gallery.Photo{
+		ID:               record.ID,
+		EventID:          record.EventID,
+		StoragePolicyID:  record.StoragePolicyID,
+		ObjectKey:        record.ObjectKey,
+		ThumbnailKey:     stringValue(record.ThumbnailKey),
+		ContentHash:      record.ContentHash,
+		ContentType:      record.ContentType,
+		SizeBytes:        record.SizeBytes,
+		LikeCount:        record.LikeCount,
+		PhotographerName: stringValue(record.PhotographerName),
+		Visibility:       gallery.Visibility(record.Visibility),
+		AccessGranted:    true,
+		Tags:             []gallery.Tag{},
+		TakenAt:          record.TakenAt,
+		CreatedAt:        record.CreatedAt,
+		UpdatedAt:        record.UpdatedAt,
 	}
 
 	if store, err := storageManager.StoreForPolicy(photo.StoragePolicyID); err == nil {
@@ -647,59 +601,133 @@ func scanPhoto(scanner photoScanner, storageManager *storage.Manager) (gallery.P
 		photo.URL = mediaPhotoURL(photo.ID, "original")
 	}
 
-	return photo, nil
+	return photo
 }
 
 func mediaPhotoURL(photoID int64, variant string) string {
 	return fmt.Sprintf("/media/photos/%d/%s", photoID, variant)
 }
 
-func attachPhotoTags(ctx context.Context, dbConn *sql.DB, photos []gallery.Photo) error {
+func attachPhotoTags(ctx context.Context, dbConn *gorm.DB, photos []gallery.Photo) error {
 	if len(photos) == 0 {
 		return nil
 	}
 
-	ids := make([]string, len(photos))
-	args := make([]any, len(photos))
+	ids := make([]int64, len(photos))
 	indexByID := map[int64]int{}
 	for index, photo := range photos {
-		ids[index] = "?"
-		args[index] = photo.ID
+		ids[index] = photo.ID
 		indexByID[photo.ID] = index
 	}
 
-	rows, err := dbConn.QueryContext(ctx, `
-		SELECT photo_tags.photo_id, tags.id, tags.name, tags.created_at
-		FROM photo_tags
-		INNER JOIN tags ON tags.id = photo_tags.tag_id
-		WHERE photo_tags.photo_id IN (`+strings.Join(ids, ",")+`)
-		ORDER BY tags.name
-	`, args...)
-	if err != nil {
+	type tagRow struct {
+		PhotoID   int64
+		ID        int64
+		Name      string
+		CreatedAt time.Time
+	}
+	var rows []tagRow
+	if err := dbConn.WithContext(ctx).
+		Table("photo_tags").
+		Select("photo_tags.photo_id, tags.id, tags.name, tags.created_at").
+		Joins("INNER JOIN tags ON tags.id = photo_tags.tag_id").
+		Where("photo_tags.photo_id IN ?", ids).
+		Order("tags.name").
+		Scan(&rows).Error; err != nil {
 		return fmt.Errorf("load photo tags: %w", err)
 	}
-	defer rows.Close()
 
-	for rows.Next() {
-		var photoID int64
-		var tag gallery.Tag
-		if err := rows.Scan(&photoID, &tag.ID, &tag.Name, &tag.CreatedAt); err != nil {
-			return fmt.Errorf("scan photo tag: %w", err)
-		}
-		if index, ok := indexByID[photoID]; ok {
+	for _, row := range rows {
+		if index, ok := indexByID[row.PhotoID]; ok {
+			tag := gallery.Tag{ID: row.ID, Name: row.Name, CreatedAt: row.CreatedAt}
 			photos[index].Tags = append(photos[index].Tags, tag)
 		}
 	}
 
-	return rows.Err()
+	return nil
 }
 
-func imageObjectKey(eventID int64, contentHash string, filename string) string {
+func bufferUploadToTemp(source io.Reader, maxSizeBytes int64) (bufferedUpload, error) {
+	tempFile, err := os.CreateTemp("", "fluffcatch-upload-*")
+	if err != nil {
+		return bufferedUpload{}, fmt.Errorf("create upload buffer: %w", err)
+	}
+
+	cleanup := func() {
+		name := tempFile.Name()
+		_ = tempFile.Close()
+		_ = os.Remove(name)
+	}
+
+	hasher := sha256.New()
+	head := make([]byte, 0, 512)
+	limited := io.LimitReader(source, maxSizeBytes+1)
+	written, err := copyWithHead(tempFile, hasher, limited, &head, 512)
+	if err != nil {
+		cleanup()
+		return bufferedUpload{}, fmt.Errorf("read upload file: %w", err)
+	}
+	if written == 0 {
+		cleanup()
+		return bufferedUpload{}, fmt.Errorf("empty file is not allowed")
+	}
+	if written > maxSizeBytes {
+		cleanup()
+		return bufferedUpload{}, fmt.Errorf("file exceeds maximum upload size of %d MB", maxSizeBytes/(1024*1024))
+	}
+
+	if _, err := tempFile.Seek(0, io.SeekStart); err != nil {
+		cleanup()
+		return bufferedUpload{}, fmt.Errorf("prepare upload buffer: %w", err)
+	}
+
+	contentType := http.DetectContentType(head)
+	return bufferedUpload{
+		File:        tempFile,
+		SizeBytes:   written,
+		ContentHash: hex.EncodeToString(hasher.Sum(nil)),
+		ContentType: contentType,
+		IsImage:     isAllowedImageContentType(contentType),
+	}, nil
+}
+
+func copyWithHead(dst io.Writer, hasher hash.Hash, src io.Reader, head *[]byte, headLimit int) (int64, error) {
+	buffer := make([]byte, 128*1024)
+	var written int64
+	for {
+		n, readErr := src.Read(buffer)
+		if n > 0 {
+			chunk := buffer[:n]
+			if len(*head) < headLimit {
+				need := min(headLimit-len(*head), len(chunk))
+				*head = append(*head, chunk[:need]...)
+			}
+			if _, err := hasher.Write(chunk); err != nil {
+				return written, err
+			}
+			if _, err := dst.Write(chunk); err != nil {
+				return written, err
+			}
+			written += int64(n)
+		}
+		if readErr == io.EOF {
+			return written, nil
+		}
+		if readErr != nil {
+			return written, readErr
+		}
+	}
+}
+
+func mediaObjectKey(eventID int64, contentHash string, filename string, contentType string) string {
 	ext := strings.ToLower(filepath.Ext(filename))
+	if ext == "" {
+		ext = extensionForContentType(contentType)
+	}
 	if ext == "" {
 		ext = ".bin"
 	}
-	return fmt.Sprintf("events/%d/images/%s%s", eventID, contentHash, ext)
+	return fmt.Sprintf("events/%d/media/%s%s", eventID, contentHash, ext)
 }
 
 func thumbnailObjectKey(eventID int64, contentHash string) string {
@@ -712,6 +740,56 @@ func isAllowedImageContentType(contentType string) bool {
 		return true
 	default:
 		return false
+	}
+}
+
+func isAllowedVideoContentType(contentType string) bool {
+	switch strings.ToLower(strings.TrimSpace(contentType)) {
+	case "video/mp4", "video/webm", "video/ogg", "video/quicktime":
+		return true
+	default:
+		return false
+	}
+}
+
+func isAllowedMediaContentType(contentType string) bool {
+	return isAllowedImageContentType(contentType) || isAllowedVideoContentType(contentType)
+}
+
+func limitForContentType(contentType string, limits uploadLimits) int64 {
+	if isAllowedVideoContentType(contentType) {
+		return limits.MaxVideoBytes
+	}
+	return limits.MaxImageBytes
+}
+
+func mediaKind(contentType string) string {
+	if isAllowedVideoContentType(contentType) {
+		return "video"
+	}
+	return "image"
+}
+
+func extensionForContentType(contentType string) string {
+	switch strings.ToLower(strings.TrimSpace(contentType)) {
+	case "image/jpeg":
+		return ".jpg"
+	case "image/png":
+		return ".png"
+	case "image/gif":
+		return ".gif"
+	case "image/webp":
+		return ".webp"
+	case "video/mp4":
+		return ".mp4"
+	case "video/webm":
+		return ".webm"
+	case "video/ogg":
+		return ".ogv"
+	case "video/quicktime":
+		return ".mov"
+	default:
+		return ""
 	}
 }
 
@@ -734,9 +812,17 @@ func normalizeTags(tags []string) []string {
 	return normalized
 }
 
-func nullableString(value string) any {
-	if strings.TrimSpace(value) == "" {
+func stringPtr(value string) *string {
+	value = strings.TrimSpace(value)
+	if value == "" {
 		return nil
 	}
-	return strings.TrimSpace(value)
+	return &value
+}
+
+func stringValue(value *string) string {
+	if value == nil {
+		return ""
+	}
+	return *value
 }

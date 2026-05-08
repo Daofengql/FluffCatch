@@ -112,6 +112,7 @@ type SiteSettings struct {
 
 type UploadSettings struct {
 	MaxFileSizeMB     int `json:"maxFileSizeMb"`
+	MaxVideoSizeMB    int `json:"maxVideoSizeMb"`
 	MaxFilesPerUpload int `json:"maxFilesPerUpload"`
 }
 
@@ -159,6 +160,7 @@ func FromConfig(cfg config.Config) RuntimeSettings {
 		},
 		Upload: UploadSettings{
 			MaxFileSizeMB:     cfg.Upload.MaxSizeMB,
+			MaxVideoSizeMB:    cfg.Upload.MaxVideoSizeMB,
 			MaxFilesPerUpload: cfg.Upload.MaxFilesPerUpload,
 		},
 	}

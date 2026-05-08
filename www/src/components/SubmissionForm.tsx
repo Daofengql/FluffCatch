@@ -8,6 +8,7 @@ type QueueItem = {
   id: string;
   file: File;
   previewUrl: string;
+  mediaType: 'image' | 'video';
   progress: number;
   status: 'waiting' | 'uploading' | 'done' | 'error';
   message?: string;
@@ -58,6 +59,7 @@ export function SubmissionForm({ event, footer, initialSubmissionPassword = '', 
     const nextItems = files.map((file) => ({
       file,
       id: `${file.name}-${file.size}-${file.lastModified}-${crypto.randomUUID()}`,
+      mediaType: file.type.startsWith('video/') ? 'video' as const : 'image' as const,
       message: '等待上传',
       previewUrl: URL.createObjectURL(file),
       progress: 0,
@@ -79,7 +81,7 @@ export function SubmissionForm({ event, footer, initialSubmissionPassword = '', 
     formEvent.preventDefault();
     if (submitting || !event) return;
     if (!queue.length) {
-      setError('请先选择图片');
+      setError('请先选择图片或视频');
       return;
     }
     setError('');
@@ -127,10 +129,10 @@ export function SubmissionForm({ event, footer, initialSubmissionPassword = '', 
       }
 
       if (successCount > 0 && failureCount === 0) {
-        setMessage(authenticated ? `队列完成，已加入画廊 ${successCount} 张图片。` : `队列完成，成功提交 ${successCount} 张图片。`);
+        setMessage(authenticated ? `队列完成，已加入画廊 ${successCount} 个媒体文件。` : `队列完成，成功提交 ${successCount} 个媒体文件。`);
         onSubmitted?.();
       } else if (successCount > 0) {
-        setError(`队列完成，成功提交 ${successCount} 张图片，${failureCount} 张失败。`);
+        setError(`队列完成，成功提交 ${successCount} 个媒体文件，${failureCount} 个失败。`);
         onSubmitted?.();
       } else {
         setError(formatUploadError(firstError));
@@ -175,14 +177,24 @@ export function SubmissionForm({ event, footer, initialSubmissionPassword = '', 
         </FormControl>
       )}
       <Button component="label" variant="outlined">
-        选择图片，可多选
-        <input accept="image/*" hidden multiple onChange={handleFiles} type="file" />
+        选择图片或视频，可多选
+        <input accept="image/*,video/mp4,video/webm,video/ogg,video/quicktime" hidden multiple onChange={handleFiles} type="file" />
       </Button>
       <Stack sx={{ gap: 1.5, maxHeight: 420, overflowY: 'auto', pr: 0.5 }}>
         {queue.map((item) => (
           <Paper key={item.id} variant="outlined" sx={{ p: 1.5 }}>
             <Stack direction={{ xs: 'column', sm: 'row' }} sx={{ gap: 1.5 }}>
-              <Box component="img" src={item.previewUrl} sx={{ aspectRatio: '4 / 3', borderRadius: 1, objectFit: 'cover', width: { xs: '100%', sm: 150 } }} />
+              {item.mediaType === 'video' ? (
+                <Box
+                  component="video"
+                  muted
+                  preload="metadata"
+                  src={item.previewUrl}
+                  sx={{ aspectRatio: '4 / 3', bgcolor: 'common.black', borderRadius: 1, objectFit: 'cover', width: { xs: '100%', sm: 150 } }}
+                />
+              ) : (
+                <Box component="img" src={item.previewUrl} sx={{ aspectRatio: '4 / 3', borderRadius: 1, objectFit: 'cover', width: { xs: '100%', sm: 150 } }} />
+              )}
               <Stack sx={{ flex: 1, gap: 0.5, minWidth: 0 }}>
                 <Typography noWrap sx={{ fontWeight: 800 }}>
                   {item.file.name}
@@ -205,7 +217,7 @@ export function SubmissionForm({ event, footer, initialSubmissionPassword = '', 
         ))}
         {!queue.length && (
           <Paper sx={{ bgcolor: 'action.hover', p: 3, textAlign: 'center' }} variant="outlined">
-            <Typography color="text.secondary">还没有选择图片。点上面的按钮一次选多张，毛毛们排队进审核池。</Typography>
+            <Typography color="text.secondary">还没有选择图片或视频。点上面的按钮一次选多个文件，毛毛们排队进审核池。</Typography>
           </Paper>
         )}
       </Stack>

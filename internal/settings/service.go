@@ -2,10 +2,13 @@ package settings
 
 import (
 	"context"
-	"database/sql"
 	"fmt"
 	"regexp"
 	"strings"
+
+	appdb "fluffcatch/internal/db"
+
+	"gorm.io/gorm"
 )
 
 type Service struct {
@@ -113,19 +116,19 @@ func (NoopPolicyReferenceChecker) Usage(ctx context.Context, policyIDs []string)
 	return usage, nil
 }
 
-type SQLPolicyReferenceChecker struct {
-	db *sql.DB
+type GORMPolicyReferenceChecker struct {
+	db *gorm.DB
 }
 
-func NewSQLPolicyReferenceChecker(dbConn *sql.DB) PolicyReferenceChecker {
+func NewGORMPolicyReferenceChecker(dbConn *gorm.DB) PolicyReferenceChecker {
 	if dbConn == nil {
 		return NoopPolicyReferenceChecker{}
 	}
 
-	return SQLPolicyReferenceChecker{db: dbConn}
+	return GORMPolicyReferenceChecker{db: dbConn}
 }
 
-func (checker SQLPolicyReferenceChecker) Usage(ctx context.Context, policyIDs []string) (map[string]PolicyUsage, error) {
+func (checker GORMPolicyReferenceChecker) Usage(ctx context.Context, policyIDs []string) (map[string]PolicyUsage, error) {
 	usage := make(map[string]PolicyUsage, len(policyIDs))
 	for _, policyID := range policyIDs {
 		usage[policyID] = PolicyUsage{PolicyID: policyID}
@@ -135,55 +138,54 @@ func (checker SQLPolicyReferenceChecker) Usage(ctx context.Context, policyIDs []
 		return usage, nil
 	}
 
-	placeholders := make([]string, len(policyIDs))
-	args := make([]any, len(policyIDs))
-	for index, policyID := range policyIDs {
-		placeholders[index] = "?"
-		args[index] = policyID
+	type aggregate struct {
+		PolicyID    string `gorm:"column:policy_id"`
+		ObjectCount int64  `gorm:"column:object_count"`
+		SizeBytes   int64  `gorm:"column:size_bytes"`
 	}
 
-	query := fmt.Sprintf(`
-		SELECT storage_policy_id, SUM(object_count) AS object_count, SUM(size_bytes) AS size_bytes
-		FROM (
-			SELECT storage_policy_id, COUNT(*) AS object_count, COALESCE(SUM(size_bytes), 0) AS size_bytes
-			FROM photos
-			WHERE storage_policy_id IN (%[1]s)
-			GROUP BY storage_policy_id
-			UNION ALL
-			SELECT storage_policy_id, COUNT(*) AS object_count, COALESCE(SUM(size_bytes), 0) AS size_bytes
-			FROM submissions
-			WHERE storage_policy_id IN (%[1]s)
-			GROUP BY storage_policy_id
-			UNION ALL
-			SELECT cover_storage_policy_id AS storage_policy_id, COUNT(*) AS object_count, 0 AS size_bytes
-			FROM events
-			WHERE cover_storage_policy_id IN (%[1]s)
-			GROUP BY cover_storage_policy_id
-		) AS policy_usage
-		GROUP BY storage_policy_id
-	`, strings.Join(placeholders, ","))
-
-	allArgs := append([]any{}, args...)
-	allArgs = append(allArgs, args...)
-	allArgs = append(allArgs, args...)
-
-	rows, err := checker.db.QueryContext(ctx, query, allArgs...)
-	if err != nil {
-		return nil, fmt.Errorf("load storage policy usage: %w", err)
-	}
-	defer rows.Close()
-
-	for rows.Next() {
-		var item PolicyUsage
-		if err := rows.Scan(&item.PolicyID, &item.ObjectCount, &item.SizeBytes); err != nil {
-			return nil, fmt.Errorf("scan storage policy usage: %w", err)
+	addUsage := func(rows []aggregate) {
+		for _, row := range rows {
+			if strings.TrimSpace(row.PolicyID) == "" {
+				continue
+			}
+			item := usage[row.PolicyID]
+			item.PolicyID = row.PolicyID
+			item.ObjectCount += row.ObjectCount
+			item.SizeBytes += row.SizeBytes
+			usage[row.PolicyID] = item
 		}
-		usage[item.PolicyID] = item
 	}
 
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("iterate storage policy usage: %w", err)
+	var photoRows []aggregate
+	if err := checker.db.WithContext(ctx).Model(&appdb.Photo{}).
+		Select("storage_policy_id AS policy_id, COUNT(*) AS object_count, COALESCE(SUM(size_bytes), 0) AS size_bytes").
+		Where("storage_policy_id IN ?", policyIDs).
+		Group("storage_policy_id").
+		Scan(&photoRows).Error; err != nil {
+		return nil, fmt.Errorf("load photo storage policy usage: %w", err)
 	}
+	addUsage(photoRows)
+
+	var submissionRows []aggregate
+	if err := checker.db.WithContext(ctx).Model(&appdb.Submission{}).
+		Select("storage_policy_id AS policy_id, COUNT(*) AS object_count, COALESCE(SUM(size_bytes), 0) AS size_bytes").
+		Where("storage_policy_id IN ?", policyIDs).
+		Group("storage_policy_id").
+		Scan(&submissionRows).Error; err != nil {
+		return nil, fmt.Errorf("load submission storage policy usage: %w", err)
+	}
+	addUsage(submissionRows)
+
+	var coverRows []aggregate
+	if err := checker.db.WithContext(ctx).Model(&appdb.Event{}).
+		Select("cover_storage_policy_id AS policy_id, COUNT(*) AS object_count, 0 AS size_bytes").
+		Where("cover_storage_policy_id IN ?", policyIDs).
+		Group("cover_storage_policy_id").
+		Scan(&coverRows).Error; err != nil {
+		return nil, fmt.Errorf("load event cover storage policy usage: %w", err)
+	}
+	addUsage(coverRows)
 
 	return usage, nil
 }
@@ -448,11 +450,17 @@ func normalizeUpload(upload UploadSettings) UploadSettings {
 	if upload.MaxFileSizeMB <= 0 {
 		upload.MaxFileSizeMB = 20
 	}
+	if upload.MaxVideoSizeMB <= 0 {
+		upload.MaxVideoSizeMB = 500
+	}
 	if upload.MaxFilesPerUpload <= 0 {
 		upload.MaxFilesPerUpload = 20
 	}
 	if upload.MaxFileSizeMB > 1024 {
 		upload.MaxFileSizeMB = 1024
+	}
+	if upload.MaxVideoSizeMB > 10240 {
+		upload.MaxVideoSizeMB = 10240
 	}
 	if upload.MaxFilesPerUpload > 200 {
 		upload.MaxFilesPerUpload = 200

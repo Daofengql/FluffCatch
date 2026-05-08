@@ -1,8 +1,11 @@
 package http
 
 import (
+	"context"
 	"encoding/json"
 	stdhttp "net/http"
+
+	"github.com/gin-gonic/gin"
 )
 
 type ErrorResponse struct {
@@ -33,4 +36,47 @@ func (server *Server) verifyCaptchaHeader(w stdhttp.ResponseWriter, r *stdhttp.R
 		return false
 	}
 	return true
+}
+
+type routeParamsKey struct{}
+
+func (server *Server) ginHandler(handler stdhttp.HandlerFunc) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		params := map[string]string{}
+		for _, param := range c.Params {
+			params[param.Key] = param.Value
+		}
+		request := c.Request.WithContext(context.WithValue(c.Request.Context(), routeParamsKey{}, params))
+		handler(c.Writer, request)
+	}
+}
+
+func (server *Server) requireAdminGin(c *gin.Context) {
+	request := c.Request.WithContext(context.WithValue(c.Request.Context(), routeParamsKey{}, ginParams(c)))
+	_, ok, err := server.currentAdmin(request)
+	if err != nil {
+		writeError(c.Writer, stdhttp.StatusInternalServerError, "failed to authenticate session")
+		c.Abort()
+		return
+	}
+	if !ok {
+		writeError(c.Writer, stdhttp.StatusUnauthorized, "admin authentication required")
+		c.Abort()
+		return
+	}
+	c.Request = request
+	c.Next()
+}
+
+func ginParams(c *gin.Context) map[string]string {
+	params := map[string]string{}
+	for _, param := range c.Params {
+		params[param.Key] = param.Value
+	}
+	return params
+}
+
+func routeParam(r *stdhttp.Request, name string) string {
+	params, _ := r.Context().Value(routeParamsKey{}).(map[string]string)
+	return params[name]
 }

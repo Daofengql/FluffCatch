@@ -1,5 +1,3 @@
-import JSZip from 'jszip';
-
 export async function downloadPhoto(url: string, filename: string): Promise<void> {
   const response = await fetch(url);
   if (!response.ok) {
@@ -15,6 +13,7 @@ export async function downloadPhotosAsZip(
   onProgress: (current: number, total: number, currentName: string) => void,
   signal?: AbortSignal,
 ): Promise<void> {
+  const { default: JSZip } = await import('jszip');
   const zip = new JSZip();
 
   for (let i = 0; i < items.length; i++) {

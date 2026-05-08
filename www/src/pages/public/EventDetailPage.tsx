@@ -1,4 +1,4 @@
-import { CalendarMonth, CameraAlt, CheckCircle, CloudDownload, CloudUpload, ContentCopy, Delete, Edit, Favorite, FavoriteBorder, LocalOffer, LocationOn, PhotoLibrary, QrCode2, Storage } from '@mui/icons-material';
+import { CalendarMonth, CameraAlt, CheckCircle, CloudDownload, CloudUpload, ContentCopy, Delete, Edit, Favorite, FavoriteBorder, LocalOffer, LocationOn, PhotoLibrary, PlayCircle, QrCode2, Storage } from '@mui/icons-material';
 import {
   Alert,
   Box,
@@ -117,6 +117,10 @@ export function EventDetailPage() {
     return variant === 'thumbnail' ? photo.thumbnailUrl || photo.url : photo.url;
   }
 
+  function isVideoPhoto(photo: Photo) {
+    return photo.contentType.toLowerCase().startsWith('video/');
+  }
+
   const publicPhotos = useMemo(() => photos.filter((photo) => photo.visibility === 'public'), [photos]);
   const restrictedPhotos = useMemo(() => photos.filter((photo) => photo.visibility !== 'public'), [photos]);
 
@@ -129,13 +133,14 @@ export function EventDetailPage() {
   const previewItems = useMemo(
     () =>
       photos.map((photo) => ({
+        contentType: photo.contentType,
         src: photoURL(photo),
         subtitle: [
           photo.photographerName ? `摄影师：${photo.photographerName}` : '匿名投稿',
           `${formatContentType(photo.contentType)} · ${formatBytes(photo.sizeBytes)}`,
           `${photo.likeCount || 0} 个喜欢`
         ].join(' · '),
-        title: event?.title || '图片预览'
+        title: event?.title || '媒体预览'
       })),
     [event?.title, photos]
   );
@@ -309,6 +314,7 @@ export function EventDetailPage() {
 
   function renderPhotoCard(photo: Photo, index: number, restricted: boolean) {
     const locked = restricted && photo.visibility === 'private' && !authenticated && !photo.accessGranted;
+    const video = isVideoPhoto(photo);
     return (
       <Grid key={photo.id} size={{ xs: 12, sm: 6, md: 4, lg: 3 }}>
         <Card sx={{ borderRadius: 3, height: '100%', overflow: 'hidden', position: 'relative', border: manageMode && selectedIds.includes(photo.id) ? '2px solid' : undefined, borderColor: manageMode && selectedIds.includes(photo.id) ? 'primary.main' : undefined }}>
@@ -329,22 +335,44 @@ export function EventDetailPage() {
           )}
           <CardActionArea onClick={() => manageMode && authenticated ? togglePhotoSelection(photo.id) : openPhoto(photo, index)} sx={{ display: 'block' }}>
             <Box sx={{ position: 'relative' }}>
-              <CardMedia
-                component="img"
-                image={photoURL(photo, 'thumbnail')}
-                sx={{
-                  aspectRatio: '4 / 3',
-                  bgcolor: 'action.hover',
-                  cursor: manageMode ? 'pointer' : locked ? 'pointer' : 'zoom-in',
-                  filter: locked ? 'blur(12px) saturate(0.9)' : undefined,
-                  objectFit: 'cover',
-                  transform: locked ? 'scale(1.06)' : undefined
-                }}
-              />
+              {video && !locked ? (
+                <Box
+                  component="video"
+                  muted
+                  preload="metadata"
+                  src={photoURL(photo)}
+                  sx={{
+                    aspectRatio: '4 / 3',
+                    bgcolor: 'common.black',
+                    cursor: manageMode ? 'pointer' : 'zoom-in',
+                    display: 'block',
+                    objectFit: 'cover',
+                    width: '100%'
+                  }}
+                />
+              ) : (
+                <CardMedia
+                  component="img"
+                  image={photoURL(photo, 'thumbnail')}
+                  sx={{
+                    aspectRatio: '4 / 3',
+                    bgcolor: 'action.hover',
+                    cursor: manageMode ? 'pointer' : locked ? 'pointer' : 'zoom-in',
+                    filter: locked ? 'blur(12px) saturate(0.9)' : undefined,
+                    objectFit: 'cover',
+                    transform: locked ? 'scale(1.06)' : undefined
+                  }}
+                />
+              )}
+              {video && (
+                <Box sx={{ alignItems: 'center', bgcolor: 'rgba(15,23,42,0.62)', borderRadius: 999, color: 'white', display: 'flex', left: 12, p: 0.75, position: 'absolute', top: 12 }}>
+                  <PlayCircle fontSize="small" />
+                </Box>
+              )}
               {restricted && (
                 <Box sx={{ bgcolor: 'rgba(15,23,42,0.55)', bottom: 0, color: 'white', left: 0, px: 1.25, py: 0.75, position: 'absolute', right: 0 }}>
                   <Typography sx={{ fontWeight: 800 }} variant="body2">
-                    {!authenticated && photo.accessGranted ? '已解锁' : '私密图片'}
+                    {!authenticated && photo.accessGranted ? '已解锁' : video ? '私密视频' : '私密图片'}
                   </Typography>
                 </Box>
               )}
@@ -377,7 +405,7 @@ export function EventDetailPage() {
                   startIcon={downloadId === photo.id ? <CircularProgress size={16} /> : <CloudDownload />}
                   variant="outlined"
                 >
-                  下载原图
+                  下载原文件
                 </Button>
               )}
               {locked && (
@@ -497,7 +525,7 @@ export function EventDetailPage() {
                     审核返图
                   </Button>
                   <Button onClick={() => setManageMode((prev) => !prev)} startIcon={<PhotoLibrary />} color={manageMode ? 'secondary' : 'primary'} sx={{ width: 'fit-content' }} variant={manageMode ? 'contained' : 'outlined'}>
-                    {manageMode ? '退出管理' : '管理图片'}
+                    {manageMode ? '退出管理' : '管理媒体'}
                   </Button>
                 </>
               )}
@@ -632,18 +660,18 @@ export function EventDetailPage() {
         </Paper>
       )}
 
-      <PhotoSection title="公开返图" subtitle={`${publicPhotos.length} 张公开图片`}>
+      <PhotoSection title="公开返图" subtitle={`${publicPhotos.length} 个公开媒体文件`}>
         {publicPhotos.length ? (
           <Grid container spacing={2}>
             {publicPhotos.map((photo) => renderPhotoCard(photo, photos.findIndex((item) => item.id === photo.id), false))}
           </Grid>
         ) : (
-          <Alert severity="info">这里暂时还没有公开图片。</Alert>
+          <Alert severity="info">这里暂时还没有公开返图。</Alert>
         )}
       </PhotoSection>
 
       {!!restrictedPhotos.length && (
-        <PhotoSection title="非公开返图" subtitle={authenticated ? '管理员可直接查看私密图片' : privateAccessUnlocked ? '私密图片已在当前浏览器会话中解锁' : '私密图片会显示模糊预览，输入这个兽聚的私密口令后可查看'}>
+        <PhotoSection title="非公开返图" subtitle={authenticated ? '管理员可直接查看私密媒体' : privateAccessUnlocked ? '私密媒体已在当前浏览器会话中解锁' : '私密媒体需要输入这个兽聚的私密口令后查看'}>
           <Grid container spacing={2}>
             {restrictedPhotos.map((photo) => renderPhotoCard(photo, photos.findIndex((item) => item.id === photo.id), true))}
           </Grid>
@@ -680,7 +708,7 @@ export function EventDetailPage() {
         <DialogContent>
           <Stack component="form" id="gallery-password-form" onSubmit={(submitEvent) => { submitEvent.preventDefault(); void unlockProtectedPhoto(); }} sx={{ gap: 2, pt: 1 }}>
             <Typography color="text.secondary" variant="body2">
-              这个兽聚的私密图片需要访问口令。验证通过后，本次浏览器会话内会保持解锁。
+              这个兽聚的私密返图需要访问口令。验证通过后，本次浏览器会话内会保持解锁。
             </Typography>
             <TextField
               autoFocus
@@ -706,7 +734,7 @@ export function EventDetailPage() {
       </Dialog>
 
       <Dialog fullWidth maxWidth="sm" onClose={() => setEditingPhoto(null)} open={Boolean(editingPhoto)}>
-        <DialogTitle>图片属性 #{editingPhoto?.id}</DialogTitle>
+        <DialogTitle>媒体属性 #{editingPhoto?.id}</DialogTitle>
         <DialogContent dividers>
           <Stack component="form" id="photo-property-form" onSubmit={handlePhotoFormSubmit} sx={{ gap: 2, pt: 1 }}>
             <TextField
@@ -754,12 +782,12 @@ export function EventDetailPage() {
         open={Boolean(deleteConfirm)}
         subtitle={
           deleteConfirm?.type === 'batch'
-            ? `确定批量删除选中的 ${selectedIds.length} 张图片吗？`
+            ? `确定批量删除选中的 ${selectedIds.length} 个媒体文件吗？`
             : deleteConfirm?.type === 'single'
               ? `确定删除图片 #${deleteConfirm.photo.id} 吗？`
               : ''
         }
-        title="删除图片"
+        title="删除媒体"
       />
     </Stack>
   );
@@ -822,7 +850,7 @@ function downloadFilename(eventTitle: string, photo: Photo) {
 }
 
 function extensionFromContentType(contentType?: string) {
-  switch ((contentType || '').toLowerCase()) {
+    switch ((contentType || '').toLowerCase()) {
     case 'image/jpeg':
       return 'jpg';
     case 'image/png':
@@ -833,6 +861,14 @@ function extensionFromContentType(contentType?: string) {
       return 'webp';
     case 'image/avif':
       return 'avif';
+    case 'video/mp4':
+      return 'mp4';
+    case 'video/webm':
+      return 'webm';
+    case 'video/ogg':
+      return 'ogv';
+    case 'video/quicktime':
+      return 'mov';
     default:
       return '';
   }

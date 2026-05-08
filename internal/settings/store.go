@@ -2,17 +2,21 @@ package settings
 
 import (
 	"context"
-	"database/sql"
 	"encoding/json"
 	"fmt"
+
+	appdb "fluffcatch/internal/db"
+
+	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 type Store struct {
-	db       *sql.DB
+	db       *gorm.DB
 	fallback RuntimeSettings
 }
 
-func NewStore(dbConn *sql.DB, fallback RuntimeSettings) *Store {
+func NewStore(dbConn *gorm.DB, fallback RuntimeSettings) *Store {
 	return &Store{
 		db:       dbConn,
 		fallback: fallback,
@@ -79,16 +83,16 @@ func (store *Store) SaveUpload(ctx context.Context, upload UploadSettings) error
 }
 
 func (store *Store) loadValue(ctx context.Context, key string, target any) error {
-	var raw json.RawMessage
-	err := store.db.QueryRowContext(ctx, "SELECT `value` FROM settings WHERE `key` = ? LIMIT 1", key).Scan(&raw)
-	if err == sql.ErrNoRows {
+	var setting appdb.Setting
+	result := store.db.WithContext(ctx).Where("`key` = ?", key).Limit(1).Find(&setting)
+	if result.Error != nil {
+		return fmt.Errorf("load setting %s: %w", key, result.Error)
+	}
+	if result.RowsAffected == 0 {
 		return nil
 	}
-	if err != nil {
-		return fmt.Errorf("load setting %s: %w", key, err)
-	}
 
-	if err := json.Unmarshal(raw, target); err != nil {
+	if err := json.Unmarshal(setting.Value, target); err != nil {
 		return fmt.Errorf("decode setting %s: %w", key, err)
 	}
 
@@ -101,15 +105,15 @@ func (store *Store) saveValue(ctx context.Context, key string, value any) error 
 		return fmt.Errorf("encode setting %s: %w", key, err)
 	}
 
-	_, err = store.db.ExecContext(ctx, `
-		INSERT INTO settings (`+"`key`, `value`"+`)
-		VALUES (?, ?)
-		ON DUPLICATE KEY UPDATE
-			`+"`value`"+` = VALUES(`+"`value`"+`),
-			updated_at = CURRENT_TIMESTAMP
-	`, key, string(raw))
-	if err != nil {
-		return fmt.Errorf("save setting %s: %w", key, err)
+	result := store.db.WithContext(ctx).Clauses(clause.OnConflict{
+		Columns: []clause.Column{{Name: "key"}},
+		DoUpdates: clause.Assignments(map[string]any{
+			"value":      raw,
+			"updated_at": gorm.Expr("CURRENT_TIMESTAMP"),
+		}),
+	}).Create(&appdb.Setting{Key: key, Value: raw})
+	if result.Error != nil {
+		return fmt.Errorf("save setting %s: %w", key, result.Error)
 	}
 
 	return nil

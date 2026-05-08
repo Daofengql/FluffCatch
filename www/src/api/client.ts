@@ -48,6 +48,8 @@ export type Submission = {
   url: string;
   thumbnailUrl?: string;
   contentHash: string;
+  contentType: string;
+  sizeBytes: number;
   photographerName?: string;
   tags: string[];
   status: string;
@@ -111,6 +113,7 @@ export type SiteSettings = {
 
 export type UploadSettings = {
   maxFileSizeMb: number;
+  maxVideoSizeMb: number;
   maxFilesPerUpload: number;
 };
 
@@ -131,20 +134,92 @@ export type AdminSettingsResponse = {
   usage: Record<string, StoragePolicyUsage>;
 };
 
-async function request<T>(url: string, options?: RequestInit): Promise<T> {
-  const response = await fetch(url, {
+type CacheOptions = {
+  dedupe?: boolean;
+  tags?: string[];
+  ttlMs?: number;
+};
+
+type CachedResponse = {
+  expiresAt: number;
+  tags: Set<string>;
+  value: unknown;
+};
+
+const SITE_CACHE_TAG = 'site';
+const EVENTS_CACHE_TAG = 'events';
+const AUTH_CACHE_TAG = 'auth';
+const ADMIN_SETTINGS_CACHE_TAG = 'admin-settings';
+const ADMIN_DASHBOARD_CACHE_TAG = 'admin-dashboard';
+const DEFAULT_DEDUPE_TTL_MS = 1500;
+const getResponseCache = new Map<string, CachedResponse>();
+const pendingGetRequests = new Map<string, Promise<unknown>>();
+
+function cacheKey(url: string) {
+  return `GET ${url}`;
+}
+
+function invalidateCacheTags(...tags: string[]) {
+  if (!tags.length) return;
+  for (const [key, entry] of getResponseCache) {
+    if (tags.some((tag) => entry.tags.has(tag))) {
+      getResponseCache.delete(key);
+    }
+  }
+}
+
+async function request<T>(url: string, options?: RequestInit, cache?: CacheOptions): Promise<T> {
+  const method = (options?.method || 'GET').toUpperCase();
+  const canCache = method === 'GET' && !options?.body && Boolean(cache?.dedupe || cache?.ttlMs);
+  const key = canCache ? cacheKey(url) : '';
+
+  if (canCache) {
+    const cached = getResponseCache.get(key);
+    if (cached && cached.expiresAt > Date.now()) {
+      return cached.value as T;
+    }
+    const pending = pendingGetRequests.get(key);
+    if (pending) {
+      return pending as Promise<T>;
+    }
+  }
+
+  const promise = fetch(url, {
     credentials: 'include',
     ...options,
     headers: {
       ...(options?.body instanceof FormData ? {} : { 'Content-Type': 'application/json' }),
       ...options?.headers
     }
-  });
-  if (!response.ok) {
-    const payload = await response.json().catch(() => ({ error: response.statusText }));
-    throw new Error(payload.error || response.statusText);
+  })
+    .then(async (response) => {
+      if (!response.ok) {
+        const payload = await response.json().catch(() => ({ error: response.statusText }));
+        throw new Error(payload.error || response.statusText);
+      }
+      return (await response.json()) as T;
+    })
+    .then((payload) => {
+      if (canCache) {
+        getResponseCache.set(key, {
+          expiresAt: Date.now() + (cache?.ttlMs ?? DEFAULT_DEDUPE_TTL_MS),
+          tags: new Set(cache?.tags ?? []),
+          value: payload
+        });
+      }
+      return payload;
+    })
+    .finally(() => {
+      if (canCache) {
+        pendingGetRequests.delete(key);
+      }
+    });
+
+  if (canCache) {
+    pendingGetRequests.set(key, promise);
   }
-  return (await response.json()) as T;
+
+  return promise;
 }
 
 export type CaptchaChallenge = {
@@ -162,26 +237,42 @@ export async function getCaptcha() {
 }
 
 export async function getSiteSettings(): Promise<SiteSettings> {
-  return request<SiteSettings>('/api/v1/site');
-}
-
-export async function login(username: string, password: string, captchaId: string, captchaAnswer: string) {
-  return request<{ authenticated: boolean; username?: string; message: string }>('/api/v1/auth/login', {
-    method: 'POST',
-    body: JSON.stringify({ username, password, captchaId, captchaAnswer })
+  return request<SiteSettings>('/api/v1/site', undefined, {
+    dedupe: true,
+    tags: [SITE_CACHE_TAG],
+    ttlMs: 30_000
   });
 }
 
+export async function login(username: string, password: string, captchaId: string, captchaAnswer: string) {
+  const result = await request<{ authenticated: boolean; username?: string; message: string }>('/api/v1/auth/login', {
+    method: 'POST',
+    body: JSON.stringify({ username, password, captchaId, captchaAnswer })
+  });
+  invalidateCacheTags(AUTH_CACHE_TAG, EVENTS_CACHE_TAG, ADMIN_SETTINGS_CACHE_TAG, ADMIN_DASHBOARD_CACHE_TAG);
+  return result;
+}
+
 export async function logout() {
-  return request<{ message: string }>('/api/v1/auth/logout', { method: 'POST' });
+  const result = await request<{ message: string }>('/api/v1/auth/logout', { method: 'POST' });
+  invalidateCacheTags(AUTH_CACHE_TAG, EVENTS_CACHE_TAG, ADMIN_SETTINGS_CACHE_TAG, ADMIN_DASHBOARD_CACHE_TAG);
+  return result;
 }
 
 export async function getMe() {
-  return request<MeResponse>('/api/v1/auth/me');
+  return request<MeResponse>('/api/v1/auth/me', undefined, {
+    dedupe: true,
+    tags: [AUTH_CACHE_TAG],
+    ttlMs: 2_000
+  });
 }
 
 export async function getEvents(admin = false): Promise<EventCard[]> {
-  const payload = await request<{ events?: EventCard[] } | null>(admin ? '/api/v1/admin/events' : '/api/v1/events');
+  const payload = await request<{ events?: EventCard[] } | null>(admin ? '/api/v1/admin/events' : '/api/v1/events', undefined, {
+    dedupe: true,
+    tags: [EVENTS_CACHE_TAG],
+    ttlMs: 3_000
+  });
   return Array.isArray(payload?.events) ? payload.events : [];
 }
 
@@ -234,54 +325,70 @@ export async function saveEvent(event: Partial<EventCard> & { privatePassword?: 
     privatePassword: event.privatePassword || ''
   });
   if (event.id) {
-    return request<{ event: EventCard }>(`/api/v1/admin/events/${event.id}`, { method: 'PUT', body });
+    const result = await request<{ event: EventCard }>(`/api/v1/admin/events/${event.id}`, { method: 'PUT', body });
+    invalidateCacheTags(EVENTS_CACHE_TAG, ADMIN_DASHBOARD_CACHE_TAG);
+    return result;
   }
-  return request<{ event: EventCard }>('/api/v1/admin/events', { method: 'POST', body });
+  const result = await request<{ event: EventCard }>('/api/v1/admin/events', { method: 'POST', body });
+  invalidateCacheTags(EVENTS_CACHE_TAG, ADMIN_DASHBOARD_CACHE_TAG);
+  return result;
 }
 
 export async function uploadEventCover(eventId: number, file: File) {
   const form = new FormData();
   form.append('file', file);
-  return request<{ policyId: string; objectKey: string; url: string }>(`/api/v1/admin/events/${eventId}/cover`, {
+  const result = await request<{ policyId: string; objectKey: string; url: string }>(`/api/v1/admin/events/${eventId}/cover`, {
     method: 'POST',
     body: form
   });
+  invalidateCacheTags(EVENTS_CACHE_TAG);
+  return result;
 }
 
 export async function deleteEvent(eventId: number, headers?: Record<string, string>) {
-  return request<{ message: string; deletedObjects: number }>(`/api/v1/admin/events/${eventId}`, {
+  const result = await request<{ message: string; deletedObjects: number }>(`/api/v1/admin/events/${eventId}`, {
     method: 'DELETE',
     headers
   });
+  invalidateCacheTags(EVENTS_CACHE_TAG, ADMIN_DASHBOARD_CACHE_TAG);
+  return result;
 }
 
 export async function updatePhoto(photoId: number, payload: { photographerName?: string; visibility: Photo['visibility']; tags?: string[] }) {
-  return request<{ photo: Photo }>(`/api/v1/admin/photos/${photoId}`, {
+  const result = await request<{ photo: Photo }>(`/api/v1/admin/photos/${photoId}`, {
     method: 'PUT',
     body: JSON.stringify(payload)
   });
+  invalidateCacheTags(EVENTS_CACHE_TAG, ADMIN_DASHBOARD_CACHE_TAG);
+  return result;
 }
 
 export async function deletePhoto(photoId: number, headers?: Record<string, string>) {
-  return request<{ message: string; deletedObjects: number }>(`/api/v1/admin/photos/${photoId}`, {
+  const result = await request<{ message: string; deletedObjects: number }>(`/api/v1/admin/photos/${photoId}`, {
     method: 'DELETE',
     headers
   });
+  invalidateCacheTags(EVENTS_CACHE_TAG, ADMIN_DASHBOARD_CACHE_TAG);
+  return result;
 }
 
 export async function batchDeletePhotos(photoIds: number[], headers?: Record<string, string>) {
-  return request<{ deleted: number; deletedObjects: number }>('/api/v1/admin/photos/batch-delete', {
+  const result = await request<{ deleted: number; deletedObjects: number }>('/api/v1/admin/photos/batch-delete', {
     method: 'POST',
     body: JSON.stringify({ photoIds }),
     headers
   });
+  invalidateCacheTags(EVENTS_CACHE_TAG, ADMIN_DASHBOARD_CACHE_TAG);
+  return result;
 }
 
 export async function batchUpdatePhotos(photoIds: number[], visibility: Photo['visibility']) {
-  return request<{ affected: number; message: string }>('/api/v1/admin/photos/batch-update', {
+  const result = await request<{ affected: number; message: string }>('/api/v1/admin/photos/batch-update', {
     method: 'POST',
     body: JSON.stringify({ photoIds, visibility })
   });
+  invalidateCacheTags(EVENTS_CACHE_TAG);
+  return result;
 }
 
 export async function likePhoto(photoId: number) {
@@ -296,10 +403,12 @@ export type SubmissionUploadResult = {
 };
 
 export async function submitPhotos(eventId: number, form: FormData) {
-  return request<SubmissionUploadResult>(`/api/v1/events/${eventId}/submissions`, {
+  const result = await request<SubmissionUploadResult>(`/api/v1/events/${eventId}/submissions`, {
     method: 'POST',
     body: form
   });
+  invalidateCacheTags(EVENTS_CACHE_TAG, ADMIN_DASHBOARD_CACHE_TAG);
+  return result;
 }
 
 export function submitPhotoWithProgress(eventId: number, form: FormData, onProgress: (progress: number) => void) {
@@ -316,6 +425,7 @@ export function submitPhotoWithProgress(eventId: number, form: FormData, onProgr
       const payload = JSON.parse(xhr.responseText || '{}');
       if (xhr.status >= 200 && xhr.status < 300) {
         onProgress(100);
+        invalidateCacheTags(EVENTS_CACHE_TAG, ADMIN_DASHBOARD_CACHE_TAG);
         resolve(payload);
         return;
       }
@@ -337,77 +447,103 @@ export async function getEventPendingSubmissions(eventId: number): Promise<Submi
 }
 
 export async function approveSubmissions(submissionIds: number[], visibility?: Photo['visibility']) {
-  return request<{ processed: number; message: string }>('/api/v1/admin/submissions/batch-approve', {
+  const result = await request<{ processed: number; message: string }>('/api/v1/admin/submissions/batch-approve', {
     method: 'POST',
     body: JSON.stringify({ submissionIds, visibility: visibility || 'public' })
   });
+  invalidateCacheTags(EVENTS_CACHE_TAG, ADMIN_DASHBOARD_CACHE_TAG);
+  return result;
 }
 
 export async function deleteSubmissions(submissionIds: number[], headers?: Record<string, string>) {
-  return request<{ processed: number; message: string }>('/api/v1/admin/submissions/batch-delete', {
+  const result = await request<{ processed: number; message: string }>('/api/v1/admin/submissions/batch-delete', {
     method: 'POST',
     body: JSON.stringify({ submissionIds }),
     headers
   });
+  invalidateCacheTags(ADMIN_DASHBOARD_CACHE_TAG);
+  return result;
 }
 
 export async function getAdminSettings(): Promise<AdminSettingsResponse> {
-  return request<AdminSettingsResponse>('/api/v1/admin/settings');
+  return request<AdminSettingsResponse>('/api/v1/admin/settings', undefined, {
+    dedupe: true,
+    tags: [ADMIN_SETTINGS_CACHE_TAG],
+    ttlMs: 3_000
+  });
 }
 
 export async function updateSiteSettings(site: SiteSettings) {
-  return request<{ site: SiteSettings; message: string }>('/api/v1/admin/settings/site', {
+  const result = await request<{ site: SiteSettings; message: string }>('/api/v1/admin/settings/site', {
     method: 'PUT',
     body: JSON.stringify(site)
   });
+  invalidateCacheTags(SITE_CACHE_TAG, ADMIN_SETTINGS_CACHE_TAG);
+  return result;
 }
 
 export async function updateUploadSettings(upload: UploadSettings) {
-  return request<{ upload: UploadSettings; message: string }>('/api/v1/admin/settings/upload', {
+  const result = await request<{ upload: UploadSettings; message: string }>('/api/v1/admin/settings/upload', {
     method: 'PUT',
     body: JSON.stringify(upload)
   });
+  invalidateCacheTags(ADMIN_SETTINGS_CACHE_TAG);
+  return result;
 }
 
 export async function uploadSiteLogo(file: File) {
   const form = new FormData();
   form.append('file', file);
-  return request<{ site: SiteSettings; url: string; message: string }>('/api/v1/admin/settings/site/logo', {
+  const result = await request<{ site: SiteSettings; url: string; message: string }>('/api/v1/admin/settings/site/logo', {
     method: 'POST',
     body: form
   });
+  invalidateCacheTags(SITE_CACHE_TAG, ADMIN_SETTINGS_CACHE_TAG);
+  return result;
 }
 
 export async function clearSiteLogo() {
-  return request<{ site: SiteSettings; message: string }>('/api/v1/admin/settings/site/logo', {
+  const result = await request<{ site: SiteSettings; message: string }>('/api/v1/admin/settings/site/logo', {
     method: 'DELETE'
   });
+  invalidateCacheTags(SITE_CACHE_TAG, ADMIN_SETTINGS_CACHE_TAG);
+  return result;
 }
 
 export async function uploadSiteBackground(variant: 'desktop' | 'mobile', file: File) {
   const form = new FormData();
   form.append('file', file);
-  return request<{ site: SiteSettings; url: string; message: string; width: number; height: number }>(`/api/v1/admin/settings/site/background/${variant}`, {
+  const result = await request<{ site: SiteSettings; url: string; message: string; width: number; height: number }>(`/api/v1/admin/settings/site/background/${variant}`, {
     method: 'POST',
     body: form
   });
+  invalidateCacheTags(SITE_CACHE_TAG, ADMIN_SETTINGS_CACHE_TAG);
+  return result;
 }
 
 export async function clearSiteBackground(variant: 'desktop' | 'mobile') {
-  return request<{ site: SiteSettings; message: string }>(`/api/v1/admin/settings/site/background/${variant}`, {
+  const result = await request<{ site: SiteSettings; message: string }>(`/api/v1/admin/settings/site/background/${variant}`, {
     method: 'DELETE'
   });
+  invalidateCacheTags(SITE_CACHE_TAG, ADMIN_SETTINGS_CACHE_TAG);
+  return result;
 }
 
 export async function getAdminDashboard() {
-  return request<{ stats: Record<string, number> }>('/api/v1/admin/dashboard');
+  return request<{ stats: Record<string, number> }>('/api/v1/admin/dashboard', undefined, {
+    dedupe: true,
+    tags: [ADMIN_DASHBOARD_CACHE_TAG],
+    ttlMs: 3_000
+  });
 }
 
 export async function updateStoragePolicies(payload: { activePolicyId: string; policies: StoragePolicy[] }) {
-  return request<{ storagePolicies: { activePolicyId: string; policies: StoragePolicy[] }; usage: Record<string, StoragePolicyUsage>; message: string }>('/api/v1/admin/settings/storage', {
+  const result = await request<{ storagePolicies: { activePolicyId: string; policies: StoragePolicy[] }; usage: Record<string, StoragePolicyUsage>; message: string }>('/api/v1/admin/settings/storage', {
     method: 'PUT',
     body: JSON.stringify(payload)
   });
+  invalidateCacheTags(ADMIN_SETTINGS_CACHE_TAG);
+  return result;
 }
 
 export async function testStorageConnection(policy: StoragePolicy) {

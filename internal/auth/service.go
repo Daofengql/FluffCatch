@@ -5,15 +5,19 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"crypto/subtle"
-	"database/sql"
 	"encoding/base64"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"strconv"
 	"strings"
 	"time"
 
+	appdb "fluffcatch/internal/db"
+
 	"golang.org/x/crypto/pbkdf2"
+	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 const (
@@ -24,11 +28,11 @@ const (
 )
 
 type Service struct {
-	db               *sql.DB
+	db               *gorm.DB
 	fallbackUsername string
 }
 
-func NewService(dbConn *sql.DB, fallbackUsername string) *Service {
+func NewService(dbConn *gorm.DB, fallbackUsername string) *Service {
 	return &Service{
 		db:               dbConn,
 		fallbackUsername: fallbackUsername,
@@ -44,8 +48,11 @@ func (service *Service) Login(ctx context.Context, req LoginRequest) LoginRespon
 	}
 
 	var passwordHash string
-	err := service.db.QueryRowContext(ctx, "SELECT password_hash FROM admin_users WHERE username = ? LIMIT 1", req.Username).Scan(&passwordHash)
-	if err == sql.ErrNoRows {
+	err := service.db.WithContext(ctx).Model(&appdb.AdminUser{}).
+		Select("password_hash").
+		Where("username = ?", req.Username).
+		Take(&passwordHash).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
 		return LoginResponse{
 			Authenticated: false,
 			Message:       "invalid username or password",
@@ -79,7 +86,7 @@ func (service *Service) CreateSession(ctx context.Context, username string, ttl 
 	}
 
 	var userID int64
-	if err := service.db.QueryRowContext(ctx, "SELECT id FROM admin_users WHERE username = ? LIMIT 1", username).Scan(&userID); err != nil {
+	if err := service.db.WithContext(ctx).Model(&appdb.AdminUser{}).Select("id").Where("username = ?", username).Take(&userID).Error; err != nil {
 		return "", time.Time{}, fmt.Errorf("load admin user for session: %w", err)
 	}
 
@@ -89,7 +96,7 @@ func (service *Service) CreateSession(ctx context.Context, username string, ttl 
 	}
 
 	expiresAt := time.Now().Add(ttl)
-	if _, err := service.db.ExecContext(ctx, "INSERT INTO sessions (id, admin_user_id, expires_at) VALUES (?, ?, ?)", sessionID, userID, expiresAt); err != nil {
+	if err := service.db.WithContext(ctx).Create(&appdb.Session{ID: sessionID, AdminUserID: userID, ExpiresAt: expiresAt}).Error; err != nil {
 		return "", time.Time{}, fmt.Errorf("create session: %w", err)
 	}
 
@@ -102,14 +109,13 @@ func (service *Service) AuthenticateSession(ctx context.Context, sessionID strin
 	}
 
 	var user AdminUser
-	err := service.db.QueryRowContext(ctx, `
-		SELECT admin_users.id, admin_users.username, admin_users.password_hash, admin_users.created_at, admin_users.updated_at
-		FROM sessions
-		INNER JOIN admin_users ON admin_users.id = sessions.admin_user_id
-		WHERE sessions.id = ? AND sessions.expires_at > CURRENT_TIMESTAMP
-		LIMIT 1
-	`, sessionID).Scan(&user.ID, &user.Username, &user.PasswordHash, &user.CreatedAt, &user.UpdatedAt)
-	if err == sql.ErrNoRows {
+	err := service.db.WithContext(ctx).
+		Table("sessions").
+		Select("admin_users.id, admin_users.username, admin_users.password_hash, admin_users.created_at, admin_users.updated_at").
+		Joins("INNER JOIN admin_users ON admin_users.id = sessions.admin_user_id").
+		Where("sessions.id = ? AND sessions.expires_at > CURRENT_TIMESTAMP", sessionID).
+		Take(&user).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
 		return AdminUser{}, false, nil
 	}
 	if err != nil {
@@ -124,16 +130,16 @@ func (service *Service) Logout(ctx context.Context, sessionID string) error {
 		return nil
 	}
 
-	if _, err := service.db.ExecContext(ctx, "DELETE FROM sessions WHERE id = ?", sessionID); err != nil {
+	if err := service.db.WithContext(ctx).Where("id = ?", sessionID).Delete(&appdb.Session{}).Error; err != nil {
 		return fmt.Errorf("delete session: %w", err)
 	}
 
 	return nil
 }
 
-func EnsureInitialAdmin(ctx context.Context, dbConn *sql.DB, username string) (string, bool, error) {
-	var count int
-	if err := dbConn.QueryRowContext(ctx, "SELECT COUNT(*) FROM admin_users").Scan(&count); err != nil {
+func EnsureInitialAdmin(ctx context.Context, dbConn *gorm.DB, username string) (string, bool, error) {
+	var count int64
+	if err := dbConn.WithContext(ctx).Model(&appdb.AdminUser{}).Count(&count).Error; err != nil {
 		return "", false, fmt.Errorf("count admin users: %w", err)
 	}
 	if count > 0 {
@@ -150,7 +156,7 @@ func EnsureInitialAdmin(ctx context.Context, dbConn *sql.DB, username string) (s
 		return "", false, err
 	}
 
-	if _, err := dbConn.ExecContext(ctx, "INSERT INTO admin_users (username, password_hash) VALUES (?, ?)", username, passwordHash); err != nil {
+	if err := dbConn.WithContext(ctx).Create(&appdb.AdminUser{Username: username, PasswordHash: passwordHash}).Error; err != nil {
 		return "", false, fmt.Errorf("create initial admin: %w", err)
 	}
 
@@ -169,8 +175,8 @@ func (service *Service) ChangePassword(ctx context.Context, username string, cur
 	}
 
 	var passwordHash string
-	err := service.db.QueryRowContext(ctx, "SELECT password_hash FROM admin_users WHERE username = ? LIMIT 1", username).Scan(&passwordHash)
-	if err == sql.ErrNoRows {
+	err := service.db.WithContext(ctx).Model(&appdb.AdminUser{}).Select("password_hash").Where("username = ?", username).Take(&passwordHash).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
 		return fmt.Errorf("admin user not found")
 	}
 	if err != nil {
@@ -187,18 +193,22 @@ func (service *Service) ChangePassword(ctx context.Context, username string, cur
 		return fmt.Errorf("hash new password: %w", err)
 	}
 
-	if _, err := service.db.ExecContext(ctx, "UPDATE admin_users SET password_hash = ?, updated_at = CURRENT_TIMESTAMP WHERE username = ?", newHash, username); err != nil {
+	if err := service.db.WithContext(ctx).Model(&appdb.AdminUser{}).Where("username = ?", username).Updates(map[string]any{
+		"password_hash": newHash,
+		"updated_at":    gorm.Expr("CURRENT_TIMESTAMP"),
+	}).Error; err != nil {
 		return fmt.Errorf("update password: %w", err)
 	}
 
-	if _, err := service.db.ExecContext(ctx, "DELETE FROM sessions WHERE admin_user_id = (SELECT id FROM admin_users WHERE username = ? LIMIT 1) AND id <> ?", username, currentSessionID); err != nil {
+	subquery := service.db.Model(&appdb.AdminUser{}).Select("id").Where("username = ?", username).Limit(1)
+	if err := service.db.WithContext(ctx).Where("admin_user_id = (?) AND id <> ?", subquery, currentSessionID).Delete(&appdb.Session{}).Error; err != nil {
 		return fmt.Errorf("invalidate other sessions: %w", err)
 	}
 
 	return nil
 }
 
-func ResetAdminPassword(ctx context.Context, dbConn *sql.DB, username string, password string) (string, error) {
+func ResetAdminPassword(ctx context.Context, dbConn *gorm.DB, username string, password string) (string, error) {
 	if strings.TrimSpace(username) == "" {
 		return "", fmt.Errorf("admin username is required")
 	}
@@ -216,26 +226,22 @@ func ResetAdminPassword(ctx context.Context, dbConn *sql.DB, username string, pa
 		return "", err
 	}
 
-	result, err := dbConn.ExecContext(ctx, `
-		INSERT INTO admin_users (username, password_hash)
-		VALUES (?, ?)
-		ON DUPLICATE KEY UPDATE
-			password_hash = VALUES(password_hash),
-			updated_at = CURRENT_TIMESTAMP
-	`, username, passwordHash)
-	if err != nil {
-		return "", fmt.Errorf("reset admin password: %w", err)
+	result := dbConn.WithContext(ctx).Clauses(clause.OnConflict{
+		Columns: []clause.Column{{Name: "username"}},
+		DoUpdates: clause.Assignments(map[string]any{
+			"password_hash": passwordHash,
+			"updated_at":    gorm.Expr("CURRENT_TIMESTAMP"),
+		}),
+	}).Create(&appdb.AdminUser{Username: username, PasswordHash: passwordHash})
+	if result.Error != nil {
+		return "", fmt.Errorf("reset admin password: %w", result.Error)
 	}
-
-	if affected, err := result.RowsAffected(); err == nil && affected == 0 {
+	if result.RowsAffected == 0 {
 		return "", fmt.Errorf("admin password was not updated")
 	}
 
-	// Invalidate all sessions for this user after password reset.
-	if _, err := dbConn.ExecContext(ctx, `
-		DELETE FROM sessions
-		WHERE admin_user_id = (SELECT id FROM admin_users WHERE username = ? LIMIT 1)
-	`, username); err != nil {
+	subquery := dbConn.Model(&appdb.AdminUser{}).Select("id").Where("username = ?", username).Limit(1)
+	if err := dbConn.WithContext(ctx).Where("admin_user_id = (?)", subquery).Delete(&appdb.Session{}).Error; err != nil {
 		return "", fmt.Errorf("invalidate sessions after password reset: %w", err)
 	}
 
