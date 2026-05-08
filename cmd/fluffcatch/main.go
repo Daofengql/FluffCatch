@@ -132,7 +132,7 @@ func runMigrationsAndExit(ctx context.Context, cfg config.Config) {
 		os.Exit(1)
 	}
 
-	gormDB, err := db.OpenGORM(ctx, dsn, databaseOptionsFromConfig(cfg.Database))
+	gormDB, err := db.OpenGORM(ctx, dsn, databaseOptionsFromConfig(cfg.Database, cfg.App))
 	if err != nil {
 		slog.Error("failed to connect mysql", "error", err)
 		os.Exit(1)
@@ -172,7 +172,7 @@ func resetAdminPasswordAndExit(ctx context.Context, cfg config.Config, password 
 		os.Exit(1)
 	}
 
-	gormDB, err := db.OpenGORM(ctx, dsn, databaseOptionsFromConfig(cfg.Database))
+	gormDB, err := db.OpenGORM(ctx, dsn, databaseOptionsFromConfig(cfg.Database, cfg.App))
 	if err != nil {
 		slog.Error("failed to connect mysql", "error", err)
 		os.Exit(1)
@@ -235,7 +235,7 @@ func mustOpenDatabase(ctx context.Context, cfg config.Config) *gorm.DB {
 		os.Exit(1)
 	}
 
-	dbConn, err := db.OpenGORM(ctx, dsn, databaseOptionsFromConfig(cfg.Database))
+	dbConn, err := db.OpenGORM(ctx, dsn, databaseOptionsFromConfig(cfg.Database, cfg.App))
 	if err != nil {
 		slog.Error("failed to connect mysql", "error", err)
 		os.Exit(1)
@@ -244,7 +244,7 @@ func mustOpenDatabase(ctx context.Context, cfg config.Config) *gorm.DB {
 	return dbConn
 }
 
-func databaseOptionsFromConfig(database config.DatabaseConfig) db.Options {
+func databaseOptionsFromConfig(database config.DatabaseConfig, app config.AppConfig) db.Options {
 	return db.Options{
 		MaxOpenConns:      database.MaxOpenConns,
 		MaxIdleConns:      database.MaxIdleConns,
@@ -252,5 +252,6 @@ func databaseOptionsFromConfig(database config.DatabaseConfig) db.Options {
 		ConnMaxIdleTime:   database.ConnMaxIdleTime,
 		ConnectRetries:    database.ConnectRetries,
 		ConnectRetryDelay: database.ConnectRetryDelay,
+		Quiet:             config.IsReleaseEnv(app.Env),
 	}
 }

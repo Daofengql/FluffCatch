@@ -8,6 +8,8 @@ import (
 	"strings"
 	"time"
 
+	"fluffcatch/internal/buildinfo"
+
 	"github.com/go-sql-driver/mysql"
 	"gopkg.in/yaml.v3"
 )
@@ -274,8 +276,8 @@ func applyEnvOverrides(cfg *Config) {
 }
 
 func normalizeAndValidate(cfg Config) (Config, error) {
-	if cfg.App.Env == "production" && cfg.Auth.SessionSecret == "change-me-in-production" {
-		return Config{}, fmt.Errorf("auth.session_secret must be set in production")
+	if isProductionEnv(cfg.App.Env) && cfg.Auth.SessionSecret == "change-me-in-production" {
+		return Config{}, fmt.Errorf("auth.session_secret must be set in production or release")
 	}
 
 	cfg.Storage.Driver = strings.ToLower(cfg.Storage.Driver)
@@ -291,6 +293,16 @@ func normalizeAndValidate(cfg Config) (Config, error) {
 	}
 
 	return cfg, nil
+}
+
+func IsReleaseEnv(env string) bool {
+	normalized := strings.ToLower(strings.TrimSpace(env))
+	return buildinfo.IsRelease() || normalized == "production" || normalized == "release"
+}
+
+func isProductionEnv(env string) bool {
+	normalized := strings.ToLower(strings.TrimSpace(env))
+	return normalized == "production" || normalized == "release"
 }
 
 func (cfg *Config) SetFrontendMode(mode string) error {

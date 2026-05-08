@@ -14,6 +14,7 @@ import (
 	_ "github.com/go-sql-driver/mysql"
 	"gorm.io/driver/mysql"
 	"gorm.io/gorm"
+	"gorm.io/gorm/logger"
 )
 
 type Options struct {
@@ -23,6 +24,7 @@ type Options struct {
 	ConnMaxIdleTime   time.Duration
 	ConnectRetries    int
 	ConnectRetryDelay time.Duration
+	Quiet             bool
 }
 
 func Open(ctx context.Context, dsn string, options Options) (*sql.DB, error) {
@@ -51,7 +53,12 @@ func OpenGORM(ctx context.Context, dsn string, options Options) (*gorm.DB, error
 		return nil, err
 	}
 
-	gormDB, err := gorm.Open(mysql.New(mysql.Config{Conn: sqlDB}), &gorm.Config{})
+	gormConfig := &gorm.Config{}
+	if options.Quiet {
+		gormConfig.Logger = logger.Default.LogMode(logger.Silent)
+	}
+
+	gormDB, err := gorm.Open(mysql.New(mysql.Config{Conn: sqlDB}), gormConfig)
 	if err != nil {
 		_ = sqlDB.Close()
 		return nil, fmt.Errorf("open gorm mysql: %w", err)

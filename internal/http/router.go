@@ -110,7 +110,7 @@ func NewServer(cfg config.Config, dbConn *gorm.DB, storageManager *storage.Manag
 }
 
 func (server *Server) Routes() stdhttp.Handler {
-	if server.cfg.App.Env == "production" {
+	if config.IsReleaseEnv(server.cfg.App.Env) {
 		gin.SetMode(gin.ReleaseMode)
 	} else if server.cfg.App.Env == "test" {
 		gin.SetMode(gin.TestMode)
@@ -118,7 +118,9 @@ func (server *Server) Routes() stdhttp.Handler {
 
 	r := gin.New()
 	r.Use(gin.Recovery())
-	r.Use(gin.Logger())
+	if !config.IsReleaseEnv(server.cfg.App.Env) {
+		r.Use(gin.Logger())
+	}
 	server.mountAPIRoutes(r)
 	server.mountLocalMedia(r)
 	server.mountStaticApp(r)

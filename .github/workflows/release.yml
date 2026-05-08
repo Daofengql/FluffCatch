@@ -102,7 +102,7 @@ jobs:
 
           go build \
             -tags embed_frontend \
-            -ldflags="-s -w" \
+            -ldflags="-s -w -X fluffcatch/internal/buildinfo.Mode=release" \
             -o "build/${binary}" \
             ./cmd/fluffcatch
 

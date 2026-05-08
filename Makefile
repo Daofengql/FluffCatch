@@ -17,7 +17,7 @@ web:
 
 build:
 	cd www && npm install && npm run build
-	go build -tags embed_frontend -o bin/fluffcatch ./cmd/fluffcatch
+	go build -tags embed_frontend -ldflags "-X fluffcatch/internal/buildinfo.Mode=release" -o bin/fluffcatch ./cmd/fluffcatch
 
 test:
 	go test ./...

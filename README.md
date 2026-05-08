@@ -105,13 +105,13 @@ cd www
 npm install
 npm run build
 cd ..
-go build -tags embed_frontend -o bin/fluffcatch ./cmd/fluffcatch
+go build -tags embed_frontend -ldflags "-X fluffcatch/internal/buildinfo.Mode=release" -o bin/fluffcatch ./cmd/fluffcatch
 ```
 
 Windows 下也可以构建为：
 
 ```bash
-go build -tags embed_frontend -o bin/fluffcatch.exe ./cmd/fluffcatch
+go build -tags embed_frontend -ldflags "-X fluffcatch/internal/buildinfo.Mode=release" -o bin/fluffcatch.exe ./cmd/fluffcatch
 ```
 
 构建完成后，运行 `bin/fluffcatch` 或 `bin/fluffcatch.exe` 即可用一个二进制文件同时提供 API 和内嵌的 React 前端。MySQL 和已上传图片仍然是外部运行时数据，不会被打包进二进制文件。
@@ -207,4 +207,4 @@ make migrate
 make reset-admin-password
 ```
 
-`make build` 会先构建前端，再使用 `embed_frontend` 构建标签编译包含内嵌前端的 Go 二进制文件。
+`make build` 会先构建前端，再使用 `embed_frontend` 构建标签编译包含内嵌前端的 Go 二进制文件，并写入 release 构建标记以关闭 Gin 和 GORM 的框架 info 日志。
