@@ -45,6 +45,15 @@ type Page struct {
 	TotalPages int     `json:"totalPages"`
 }
 
+type ListOptions struct {
+	Admin           bool
+	PrivateAccess   bool
+	FingerprintHash string
+	Page            int
+	PageSize        int
+	Visibility      Visibility
+}
+
 type UpdatePhotoRequest struct {
 	PhotographerName string     `json:"photographerName"`
 	Visibility       Visibility `json:"visibility"`

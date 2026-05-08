@@ -12,11 +12,15 @@ type Setting struct {
 func (Setting) TableName() string { return "settings" }
 
 type AdminUser struct {
-	ID           int64     `gorm:"column:id;primaryKey;autoIncrement"`
-	Username     string    `gorm:"column:username"`
-	PasswordHash string    `gorm:"column:password_hash"`
-	CreatedAt    time.Time `gorm:"column:created_at"`
-	UpdatedAt    time.Time `gorm:"column:updated_at"`
+	ID           int64      `gorm:"column:id;primaryKey;autoIncrement"`
+	Username     string     `gorm:"column:username"`
+	PasswordHash string     `gorm:"column:password_hash"`
+	OIDCSubject  *string    `gorm:"column:oidc_subject"`
+	OIDCUsername *string    `gorm:"column:oidc_username"`
+	OIDCEmail    *string    `gorm:"column:oidc_email"`
+	OIDCBoundAt  *time.Time `gorm:"column:oidc_bound_at"`
+	CreatedAt    time.Time  `gorm:"column:created_at"`
+	UpdatedAt    time.Time  `gorm:"column:updated_at"`
 }
 
 func (AdminUser) TableName() string { return "admin_users" }

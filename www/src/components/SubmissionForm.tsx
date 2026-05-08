@@ -1,13 +1,13 @@
-import { Alert, Box, Button, FormControl, InputLabel, LinearProgress, MenuItem, Paper, Select, Stack, TextField, Typography } from '@mui/material';
+import { Alert, Box, Button, FormControl, FormControlLabel, InputLabel, LinearProgress, MenuItem, Paper, Select, Stack, Switch, TextField, Typography } from '@mui/material';
 import type { SelectChangeEvent } from '@mui/material/Select';
-import { type ChangeEvent, type FormEvent, useEffect, useRef, useState } from 'react';
-import { submitPhotoWithProgress, type EventCard } from '../api/client';
+import { type ChangeEvent, type FormEvent, useEffect, useMemo, useRef, useState } from 'react';
+import { getUploadSettings, submitPhotoWithProgress, type EventCard } from '../api/client';
 import { getCachedMe, refreshMe, subscribeAuthState } from '../api/authState';
 
 type QueueItem = {
   id: string;
   file: File;
-  previewUrl: string;
+  previewUrl?: string;
   mediaType: 'image' | 'video';
   progress: number;
   status: 'waiting' | 'uploading' | 'done' | 'error';
@@ -31,16 +31,44 @@ export function SubmissionForm({ event, footer, initialSubmissionPassword = '', 
   const [authenticated, setAuthenticated] = useState(() => getCachedMe().authenticated);
   const [adminVisibility, setAdminVisibility] = useState<'public' | 'private'>('public');
   const [queue, setQueue] = useState<QueueItem[]>([]);
+  const [previewEnabled, setPreviewEnabled] = useState(false);
+  const [maxConcurrentUploads, setMaxConcurrentUploads] = useState(2);
   const queueRef = useRef<QueueItem[]>([]);
   const hasInitialPassword = initialSubmissionPassword.trim() !== '';
+  const queueSummary = useMemo(() => {
+    const total = queue.length;
+    const uploaded = queue.filter((item) => item.status === 'done').length;
+    const uploading = queue.filter((item) => item.status === 'uploading').length;
+    const failed = queue.filter((item) => item.status === 'error').length;
+    const waiting = queue.filter((item) => item.status === 'waiting').length;
+    const overallProgress = total > 0 ? Math.round(queue.reduce((sum, item) => sum + item.progress, 0) / total) : 0;
+    return { failed, overallProgress, total, uploaded, uploading, waiting };
+  }, [queue]);
 
   useEffect(() => {
     queueRef.current = queue;
   }, [queue]);
 
   useEffect(() => () => {
-    queueRef.current.forEach((item) => URL.revokeObjectURL(item.previewUrl));
+    queueRef.current.forEach((item) => {
+      if (item.previewUrl) URL.revokeObjectURL(item.previewUrl);
+    });
   }, []);
+
+  useEffect(() => {
+    setQueue((prev) =>
+      prev.map((item) => {
+        if (previewEnabled && !item.previewUrl) {
+          return { ...item, previewUrl: URL.createObjectURL(item.file) };
+        }
+        if (!previewEnabled && item.previewUrl) {
+          URL.revokeObjectURL(item.previewUrl);
+          return { ...item, previewUrl: undefined };
+        }
+        return item;
+      })
+    );
+  }, [previewEnabled]);
 
   useEffect(() => {
     setMessage('');
@@ -54,6 +82,12 @@ export function SubmissionForm({ event, footer, initialSubmissionPassword = '', 
     return unsubscribe;
   }, []);
 
+  useEffect(() => {
+    getUploadSettings()
+      .then((settings) => setMaxConcurrentUploads(clampUploadConcurrency(settings.maxConcurrentUploads)))
+      .catch(() => setMaxConcurrentUploads(2));
+  }, []);
+
   function handleFiles(changeEvent: ChangeEvent<HTMLInputElement>) {
     const files = Array.from(changeEvent.target.files ?? []);
     const nextItems = files.map((file) => ({
@@ -61,7 +95,7 @@ export function SubmissionForm({ event, footer, initialSubmissionPassword = '', 
       id: `${file.name}-${file.size}-${file.lastModified}-${crypto.randomUUID()}`,
       mediaType: file.type.startsWith('video/') ? 'video' as const : 'image' as const,
       message: '等待上传',
-      previewUrl: URL.createObjectURL(file),
+      previewUrl: previewEnabled ? URL.createObjectURL(file) : undefined,
       progress: 0,
       status: 'waiting' as const
     }));
@@ -72,7 +106,7 @@ export function SubmissionForm({ event, footer, initialSubmissionPassword = '', 
   function removeQueueItem(id: string) {
     setQueue((prev) => {
       const item = prev.find((entry) => entry.id === id);
-      if (item) URL.revokeObjectURL(item.previewUrl);
+      if (item?.previewUrl) URL.revokeObjectURL(item.previewUrl);
       return prev.filter((entry) => entry.id !== id);
     });
   }
@@ -87,16 +121,20 @@ export function SubmissionForm({ event, footer, initialSubmissionPassword = '', 
     setError('');
     setMessage('');
     const formData = new FormData(formEvent.currentTarget);
+    const eventId = event.id;
     const currentSubmissionPassword = authenticated ? '' : submissionPassword;
     const photographerName = String(formData.get('photographerName') || '');
+    const uploadItems = queue.filter((item) => item.status !== 'done');
+    const concurrency = Math.min(clampUploadConcurrency(maxConcurrentUploads), uploadItems.length || 1);
     setSubmitting(true);
     let successCount = 0;
     let failureCount = 0;
     let firstError = '';
+    let nextIndex = 0;
+    let shouldStop = false;
 
     try {
-      for (const item of queue) {
-        if (item.status === 'done') continue;
+      async function uploadItem(item: QueueItem) {
         setQueue((prev) => prev.map((entry) => (entry.id === item.id ? { ...entry, message: '上传中...', progress: 1, status: 'uploading' } : entry)));
         const uploadForm = new FormData();
         uploadForm.append('submissionPassword', currentSubmissionPassword);
@@ -107,7 +145,7 @@ export function SubmissionForm({ event, footer, initialSubmissionPassword = '', 
         uploadForm.append('file', item.file);
 
         try {
-          await submitPhotoWithProgress(event.id, uploadForm, (progress) => {
+          await submitPhotoWithProgress(eventId, uploadForm, (progress) => {
             setQueue((prev) => prev.map((entry) => (entry.id === item.id ? { ...entry, progress } : entry)));
           });
           successCount++;
@@ -124,9 +162,22 @@ export function SubmissionForm({ event, footer, initialSubmissionPassword = '', 
                 : entry
             )
           );
-          if (isPasswordError) break;
+          if (isPasswordError) {
+            shouldStop = true;
+          }
         }
       }
+
+      async function worker() {
+        while (!shouldStop) {
+          const item = uploadItems[nextIndex];
+          nextIndex++;
+          if (!item) return;
+          await uploadItem(item);
+        }
+      }
+
+      await Promise.all(Array.from({ length: concurrency }, () => worker()));
 
       if (successCount > 0 && failureCount === 0) {
         setMessage(authenticated ? `队列完成，已加入画廊 ${successCount} 个媒体文件。` : `队列完成，成功提交 ${successCount} 个媒体文件。`);
@@ -176,15 +227,41 @@ export function SubmissionForm({ event, footer, initialSubmissionPassword = '', 
           </Select>
         </FormControl>
       )}
-      <Button component="label" variant="outlined">
-        选择图片或视频，可多选
-        <input accept="image/*,video/mp4,video/webm,video/ogg,video/quicktime" hidden multiple onChange={handleFiles} type="file" />
-      </Button>
+      <Stack direction={{ xs: 'column', sm: 'row' }} sx={{ alignItems: { xs: 'stretch', sm: 'center' }, gap: 1.5, justifyContent: 'space-between' }}>
+        <Button component="label" variant="outlined">
+          选择图片或视频，可多选
+          <input accept="image/*,video/mp4,video/webm,video/ogg,video/quicktime" hidden multiple onChange={handleFiles} type="file" />
+        </Button>
+        <FormControlLabel
+          control={<Switch checked={previewEnabled} onChange={(event) => setPreviewEnabled(event.target.checked)} />}
+          label="显示上传预览"
+          sx={{ m: 0 }}
+        />
+      </Stack>
+      {!!queue.length && (
+        <Paper sx={{ p: 1.5 }} variant="outlined">
+          <Stack sx={{ gap: 1 }}>
+            <Stack direction={{ xs: 'column', sm: 'row' }} sx={{ gap: 1, justifyContent: 'space-between' }}>
+              <Typography sx={{ fontWeight: 800 }} variant="body2">
+                上传进度 {queueSummary.uploaded}/{queueSummary.total}
+              </Typography>
+              <Typography color="text.secondary" variant="body2">
+                已上传 {queueSummary.uploaded} 个，未上传 {queueSummary.waiting} 个，上传中 {queueSummary.uploading} 个，失败 {queueSummary.failed} 个，并发 {clampUploadConcurrency(maxConcurrentUploads)} 个
+              </Typography>
+            </Stack>
+            <LinearProgress
+              color={queueSummary.failed > 0 ? 'warning' : queueSummary.uploaded === queueSummary.total ? 'success' : 'primary'}
+              value={queueSummary.overallProgress}
+              variant="determinate"
+            />
+          </Stack>
+        </Paper>
+      )}
       <Stack sx={{ gap: 1.5, maxHeight: 420, overflowY: 'auto', pr: 0.5 }}>
         {queue.map((item) => (
           <Paper key={item.id} variant="outlined" sx={{ p: 1.5 }}>
             <Stack direction={{ xs: 'column', sm: 'row' }} sx={{ gap: 1.5 }}>
-              {item.mediaType === 'video' ? (
+              {previewEnabled && item.previewUrl && item.mediaType === 'video' ? (
                 <Box
                   component="video"
                   muted
@@ -192,8 +269,26 @@ export function SubmissionForm({ event, footer, initialSubmissionPassword = '', 
                   src={item.previewUrl}
                   sx={{ aspectRatio: '4 / 3', bgcolor: 'common.black', borderRadius: 1, objectFit: 'cover', width: { xs: '100%', sm: 150 } }}
                 />
-              ) : (
+              ) : previewEnabled && item.previewUrl ? (
                 <Box component="img" src={item.previewUrl} sx={{ aspectRatio: '4 / 3', borderRadius: 1, objectFit: 'cover', width: { xs: '100%', sm: 150 } }} />
+              ) : (
+                <Box
+                  sx={{
+                    alignItems: 'center',
+                    aspectRatio: '4 / 3',
+                    bgcolor: 'action.hover',
+                    border: '1px solid',
+                    borderColor: 'divider',
+                    borderRadius: 1,
+                    color: 'text.secondary',
+                    display: 'flex',
+                    flexShrink: 0,
+                    justifyContent: 'center',
+                    width: { xs: '100%', sm: 150 }
+                  }}
+                >
+                  <Typography variant="caption">{item.mediaType === 'video' ? '视频' : '图片'}</Typography>
+                </Box>
               )}
               <Stack sx={{ flex: 1, gap: 0.5, minWidth: 0 }}>
                 <Typography noWrap sx={{ fontWeight: 800 }}>
@@ -245,4 +340,9 @@ function formatUploadError(reason: string) {
   if (!reason) return '上传失败，请检查投稿口令或稍后重试。';
   if (reason.toLowerCase().includes('submission password')) return '投稿口令不正确，请检查后重试。';
   return reason;
+}
+
+function clampUploadConcurrency(value?: number) {
+  const parsed = Number(value) || 2;
+  return Math.max(1, Math.min(8, Math.floor(parsed)));
 }

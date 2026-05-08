@@ -26,9 +26,11 @@ type Config struct {
 }
 
 type UploadConfig struct {
-	MaxSizeMB         int `yaml:"max_size_mb"`
-	MaxVideoSizeMB    int `yaml:"max_video_size_mb"`
-	MaxFilesPerUpload int `yaml:"max_files_per_upload"`
+	MaxSizeMB            int `yaml:"max_size_mb"`
+	MaxVideoSizeMB       int `yaml:"max_video_size_mb"`
+	MaxFilesPerUpload    int `yaml:"max_files_per_upload"`
+	DefaultPageSize      int `yaml:"default_page_size"`
+	MaxConcurrentUploads int `yaml:"max_concurrent_uploads"`
 }
 
 type AppConfig struct {
@@ -195,9 +197,11 @@ func defaultConfig() Config {
 			StaticRoot: "www/dist",
 		},
 		Upload: UploadConfig{
-			MaxSizeMB:         20,
-			MaxVideoSizeMB:    500,
-			MaxFilesPerUpload: 20,
+			MaxSizeMB:            20,
+			MaxVideoSizeMB:       500,
+			MaxFilesPerUpload:    20,
+			DefaultPageSize:      24,
+			MaxConcurrentUploads: 2,
 		},
 	}
 }
@@ -273,6 +277,8 @@ func applyEnvOverrides(cfg *Config) {
 	cfg.Upload.MaxSizeMB = getIntEnv("UPLOAD_MAX_SIZE_MB", cfg.Upload.MaxSizeMB)
 	cfg.Upload.MaxVideoSizeMB = getIntEnv("UPLOAD_MAX_VIDEO_SIZE_MB", cfg.Upload.MaxVideoSizeMB)
 	cfg.Upload.MaxFilesPerUpload = getIntEnv("UPLOAD_MAX_FILES_PER_UPLOAD", cfg.Upload.MaxFilesPerUpload)
+	cfg.Upload.DefaultPageSize = getIntEnv("UPLOAD_DEFAULT_PAGE_SIZE", cfg.Upload.DefaultPageSize)
+	cfg.Upload.MaxConcurrentUploads = getIntEnv("UPLOAD_MAX_CONCURRENT_UPLOADS", cfg.Upload.MaxConcurrentUploads)
 }
 
 func normalizeAndValidate(cfg Config) (Config, error) {

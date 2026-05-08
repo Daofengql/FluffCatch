@@ -1,7 +1,7 @@
 import MDEditor from '@uiw/react-md-editor/nohighlight';
 import '@uiw/react-md-editor/markdown-editor.css';
 import '@uiw/react-markdown-preview/markdown.css';
-import { Article, ColorLens, Image, Info, Key, Storage, UploadFile } from '@mui/icons-material';
+import { Article, ColorLens, Image, Info, Key, Lock, Security, Storage, UploadFile } from '@mui/icons-material';
 import {
   Alert,
   Avatar,
@@ -32,13 +32,19 @@ import {
   clearSiteBackground,
   clearSiteLogo,
   getAdminSettings,
+  getOIDCBindURL,
+  getOIDCStatus,
   testStorageConnection,
   updateSiteSettings,
+  updateOIDCSettings,
   updateStoragePolicies,
   updateUploadSettings,
+  unbindOIDC,
   uploadSiteBackground,
   uploadSiteLogo,
   type AdminSettingsResponse,
+  type OIDCSettings,
+  type OIDCStatus,
   type S3Settings,
   type SiteSettings,
   type StorageDriver,
@@ -49,7 +55,7 @@ import { PageHeader } from '../../components/common/PageHeader';
 import { useThemePreference } from '../../theme/ThemePreferenceProvider';
 import { appPalettes, normalizeThemeColor } from '../../theme/theme';
 
-type SettingsSection = 'site' | 'theme' | 'background' | 'footer' | 'upload' | 'storage' | 'password';
+type SettingsSection = 'site' | 'theme' | 'background' | 'footer' | 'upload' | 'storage' | 'oidc' | 'security';
 type BackgroundVariant = 'desktop' | 'mobile';
 
 const fallbackSite: SiteSettings = {
@@ -74,7 +80,18 @@ const fallbackSite: SiteSettings = {
 const fallbackUpload: UploadSettings = {
   maxFileSizeMb: 20,
   maxVideoSizeMb: 500,
-  maxFilesPerUpload: 20
+  maxFilesPerUpload: 20,
+  defaultPageSize: 24,
+  maxConcurrentUploads: 2
+};
+
+const fallbackOIDC: OIDCSettings = {
+  enabled: false,
+  provider: 'Keycloak',
+  issuerUrl: '',
+  clientId: '',
+  clientSecret: '',
+  redirectUrl: ''
 };
 
 const emptyS3: S3Settings = { endpoint: '', bucket: '', region: '', accessKey: '', secretKey: '', useSsl: false, accountId: '' };
@@ -96,7 +113,8 @@ const settingsSections: { icon: ReactNode; key: SettingsSection; label: string }
   { icon: <Article />, key: 'footer', label: '页脚备案' },
   { icon: <UploadFile />, key: 'upload', label: '上传限制' },
   { icon: <Storage />, key: 'storage', label: '存储策略' },
-  { icon: <Key />, key: 'password', label: '修改密码' }
+  { icon: <Lock />, key: 'oidc', label: 'OIDC 登录' },
+  { icon: <Security />, key: 'security', label: '账号安全' }
 ];
 
 export function AdminSettingsPage() {
@@ -108,6 +126,7 @@ export function AdminSettingsPage() {
   const [settings, setSettings] = useState<AdminSettingsResponse | null>(null);
   const [site, setSite] = useState<SiteSettings>(fallbackSite);
   const [upload, setUpload] = useState<UploadSettings>(fallbackUpload);
+  const [oidc, setOIDC] = useState<OIDCSettings>(fallbackOIDC);
   const [message, setMessage] = useState('');
   const [error, setError] = useState('');
   const [logoUploading, setLogoUploading] = useState(false);
@@ -159,6 +178,7 @@ export function AdminSettingsPage() {
         setSite(nextSite);
         applySiteSettings(nextSite);
         setUpload({ ...fallbackUpload, ...payload.settings.upload });
+        setOIDC({ ...fallbackOIDC, ...payload.settings.oidc, clientSecret: payload.settings.oidc.clientSecret || '' });
         const policies = payload.settings.storagePolicies.policies;
         if (policies.length > 0) {
           const activeId = payload.settings.storagePolicies.activePolicyId;
@@ -264,6 +284,20 @@ export function AdminSettingsPage() {
       refresh();
     } catch (err) {
       setError(err instanceof Error ? err.message : '上传限制保存失败');
+    }
+  }
+
+  async function handleOIDCSubmit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setError('');
+    setMessage('');
+    try {
+      const result = await updateOIDCSettings(oidc);
+      setOIDC({ ...fallbackOIDC, ...result.oidc, clientSecret: result.oidc.clientSecret || '' });
+      setMessage('OIDC 登录配置已保存。');
+      refresh();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'OIDC 配置保存失败');
     }
   }
 
@@ -712,6 +746,27 @@ export function AdminSettingsPage() {
                     value={upload.maxFilesPerUpload}
                   />
                 </Grid>
+                <Grid size={{ xs: 12, sm: 4 }}>
+                  <TextField
+                    fullWidth
+                    label="画廊默认分页大小"
+                    onChange={(event) => setUpload((prev) => ({ ...prev, defaultPageSize: Number(event.target.value) }))}
+                    slotProps={{ htmlInput: { min: 1, max: 100, step: 1 } }}
+                    type="number"
+                    value={upload.defaultPageSize}
+                  />
+                </Grid>
+                <Grid size={{ xs: 12, sm: 4 }}>
+                  <TextField
+                    fullWidth
+                    helperText="后端硬上限为 8，超出会自动压到 8"
+                    label="并发上传数量"
+                    onChange={(event) => setUpload((prev) => ({ ...prev, maxConcurrentUploads: Number(event.target.value) }))}
+                    slotProps={{ htmlInput: { min: 1, max: 8, step: 1 } }}
+                    type="number"
+                    value={upload.maxConcurrentUploads}
+                  />
+                </Grid>
               </Grid>
               <Box>
                 <Button type="submit" variant="contained">保存上传限制</Button>
@@ -811,8 +866,61 @@ export function AdminSettingsPage() {
             </Stack>
           )}
 
-          {activeSection === 'password' && (
-            <PasswordChangePanel />
+          {activeSection === 'oidc' && (
+            <Stack component="form" onSubmit={handleOIDCSubmit} sx={{ gap: 2.5 }}>
+              <Typography color="text.secondary">
+                Keycloak 常用 Issuer URL 形如 https://kc.example.com/realms/your-realm；回调地址需要填写到 Keycloak 客户端的 Valid Redirect URIs。
+              </Typography>
+              <Grid container spacing={2}>
+                <Grid size={{ xs: 12, sm: 4 }}>
+                  <FormControl fullWidth>
+                    <InputLabel>启用 OIDC</InputLabel>
+                    <Select label="启用 OIDC" onChange={(event) => setOIDC((prev) => ({ ...prev, enabled: event.target.value === 'true' }))} value={String(oidc.enabled)}>
+                      <MenuItem value="false">关闭</MenuItem>
+                      <MenuItem value="true">启用</MenuItem>
+                    </Select>
+                  </FormControl>
+                </Grid>
+                <Grid size={{ xs: 12, sm: 8 }}>
+                  <TextField fullWidth label="显示名称" onChange={(event) => setOIDC((prev) => ({ ...prev, provider: event.target.value }))} value={oidc.provider} />
+                </Grid>
+                <Grid size={{ xs: 12 }}>
+                  <TextField fullWidth label="Issuer URL" onChange={(event) => setOIDC((prev) => ({ ...prev, issuerUrl: event.target.value }))} placeholder="https://keycloak.example.com/realms/fluffcatch" value={oidc.issuerUrl} />
+                </Grid>
+                <Grid size={{ xs: 12, sm: 6 }}>
+                  <TextField fullWidth label="Client ID" onChange={(event) => setOIDC((prev) => ({ ...prev, clientId: event.target.value }))} value={oidc.clientId} />
+                </Grid>
+                <Grid size={{ xs: 12, sm: 6 }}>
+                  <TextField fullWidth label="Client Secret" onChange={(event) => setOIDC((prev) => ({ ...prev, clientSecret: event.target.value }))} type="password" value={oidc.clientSecret || ''} />
+                </Grid>
+                <Grid size={{ xs: 12 }}>
+                  <Stack direction={{ xs: 'column', sm: 'row' }} sx={{ alignItems: { xs: 'stretch', sm: 'flex-start' }, gap: 1 }}>
+                    <TextField
+                      fullWidth
+                      helperText="复制这个地址到 Keycloak 客户端的 Valid Redirect URIs"
+                      label="回调地址"
+                      slotProps={{ input: { readOnly: true } }}
+                      value={oidc.redirectUrl || '保存或刷新后自动生成'}
+                    />
+                    <Button
+                      disabled={!oidc.redirectUrl}
+                      onClick={() => navigator.clipboard?.writeText(oidc.redirectUrl).then(() => setMessage('回调地址已复制。')).catch(() => setError('复制失败，请手动选择地址复制'))}
+                      sx={{ minHeight: 56, whiteSpace: 'nowrap' }}
+                      variant="outlined"
+                    >
+                      复制
+                    </Button>
+                  </Stack>
+                </Grid>
+              </Grid>
+              <Box>
+                <Button type="submit" variant="contained">保存 OIDC 配置</Button>
+              </Box>
+            </Stack>
+          )}
+
+          {activeSection === 'security' && (
+            <AccountSecurityPanel />
           )}
         </Paper>
       </Stack>
@@ -929,20 +1037,41 @@ function BackgroundPanel({
 }
 
 function normalizeSection(section: string | undefined): SettingsSection {
+  if (section === 'password') return 'security';
   return isSettingsSection(section) ? section : 'site';
 }
 
 function isSettingsSection(section: string | undefined): section is SettingsSection {
-  return section === 'site' || section === 'theme' || section === 'background' || section === 'footer' || section === 'upload' || section === 'storage' || section === 'password';
+  return section === 'site' || section === 'theme' || section === 'background' || section === 'footer' || section === 'upload' || section === 'storage' || section === 'oidc' || section === 'security';
 }
 
-function PasswordChangePanel() {
+function AccountSecurityPanel() {
   const [currentPassword, setCurrentPassword] = useState('');
   const [newPassword, setNewPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
+  const [oidcStatus, setOIDCStatus] = useState<OIDCStatus | null>(null);
   const [message, setMessage] = useState('');
   const [error, setError] = useState('');
   const [saving, setSaving] = useState(false);
+  const [oidcLoading, setOIDCLoading] = useState(false);
+
+  function loadOIDCStatus() {
+    getOIDCStatus()
+      .then(setOIDCStatus)
+      .catch(() => setOIDCStatus(null));
+  }
+
+  useEffect(() => {
+    loadOIDCStatus();
+    const params = new URLSearchParams(window.location.search);
+    const success = params.get('oidc_success');
+    const oidcError = params.get('oidc_error');
+    if (success) setMessage(success);
+    if (oidcError) setError(oidcError);
+    if (success || oidcError) {
+      window.history.replaceState({}, '', window.location.pathname);
+    }
+  }, []);
 
   async function handleSubmit(formEvent: FormEvent<HTMLFormElement>) {
     formEvent.preventDefault();
@@ -979,42 +1108,92 @@ function PasswordChangePanel() {
   }
 
   return (
-    <Stack component="form" onSubmit={handleSubmit} sx={{ gap: 2.5 }}>
-      <Typography color="text.secondary">
-        修改管理员登录密码。你需要先输入当前密码进行验证。
-      </Typography>
+    <Stack sx={{ gap: 3 }}>
       {message && <Alert severity="success">{message}</Alert>}
       {error && <Alert severity="error">{error}</Alert>}
-      <TextField
-        autoComplete="current-password"
-        fullWidth
-        label="当前密码"
-        onChange={(e) => setCurrentPassword(e.target.value)}
-        type="password"
-        value={currentPassword}
-      />
-      <TextField
-        autoComplete="new-password"
-        fullWidth
-        helperText="至少 8 位字符"
-        label="新密码"
-        onChange={(e) => setNewPassword(e.target.value)}
-        type="password"
-        value={newPassword}
-      />
-      <TextField
-        autoComplete="new-password"
-        fullWidth
-        label="确认新密码"
-        onChange={(e) => setConfirmPassword(e.target.value)}
-        type="password"
-        value={confirmPassword}
-      />
-      <Box>
-        <Button disabled={saving} type="submit" variant="contained">
-          {saving ? '保存中...' : '修改密码'}
-        </Button>
-      </Box>
+      <Stack sx={{ gap: 2 }}>
+        <Typography sx={{ fontWeight: 800 }} variant="h6">Keycloak 绑定</Typography>
+        <Paper sx={{ p: 2 }} variant="outlined">
+          <Stack direction={{ xs: 'column', sm: 'row' }} sx={{ alignItems: { xs: 'stretch', sm: 'center' }, gap: 2, justifyContent: 'space-between' }}>
+            <Box>
+              <Typography sx={{ fontWeight: 800 }}>
+                {oidcStatus?.bound ? '已绑定' : oidcStatus?.enabled ? '未绑定' : 'OIDC 未启用'}
+              </Typography>
+              <Typography color="text.secondary" variant="body2">
+                {oidcStatus?.bound ? `${oidcStatus.username || oidcStatus.email || oidcStatus.subject}` : `绑定后可使用 ${oidcStatus?.providerName || 'Keycloak'} 登录后台`}
+              </Typography>
+            </Box>
+            <Stack direction="row" sx={{ gap: 1 }}>
+              {oidcStatus?.bound ? (
+                <Button
+                  color="error"
+                  disabled={oidcLoading}
+                  onClick={() => {
+                    setOIDCLoading(true);
+                    setError('');
+                    unbindOIDC()
+                      .then(() => { setMessage('Keycloak 绑定已解除。'); loadOIDCStatus(); })
+                      .catch((err: unknown) => setError(err instanceof Error ? err.message : '解绑失败'))
+                      .finally(() => setOIDCLoading(false));
+                  }}
+                  variant="outlined"
+                >
+                  解绑
+                </Button>
+              ) : (
+                <Button
+                  disabled={!oidcStatus?.enabled || oidcLoading}
+                  onClick={() => {
+                    setOIDCLoading(true);
+                    getOIDCBindURL()
+                      .then((result) => { window.location.href = result.url; })
+                      .catch((err: unknown) => { setError(err instanceof Error ? err.message : '发起绑定失败'); setOIDCLoading(false); });
+                  }}
+                  variant="contained"
+                >
+                  绑定 {oidcStatus?.providerName || 'Keycloak'}
+                </Button>
+              )}
+            </Stack>
+          </Stack>
+        </Paper>
+      </Stack>
+      <Stack component="form" onSubmit={handleSubmit} sx={{ gap: 2.5 }}>
+        <Typography sx={{ fontWeight: 800 }} variant="h6">修改密码</Typography>
+        <Typography color="text.secondary">
+          修改管理员登录密码。你需要先输入当前密码进行验证。
+        </Typography>
+        <TextField
+          autoComplete="current-password"
+          fullWidth
+          label="当前密码"
+          onChange={(e) => setCurrentPassword(e.target.value)}
+          type="password"
+          value={currentPassword}
+        />
+        <TextField
+          autoComplete="new-password"
+          fullWidth
+          helperText="至少 8 位字符"
+          label="新密码"
+          onChange={(e) => setNewPassword(e.target.value)}
+          type="password"
+          value={newPassword}
+        />
+        <TextField
+          autoComplete="new-password"
+          fullWidth
+          label="确认新密码"
+          onChange={(e) => setConfirmPassword(e.target.value)}
+          type="password"
+          value={confirmPassword}
+        />
+        <Box>
+          <Button disabled={saving} type="submit" variant="contained">
+            {saving ? '保存中...' : '修改密码'}
+          </Button>
+        </Box>
+      </Stack>
     </Stack>
   );
 }

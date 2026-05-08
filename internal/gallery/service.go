@@ -53,19 +53,31 @@ func (service *Service) ListForEventPageWithFingerprint(ctx context.Context, eve
 }
 
 func (service *Service) ListForEventPageWithAccess(ctx context.Context, eventID int64, admin bool, privateAccess bool, fingerprintHash string, page int, pageSize int) (Page, error) {
+	return service.ListForEventPageWithOptions(ctx, eventID, ListOptions{
+		Admin:           admin,
+		PrivateAccess:   privateAccess,
+		FingerprintHash: fingerprintHash,
+		Page:            page,
+		PageSize:        pageSize,
+	})
+}
+
+func (service *Service) ListForEventPageWithOptions(ctx context.Context, eventID int64, options ListOptions) (Page, error) {
 	if service.db == nil {
-		return Page{Items: []Photo{}, Page: 1, PageSize: pageSize}, nil
+		return Page{Items: []Photo{}, Page: 1, PageSize: options.PageSize}, nil
 	}
+	page := options.Page
 	if page < 1 {
 		page = 1
 	}
+	pageSize := options.PageSize
 	if pageSize < 1 {
 		pageSize = 24
 	}
 	if pageSize > 100 {
 		pageSize = 100
 	}
-	if !admin {
+	if !options.Admin {
 		public, err := service.eventIsPublic(ctx, eventID)
 		if err != nil {
 			return Page{}, err
@@ -77,7 +89,14 @@ func (service *Service) ListForEventPageWithAccess(ctx context.Context, eventID 
 
 	var total int64
 	baseQuery := service.db.WithContext(ctx).Model(&appdb.Photo{}).Where("event_id = ?", eventID)
-	if !admin {
+	switch options.Visibility {
+	case VisibilityPublic, VisibilityPrivate:
+		baseQuery = baseQuery.Where("visibility = ?", string(options.Visibility))
+	case "":
+	default:
+		return Page{}, fmt.Errorf("unsupported visibility %q", options.Visibility)
+	}
+	if !options.Admin {
 		baseQuery = baseQuery.Where("visibility IN ?", []string{string(VisibilityPublic), string(VisibilityPrivate)})
 	}
 	if err := baseQuery.Count(&total).Error; err != nil {
@@ -93,10 +112,10 @@ func (service *Service) ListForEventPageWithAccess(ctx context.Context, eventID 
 	photos := make([]Photo, 0, len(records))
 	for _, record := range records {
 		photo := service.photoFromRecord(record)
-		if !admin && photo.Visibility == VisibilityPrivate && privateAccess {
+		if !options.Admin && photo.Visibility == VisibilityPrivate && options.PrivateAccess {
 			photo.AccessGranted = true
 		}
-		if admin || photo.Visibility == VisibilityPublic {
+		if options.Admin || photo.Visibility == VisibilityPublic {
 			photo.AccessGranted = true
 		}
 		service.applyPhotoURLs(&photo)
@@ -106,7 +125,7 @@ func (service *Service) ListForEventPageWithAccess(ctx context.Context, eventID 
 	if err := service.attachTags(ctx, photos); err != nil {
 		return Page{}, err
 	}
-	if err := service.attachLiked(ctx, photos, fingerprintHash); err != nil {
+	if err := service.attachLiked(ctx, photos, options.FingerprintHash); err != nil {
 		return Page{}, err
 	}
 

@@ -111,7 +111,7 @@ func (service *Service) AuthenticateSession(ctx context.Context, sessionID strin
 	var user AdminUser
 	err := service.db.WithContext(ctx).
 		Table("sessions").
-		Select("admin_users.id, admin_users.username, admin_users.password_hash, admin_users.created_at, admin_users.updated_at").
+		Select("admin_users.id, admin_users.username, admin_users.password_hash, admin_users.oidc_subject, admin_users.oidc_username, admin_users.oidc_email, admin_users.oidc_bound_at, admin_users.created_at, admin_users.updated_at").
 		Joins("INNER JOIN admin_users ON admin_users.id = sessions.admin_user_id").
 		Where("sessions.id = ? AND sessions.expires_at > CURRENT_TIMESTAMP", sessionID).
 		Take(&user).Error
@@ -134,6 +134,115 @@ func (service *Service) Logout(ctx context.Context, sessionID string) error {
 		return fmt.Errorf("delete session: %w", err)
 	}
 
+	return nil
+}
+
+func (service *Service) CreateSessionForUserID(ctx context.Context, userID int64, ttl time.Duration) (string, time.Time, error) {
+	if service.db == nil {
+		return "", time.Time{}, fmt.Errorf("database-backed sessions are not available")
+	}
+	sessionID, err := randomHex(32)
+	if err != nil {
+		return "", time.Time{}, err
+	}
+	expiresAt := time.Now().Add(ttl)
+	if err := service.db.WithContext(ctx).Create(&appdb.Session{ID: sessionID, AdminUserID: userID, ExpiresAt: expiresAt}).Error; err != nil {
+		return "", time.Time{}, fmt.Errorf("create session: %w", err)
+	}
+	return sessionID, expiresAt, nil
+}
+
+func (service *Service) GetOIDCStatus(ctx context.Context, username string, enabled bool, providerName string) (OIDCStatus, error) {
+	status := OIDCStatus{Enabled: enabled, ProviderName: providerName}
+	if service.db == nil {
+		return status, nil
+	}
+	var user AdminUser
+	err := service.db.WithContext(ctx).Model(&appdb.AdminUser{}).
+		Select("oidc_subject", "oidc_username", "oidc_email", "oidc_bound_at").
+		Where("username = ?", username).
+		Take(&user).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return status, fmt.Errorf("admin user not found")
+	}
+	if err != nil {
+		return status, fmt.Errorf("load oidc status: %w", err)
+	}
+	status.Bound = strings.TrimSpace(user.OIDCSubject) != ""
+	status.Subject = user.OIDCSubject
+	status.Username = user.OIDCUsername
+	status.Email = user.OIDCEmail
+	status.BoundAt = user.OIDCBoundAt
+	return status, nil
+}
+
+func (service *Service) UserByOIDCSubject(ctx context.Context, subject string) (AdminUser, bool, error) {
+	if service.db == nil || strings.TrimSpace(subject) == "" {
+		return AdminUser{}, false, nil
+	}
+	var user AdminUser
+	err := service.db.WithContext(ctx).Model(&appdb.AdminUser{}).
+		Where("oidc_subject = ?", subject).
+		Take(&user).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return AdminUser{}, false, nil
+	}
+	if err != nil {
+		return AdminUser{}, false, fmt.Errorf("load oidc user: %w", err)
+	}
+	return user, true, nil
+}
+
+func (service *Service) BindOIDC(ctx context.Context, username string, subject string, oidcUsername string, email string) error {
+	if service.db == nil {
+		return fmt.Errorf("database-backed admin login is not available")
+	}
+	subject = strings.TrimSpace(subject)
+	if subject == "" {
+		return fmt.Errorf("oidc subject is required")
+	}
+	current, found, err := service.UserByOIDCSubject(ctx, subject)
+	if err != nil {
+		return err
+	}
+	if found && current.Username != username {
+		return fmt.Errorf("this Keycloak account is already bound to another admin")
+	}
+	now := time.Now()
+	updates := map[string]any{
+		"oidc_subject":  subject,
+		"oidc_username": stringPtr(oidcUsername),
+		"oidc_email":    stringPtr(email),
+		"oidc_bound_at": now,
+		"updated_at":    gorm.Expr("CURRENT_TIMESTAMP"),
+	}
+	result := service.db.WithContext(ctx).Model(&appdb.AdminUser{}).Where("username = ?", username).Updates(updates)
+	if result.Error != nil {
+		return fmt.Errorf("bind oidc account: %w", result.Error)
+	}
+	if result.RowsAffected == 0 {
+		return fmt.Errorf("admin user not found")
+	}
+	return nil
+}
+
+func (service *Service) UnbindOIDC(ctx context.Context, username string) error {
+	if service.db == nil {
+		return fmt.Errorf("database-backed admin login is not available")
+	}
+	result := service.db.WithContext(ctx).Model(&appdb.AdminUser{}).Where("username = ?", username).Updates(map[string]any{
+		"oidc_subject":  nil,
+		"oidc_username": nil,
+		"oidc_email":    nil,
+		"oidc_bound_at": nil,
+		"updated_at":    gorm.Expr("CURRENT_TIMESTAMP"),
+	})
+	if result.Error != nil {
+		return fmt.Errorf("unbind oidc account: %w", result.Error)
+	}
+	if result.RowsAffected == 0 {
+		return fmt.Errorf("admin user not found")
+	}
 	return nil
 }
 
@@ -246,6 +355,14 @@ func ResetAdminPassword(ctx context.Context, dbConn *gorm.DB, username string, p
 	}
 
 	return password, nil
+}
+
+func stringPtr(value string) *string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return nil
+	}
+	return &value
 }
 
 func GeneratePassword() (string, error) {

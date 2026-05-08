@@ -45,14 +45,31 @@ import { VisibilityOff, Visibility as VisibilityIcon } from '@mui/icons-material
 export function EventDetailPage() {
   const eventId = Number(useParams().eventId);
   const [event, setEvent] = useState<EventCard | null>(null);
-  const [photos, setPhotos] = useState<Photo[]>([]);
-  const [page, setPage] = useState(1);
-  const [totalPages, setTotalPages] = useState(1);
+  const [publicPhotos, setPublicPhotos] = useState<Photo[]>([]);
+  const [privatePhotos, setPrivatePhotos] = useState<Photo[]>([]);
+  const [publicPage, setPublicPage] = useState(1);
+  const [privatePage, setPrivatePage] = useState(1);
+  const [publicTotalPages, setPublicTotalPages] = useState(1);
+  const [privateTotalPages, setPrivateTotalPages] = useState(1);
+  const [publicTotal, setPublicTotal] = useState(0);
+  const [privateTotal, setPrivateTotal] = useState(0);
+  const [publicPageSize, setPublicPageSize] = useState(() => {
+    if (typeof window === 'undefined') return 0;
+    return Number(window.localStorage.getItem('fluffcatch:gallery-public-page-size') || 0);
+  });
+  const [privatePageSize, setPrivatePageSize] = useState(() => {
+    if (typeof window === 'undefined') return 0;
+    return Number(window.localStorage.getItem('fluffcatch:gallery-private-page-size') || 0);
+  });
+  const [effectivePublicPageSize, setEffectivePublicPageSize] = useState(publicPageSize || 24);
+  const [effectivePrivatePageSize, setEffectivePrivatePageSize] = useState(privatePageSize || 24);
   const [previewIndex, setPreviewIndex] = useState(-1);
   const [submitOpen, setSubmitOpen] = useState(false);
   const [error, setError] = useState('');
   const [message, setMessage] = useState('');
   const [loading, setLoading] = useState(true);
+  const [publicLoading, setPublicLoading] = useState(false);
+  const [privateLoading, setPrivateLoading] = useState(false);
   const [authenticated, setAuthenticated] = useState(() => getCachedMe().authenticated);
   const [likeError, setLikeError] = useState('');
   const [shareOpen, setShareOpen] = useState(false);
@@ -77,17 +94,34 @@ export function EventDetailPage() {
   const [unlockingPassword, setUnlockingPassword] = useState(false);
   const [pendingProtectedPhoto, setPendingProtectedPhoto] = useState<Photo | null>(null);
 
-  function load(p?: number) {
-    const targetPage = p ?? page;
+  const photos = useMemo(() => [...publicPhotos, ...privatePhotos], [publicPhotos, privatePhotos]);
+
+  function load(options: { publicPage?: number; privatePage?: number; publicPageSize?: number; privatePageSize?: number; refreshEvent?: boolean } = {}) {
+    const targetPublicPage = options.publicPage ?? publicPage;
+    const targetPrivatePage = options.privatePage ?? privatePage;
+    const targetPublicPageSize = (options.publicPageSize ?? publicPageSize) || undefined;
+    const targetPrivatePageSize = (options.privatePageSize ?? privatePageSize) || undefined;
     setLoading(true);
     setError('');
-    return Promise.all([getEvent(eventId), getPhotos(eventId, authenticated, targetPage, 24)])
-      .then(([eventData, photoData]) => {
+    const eventPromise = options.refreshEvent === false && event ? Promise.resolve(event) : getEvent(eventId);
+    return Promise.all([
+      eventPromise,
+      getPhotos(eventId, authenticated, targetPublicPage, targetPublicPageSize, 'public'),
+      getPhotos(eventId, authenticated, targetPrivatePage, targetPrivatePageSize, 'private')
+    ])
+      .then(([eventData, publicData, privateData]) => {
         setEvent(eventData);
-        setPhotos(photoData.photos);
-        setPage(photoData.page);
-        setTotalPages(photoData.totalPages || 1);
-        return photoData.photos;
+        setPublicPhotos(publicData.photos);
+        setPrivatePhotos(privateData.photos);
+        setPublicPage(publicData.page);
+        setPrivatePage(privateData.page);
+        setPublicTotalPages(publicData.totalPages || 1);
+        setPrivateTotalPages(privateData.totalPages || 1);
+        setPublicTotal(publicData.total);
+        setPrivateTotal(privateData.total);
+        setEffectivePublicPageSize(publicData.pageSize || targetPublicPageSize || 24);
+        setEffectivePrivatePageSize(privateData.pageSize || targetPrivatePageSize || 24);
+        return [...publicData.photos, ...privateData.photos];
       })
       .catch((err: unknown) => {
         setError(err instanceof Error ? err.message : '加载失败');
@@ -96,16 +130,95 @@ export function EventDetailPage() {
       .finally(() => setLoading(false));
   }
 
-  function handlePageChange(_: React.ChangeEvent<unknown>, value: number) {
-    setPage(value);
+  function applyPublicPhotoPage(photoData: Awaited<ReturnType<typeof getPhotos>>) {
+    setPublicPhotos(photoData.photos);
+    setPublicPage(photoData.page);
+    setPublicTotalPages(photoData.totalPages || 1);
+    setPublicTotal(photoData.total);
+    setEffectivePublicPageSize(photoData.pageSize || 24);
+    return photoData.photos;
+  }
+
+  function applyPrivatePhotoPage(photoData: Awaited<ReturnType<typeof getPhotos>>) {
+    setPrivatePhotos(photoData.photos);
+    setPrivatePage(photoData.page);
+    setPrivateTotalPages(photoData.totalPages || 1);
+    setPrivateTotal(photoData.total);
+    setEffectivePrivatePageSize(photoData.pageSize || 24);
+    return photoData.photos;
+  }
+
+  function loadPublicPhotos(options: { page?: number; pageSize?: number } = {}) {
+    const targetPage = options.page ?? publicPage;
+    const targetPageSize = (options.pageSize ?? publicPageSize) || undefined;
+    setPublicLoading(true);
+    setError('');
+    return getPhotos(eventId, authenticated, targetPage, targetPageSize, 'public')
+      .then(applyPublicPhotoPage)
+      .catch((err: unknown) => {
+        setError(err instanceof Error ? err.message : '公开返图加载失败');
+        return [];
+      })
+      .finally(() => setPublicLoading(false));
+  }
+
+  function loadPrivatePhotos(options: { page?: number; pageSize?: number } = {}) {
+    const targetPage = options.page ?? privatePage;
+    const targetPageSize = (options.pageSize ?? privatePageSize) || undefined;
+    setPrivateLoading(true);
+    setError('');
+    return getPhotos(eventId, authenticated, targetPage, targetPageSize, 'private')
+      .then(applyPrivatePhotoPage)
+      .catch((err: unknown) => {
+        setError(err instanceof Error ? err.message : '非公开返图加载失败');
+        return [];
+      })
+      .finally(() => setPrivateLoading(false));
+  }
+
+  function refreshPhotoSections() {
+    setError('');
+    return Promise.all([loadPublicPhotos(), loadPrivatePhotos()]).then(([nextPublic, nextPrivate]) => [...nextPublic, ...nextPrivate]);
+  }
+
+  function handlePublicPageChange(_: React.ChangeEvent<unknown>, value: number) {
+    setPublicPage(value);
     setSelectedIds([]);
-    load(value);
-    window.scrollTo({ top: 0, behavior: 'smooth' });
+    void loadPublicPhotos({ page: value });
+  }
+
+  function handlePrivatePageChange(_: React.ChangeEvent<unknown>, value: number) {
+    setPrivatePage(value);
+    setSelectedIds([]);
+    void loadPrivatePhotos({ page: value });
+  }
+
+  function handlePublicPageSizeChange(event: SelectChangeEvent) {
+    const nextPageSize = Number(event.target.value) || 24;
+    setPublicPageSize(nextPageSize);
+    setEffectivePublicPageSize(nextPageSize);
+    setPublicPage(1);
+    if (typeof window !== 'undefined') {
+      window.localStorage.setItem('fluffcatch:gallery-public-page-size', String(nextPageSize));
+    }
+    void loadPublicPhotos({ page: 1, pageSize: nextPageSize });
+  }
+
+  function handlePrivatePageSizeChange(event: SelectChangeEvent) {
+    const nextPageSize = Number(event.target.value) || 24;
+    setPrivatePageSize(nextPageSize);
+    setEffectivePrivatePageSize(nextPageSize);
+    setPrivatePage(1);
+    if (typeof window !== 'undefined') {
+      window.localStorage.setItem('fluffcatch:gallery-private-page-size', String(nextPageSize));
+    }
+    void loadPrivatePhotos({ page: 1, pageSize: nextPageSize });
   }
 
   useEffect(() => {
-    setPage(1);
-    void load(1);
+    setPublicPage(1);
+    setPrivatePage(1);
+    void load({ publicPage: 1, privatePage: 1 });
   }, [eventId, authenticated]);
 
   useEffect(() => {
@@ -121,8 +234,7 @@ export function EventDetailPage() {
     return photo.contentType.toLowerCase().startsWith('video/');
   }
 
-  const publicPhotos = useMemo(() => photos.filter((photo) => photo.visibility === 'public'), [photos]);
-  const restrictedPhotos = useMemo(() => photos.filter((photo) => photo.visibility !== 'public'), [photos]);
+  const restrictedPhotos = privatePhotos;
 
   useEffect(() => {
     const unsubscribe = subscribeAuthState((payload) => setAuthenticated(payload.authenticated));
@@ -147,13 +259,13 @@ export function EventDetailPage() {
 
   async function handleLike(photo: Photo) {
     setLikeError('');
-    setPhotos((prev) => prev.map((item) => (item.id === photo.id ? { ...item, liked: true, likeCount: (item.likeCount || 0) + (item.liked ? 0 : 1) } : item)));
+    updatePhotoInLists(photo.id, (item) => ({ ...item, liked: true, likeCount: (item.likeCount || 0) + (item.liked ? 0 : 1) }));
     try {
       const result = await likePhoto(photo.id);
-      setPhotos((prev) => prev.map((item) => (item.id === photo.id ? { ...item, liked: result.liked, likeCount: result.likeCount } : item)));
+      updatePhotoInLists(photo.id, (item) => ({ ...item, liked: result.liked, likeCount: result.likeCount }));
     } catch (err) {
       setLikeError(err instanceof Error ? err.message : '点赞失败');
-      setPhotos((prev) => prev.map((item) => (item.id === photo.id ? photo : item)));
+      updatePhotoInLists(photo.id, () => photo);
     }
   }
 
@@ -169,7 +281,7 @@ export function EventDetailPage() {
       }
       setPrivateAccessUnlocked(true);
       setPrivateAccessPassword('');
-      const nextPhotos = await load();
+      const nextPhotos = await loadPrivatePhotos();
       const nextIndex = nextPhotos.findIndex((photo) => photo.id === targetID && photo.accessGranted);
       if (nextIndex < 0) {
         setPasswordError('已验证口令，但图片仍未解锁，请刷新后重试。');
@@ -261,7 +373,7 @@ export function EventDetailPage() {
       await batchDeletePhotos(selectedIds, headers);
       setMessage(`已删除 ${selectedIds.length} 张图片。`);
       setSelectedIds([]);
-      load();
+      void refreshPhotoSections();
     } catch (err) {
       setError(err instanceof Error ? err.message : '批量删除失败');
     }
@@ -279,7 +391,7 @@ export function EventDetailPage() {
     try {
       await deletePhoto(photo.id, headers);
       setSelectedIds((prev) => prev.filter((id) => id !== photo.id));
-      load();
+      removePhotoFromLists(photo.id);
     } catch (err) {
       setError(err instanceof Error ? err.message : '删除图片失败');
     }
@@ -294,19 +406,40 @@ export function EventDetailPage() {
     });
   }
 
+  function applyUpdatedPhoto(photo: Photo) {
+    setPublicPhotos((prev) => {
+      const without = prev.filter((item) => item.id !== photo.id);
+      return photo.visibility === 'public' ? upsertPhoto(without, photo) : without;
+    });
+    setPrivatePhotos((prev) => {
+      const without = prev.filter((item) => item.id !== photo.id);
+      return photo.visibility === 'private' ? upsertPhoto(without, photo) : without;
+    });
+  }
+
+  function removePhotoFromLists(photoId: number) {
+    setPublicPhotos((prev) => prev.filter((item) => item.id !== photoId));
+    setPrivatePhotos((prev) => prev.filter((item) => item.id !== photoId));
+  }
+
+  function updatePhotoInLists(photoId: number, updater: (photo: Photo) => Photo) {
+    setPublicPhotos((prev) => prev.map((item) => (item.id === photoId ? updater(item) : item)));
+    setPrivatePhotos((prev) => prev.map((item) => (item.id === photoId ? updater(item) : item)));
+  }
+
   async function handlePhotoFormSubmit(formEvent: React.FormEvent<HTMLFormElement>) {
     formEvent.preventDefault();
     if (!editingPhoto) return;
     setError('');
     try {
-      await updatePhoto(editingPhoto.id, {
+      const result = await updatePhoto(editingPhoto.id, {
         photographerName: photoForm.photographerName,
         tags: photoForm.tags.split(/[\s,，]+/).filter(Boolean),
         visibility: photoForm.visibility
       });
       setEditingPhoto(null);
       setMessage('图片属性已更新。');
-      load();
+      applyUpdatedPhoto(result.photo);
     } catch (err) {
       setError(err instanceof Error ? err.message : '保存图片属性失败');
     }
@@ -351,18 +484,32 @@ export function EventDetailPage() {
                   }}
                 />
               ) : (
-                <CardMedia
-                  component="img"
-                  image={photoURL(photo, 'thumbnail')}
+                <Box
                   sx={{
+                    alignItems: 'center',
                     aspectRatio: '4 / 3',
                     bgcolor: 'action.hover',
                     cursor: manageMode ? 'pointer' : locked ? 'pointer' : 'zoom-in',
-                    filter: locked ? 'blur(12px) saturate(0.9)' : undefined,
-                    objectFit: 'cover',
-                    transform: locked ? 'scale(1.06)' : undefined
+                    display: 'flex',
+                    justifyContent: 'center',
+                    overflow: 'hidden',
+                    width: '100%'
                   }}
-                />
+                >
+                  <CardMedia
+                    component="img"
+                    image={photoURL(photo, 'thumbnail')}
+                    sx={{
+                      display: 'block',
+                      filter: locked ? 'blur(12px) saturate(0.9)' : undefined,
+                      height: '100%',
+                      objectFit: 'cover',
+                      objectPosition: 'center',
+                      transform: locked ? 'scale(1.06)' : undefined,
+                      width: '100%'
+                    }}
+                  />
+                </Box>
               )}
               {video && (
                 <Box sx={{ alignItems: 'center', bgcolor: 'rgba(15,23,42,0.62)', borderRadius: 999, color: 'white', display: 'flex', left: 12, p: 0.75, position: 'absolute', top: 12 }}>
@@ -487,7 +634,7 @@ export function EventDetailPage() {
             <Stack direction="row" sx={{ flexWrap: 'wrap', gap: 1 }}>
               <Chip color={event.isPublic ? 'success' : 'default'} label={event.isPublic ? '公开画廊' : '隐藏'} size="small" />
               <Chip color={event.submissionEnabled ? 'primary' : 'default'} label={event.submissionEnabled ? '开放投稿' : '投稿关闭'} size="small" />
-              <Chip label={`${event.photoCount || photos.length} 张图片`} size="small" />
+              <Chip label={`${event.photoCount || publicTotal + privateTotal || photos.length} 张图片`} size="small" />
             </Stack>
             <Box>
               <Typography sx={{ fontWeight: 900 }} variant="h4">
@@ -616,7 +763,7 @@ export function EventDetailPage() {
               onClick={() => {
                 setError('');
                 batchUpdatePhotos(selectedIds, 'public')
-                  .then((result) => { setMessage(result.message); setSelectedIds([]); load(); })
+                  .then((result) => { setMessage(result.message); setSelectedIds([]); void refreshPhotoSections(); })
                   .catch((err: unknown) => setError(err instanceof Error ? err.message : '批量设置失败'));
               }}
               size="small"
@@ -629,7 +776,7 @@ export function EventDetailPage() {
               onClick={() => {
                 setError('');
                 batchUpdatePhotos(selectedIds, 'private')
-                  .then((result) => { setMessage(result.message); setSelectedIds([]); load(); })
+                  .then((result) => { setMessage(result.message); setSelectedIds([]); void refreshPhotoSections(); })
                   .catch((err: unknown) => setError(err instanceof Error ? err.message : '批量设置失败'));
               }}
               size="small"
@@ -660,36 +807,29 @@ export function EventDetailPage() {
         </Paper>
       )}
 
-      <PhotoSection title="公开返图" subtitle={`${publicPhotos.length} 个公开媒体文件`}>
-        {publicPhotos.length ? (
-          <Grid container spacing={2}>
-            {publicPhotos.map((photo) => renderPhotoCard(photo, photos.findIndex((item) => item.id === photo.id), false))}
-          </Grid>
-        ) : (
-          <Alert severity="info">这里暂时还没有公开返图。</Alert>
-        )}
+      <PhotoSection title="公开返图" subtitle={`${publicTotal} 个公开媒体文件`}>
+        <PhotoSectionBody loading={publicLoading}>
+          {publicPhotos.length ? (
+            <Grid container spacing={2}>
+              {publicPhotos.map((photo) => renderPhotoCard(photo, photos.findIndex((item) => item.id === photo.id), false))}
+            </Grid>
+          ) : (
+            <Alert severity="info">这里暂时还没有公开返图。</Alert>
+          )}
+        </PhotoSectionBody>
+        <SectionPagination count={publicTotalPages} effectivePageSize={effectivePublicPageSize} onChange={handlePublicPageChange} onPageSizeChange={handlePublicPageSizeChange} page={publicPage} />
       </PhotoSection>
 
-      {!!restrictedPhotos.length && (
-        <PhotoSection title="非公开返图" subtitle={authenticated ? '管理员可直接查看私密媒体' : privateAccessUnlocked ? '私密媒体已在当前浏览器会话中解锁' : '私密媒体需要输入这个兽聚的私密口令后查看'}>
-          <Grid container spacing={2}>
-            {restrictedPhotos.map((photo) => renderPhotoCard(photo, photos.findIndex((item) => item.id === photo.id), true))}
-          </Grid>
+      {(authenticated || privateTotal > 0) && (
+        <PhotoSection title="非公开返图" subtitle={authenticated ? `${privateTotal} 个私密媒体，管理员可直接查看` : privateAccessUnlocked ? `${privateTotal} 个私密媒体，已在当前浏览器会话中解锁` : `${privateTotal} 个私密媒体，需要输入这个兽聚的私密口令后查看`}>
+          <PhotoSectionBody loading={privateLoading}>
+            <Grid container spacing={2}>
+              {restrictedPhotos.map((photo) => renderPhotoCard(photo, photos.findIndex((item) => item.id === photo.id), true))}
+            </Grid>
+            {!restrictedPhotos.length && <Alert severity="info">这里暂时还没有非公开返图。</Alert>}
+          </PhotoSectionBody>
+          <SectionPagination count={privateTotalPages} effectivePageSize={effectivePrivatePageSize} onChange={handlePrivatePageChange} onPageSizeChange={handlePrivatePageSizeChange} page={privatePage} />
         </PhotoSection>
-      )}
-
-      {totalPages > 1 && (
-        <Stack sx={{ alignItems: 'center', py: 2 }}>
-          <Pagination
-            color="primary"
-            count={totalPages}
-            onChange={handlePageChange}
-            page={page}
-            showFirstButton
-            showLastButton
-            size="large"
-          />
-        </Stack>
       )}
 
       <ImagePreviewDialog
@@ -699,8 +839,8 @@ export function EventDetailPage() {
         onIndexChange={setPreviewIndex}
         open={previewIndex >= 0}
       />
-      <SubmissionDialog event={event} onClose={() => setSubmitOpen(false)} onSubmitted={load} open={submitOpen} />
-      <SubmissionReviewDialog event={event} onChanged={load} onClose={() => setReviewOpen(false)} open={reviewOpen} />
+      <SubmissionDialog event={event} onClose={() => setSubmitOpen(false)} onSubmitted={() => load({ publicPage: 1, privatePage: 1 })} open={submitOpen} />
+      <SubmissionReviewDialog event={event} onChanged={refreshPhotoSections} onClose={() => setReviewOpen(false)} open={reviewOpen} />
       <EventEditorDialog event={event} mode="edit" onClose={() => setEditorOpen(false)} onSaved={handleEventSaved} open={editorOpen} />
 
       <Dialog fullWidth maxWidth="xs" onClose={() => setPasswordDialogOpen(false)} open={passwordDialogOpen}>
@@ -816,6 +956,90 @@ function PhotoSection({ children, subtitle, title }: { children: React.ReactNode
       </Stack>
     </Paper>
   );
+}
+
+function PhotoSectionBody({ children, loading }: { children: React.ReactNode; loading: boolean }) {
+  return (
+    <Box sx={{ minHeight: 120, position: 'relative' }}>
+      {children}
+      {loading && (
+        <Box
+          sx={(theme) => ({
+            alignItems: 'center',
+            bgcolor: theme.palette.mode === 'dark' ? 'rgba(2, 6, 23, 0.46)' : 'rgba(255, 255, 255, 0.62)',
+            borderRadius: 1.5,
+            display: 'flex',
+            inset: 0,
+            justifyContent: 'center',
+            position: 'absolute',
+            zIndex: 3
+          })}
+        >
+          <CircularProgress size={30} />
+        </Box>
+      )}
+    </Box>
+  );
+}
+
+function SectionPagination({
+  count,
+  effectivePageSize,
+  onChange,
+  onPageSizeChange,
+  page
+}: {
+  count: number;
+  effectivePageSize: number;
+  onChange: (event: React.ChangeEvent<unknown>, value: number) => void;
+  onPageSizeChange: (event: SelectChangeEvent) => void;
+  page: number;
+}) {
+  return (
+    <Stack
+      direction={{ xs: 'column', sm: 'row' }}
+      sx={(theme) => ({
+        alignItems: 'center',
+        bgcolor: theme.palette.mode === 'dark' ? 'rgba(15, 23, 42, 0.9)' : 'rgba(255, 255, 255, 0.92)',
+        border: '1px solid',
+        borderColor: theme.palette.mode === 'dark' ? 'rgba(226, 232, 240, 0.22)' : 'divider',
+        borderRadius: 2,
+        boxShadow: theme.palette.mode === 'dark' ? '0 10px 28px rgba(0,0,0,0.32)' : '0 10px 28px rgba(15,23,42,0.08)',
+        gap: 1.5,
+        justifyContent: 'center',
+        mt: 1,
+        px: 1.5,
+        py: 1.25
+      })}
+    >
+      {count > 1 && (
+        <Pagination
+          color="primary"
+          count={count}
+          onChange={onChange}
+          page={Math.min(page, count)}
+          showFirstButton
+          showLastButton
+          size="large"
+        />
+      )}
+      <FormControl size="small" sx={{ minWidth: 132 }}>
+        <InputLabel>每页数量</InputLabel>
+        <Select label="每页数量" onChange={onPageSizeChange} value={String(effectivePageSize)}>
+          {[12, 24, 36, 48, 72, 100].map((size) => (
+            <MenuItem key={size} value={String(size)}>{size}</MenuItem>
+          ))}
+        </Select>
+      </FormControl>
+    </Stack>
+  );
+}
+
+function upsertPhoto(photos: Photo[], photo: Photo) {
+  if (photos.some((item) => item.id === photo.id)) {
+    return photos.map((item) => (item.id === photo.id ? photo : item));
+  }
+  return [photo, ...photos];
 }
 
 function formatContentType(contentType?: string) {

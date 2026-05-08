@@ -14,6 +14,7 @@ import (
 	"strconv"
 	"strings"
 
+	"fluffcatch/internal/gallery"
 	frontend "fluffcatch/www"
 
 	"github.com/gin-gonic/gin"
@@ -108,19 +109,35 @@ func parseIDParam(w stdhttp.ResponseWriter, r *stdhttp.Request, name string) (in
 	return id, true
 }
 
-func parsePagination(r *stdhttp.Request) (int, int) {
+func parsePagination(r *stdhttp.Request, defaultPageSize int) (int, int) {
 	page, err := strconv.Atoi(r.URL.Query().Get("page"))
 	if err != nil || page < 1 {
 		page = 1
 	}
 	pageSize, err := strconv.Atoi(r.URL.Query().Get("pageSize"))
 	if err != nil || pageSize < 1 {
+		pageSize = defaultPageSize
+	}
+	if pageSize < 1 {
 		pageSize = 24
 	}
 	if pageSize > 100 {
 		pageSize = 100
 	}
 	return page, pageSize
+}
+
+func parsePhotoVisibility(r *stdhttp.Request) (gallery.Visibility, bool) {
+	switch strings.ToLower(strings.TrimSpace(r.URL.Query().Get("visibility"))) {
+	case "", "all":
+		return "", true
+	case "public":
+		return gallery.VisibilityPublic, true
+	case "private":
+		return gallery.VisibilityPrivate, true
+	default:
+		return "", false
+	}
 }
 
 func parseTagsValue(value string) []string {

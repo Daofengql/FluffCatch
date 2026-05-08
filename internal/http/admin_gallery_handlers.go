@@ -16,8 +16,19 @@ func (server *Server) listAdminPhotos(w stdhttp.ResponseWriter, r *stdhttp.Reque
 	if !ok {
 		return
 	}
-	page, pageSize := parsePagination(r)
-	result, err := server.galleryService.ListForEventPage(r.Context(), id, true, "", page, pageSize)
+	defaultPageSize := server.defaultGalleryPageSize(r.Context())
+	page, pageSize := parsePagination(r, defaultPageSize)
+	visibility, ok := parsePhotoVisibility(r)
+	if !ok {
+		writeError(w, stdhttp.StatusBadRequest, "invalid visibility")
+		return
+	}
+	result, err := server.galleryService.ListForEventPageWithOptions(r.Context(), id, gallery.ListOptions{
+		Admin:      true,
+		Page:       page,
+		PageSize:   pageSize,
+		Visibility: visibility,
+	})
 	if err != nil {
 		writeError(w, stdhttp.StatusInternalServerError, "failed to list photos")
 		return

@@ -29,6 +29,8 @@ type Server struct {
 	galleryService  *gallery.Service
 	loginLimiter    *rateLimiter
 	captchaLimiter  *rateLimiter
+	uploadLimiter   chan struct{}
+	oidcStates      *oidcStateStore
 	blurCache       *blurPreviewCache
 }
 
@@ -105,6 +107,8 @@ func NewServer(cfg config.Config, dbConn *gorm.DB, storageManager *storage.Manag
 		galleryService:  gallery.NewService(dbConn, storageManager),
 		loginLimiter:    newRateLimiter(1, 5),
 		captchaLimiter:  newRateLimiter(2, 10),
+		uploadLimiter:   make(chan struct{}, hardMaxConcurrentUploads),
+		oidcStates:      newOIDCStateStore(),
 		blurCache:       newBlurPreviewCache(),
 	}
 }
@@ -137,9 +141,13 @@ func (server *Server) mountAPIRoutes(r *gin.Engine) {
 	authRouter.POST("/login", server.ginHandler(server.login))
 	authRouter.POST("/logout", server.ginHandler(server.logout))
 	authRouter.GET("/me", server.ginHandler(server.me))
+	authRouter.GET("/oidc", server.ginHandler(server.publicOIDCSettings))
+	authRouter.GET("/oidc/login", server.ginHandler(server.oidcLoginURL))
+	authRouter.GET("/oidc/callback", server.ginHandler(server.oidcCallback))
 
 	api.GET("/events", server.ginHandler(server.listPublicEvents))
 	api.GET("/site", server.ginHandler(server.publicSite))
+	api.GET("/settings/upload", server.ginHandler(server.publicUploadSettings))
 	api.GET("/events/:id", server.ginHandler(server.getPublicEvent))
 	api.GET("/events/:id/photos", server.ginHandler(server.listPublicPhotos))
 	api.POST("/events/:id/private-access", server.ginHandler(server.unlockEventPrivatePhotos))
@@ -164,6 +172,9 @@ func (server *Server) mountAPIRoutes(r *gin.Engine) {
 	admin.POST("/photos/batch-delete", server.ginHandler(server.batchDeletePhotos))
 	admin.POST("/photos/batch-update", server.ginHandler(server.batchUpdatePhotos))
 	admin.POST("/change-password", server.ginHandler(server.changePassword))
+	admin.GET("/oidc/status", server.ginHandler(server.oidcStatus))
+	admin.POST("/oidc/bind", server.ginHandler(server.oidcBindURL))
+	admin.DELETE("/oidc/bind", server.ginHandler(server.oidcUnbind))
 	admin.GET("/settings", server.ginHandler(server.getSettings))
 	admin.PUT("/settings/storage", server.ginHandler(server.updateStorageSettings))
 	admin.POST("/settings/storage/test", server.ginHandler(server.testStorageConnection))

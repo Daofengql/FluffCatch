@@ -96,7 +96,7 @@ go run ./cmd/fluffcatch --reset-admin-password --admin-password "new-password"
 
 重置完成后进程会提示重新启动，然后退出。
 
-`config.yaml` 只保留启动必需项和首次兜底配置。站点名称、站点副标题、Logo、存储策略与 OIDC 配置会保存到数据库 `settings` 表，运行时可通过后台接口更新。
+`config.yaml` 只保留启动必需项和首次兜底配置。站点名称、站点副标题、Logo、外部对象存储策略、OIDC 配置、上传限制、分页默认值与上传并发数会保存到数据库 `settings` 表，运行时可在后台设置中更新。
 
 ## 生产构建
 
@@ -124,7 +124,7 @@ cd www
 npm run dev
 ```
 
-前端服务模式可以通过 `FRONTEND_MODE` 或命令行参数 `--frontend-mode` 指定：
+前端服务模式不需要写入 `config.yaml`。开发调试时通过命令行参数 `--frontend-mode` 指定即可；环境变量 `FRONTEND_MODE` 仍保留给 Docker 或 systemd 等部署环境覆盖：
 
 - `auto`：优先使用内嵌前端，没有内嵌时读取 `www/dist`。
 - `embedded`：只使用内嵌前端，需要使用 `embed_frontend` 构建标签。

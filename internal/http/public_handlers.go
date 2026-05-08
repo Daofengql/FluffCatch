@@ -10,6 +10,8 @@ import (
 	"fluffcatch/internal/uploads"
 )
 
+const hardMaxConcurrentUploads = 8
+
 func (server *Server) publicSite(w stdhttp.ResponseWriter, r *stdhttp.Request) {
 	current, err := server.settingsService.Load(r.Context())
 	if err != nil {
@@ -17,6 +19,15 @@ func (server *Server) publicSite(w stdhttp.ResponseWriter, r *stdhttp.Request) {
 		return
 	}
 	writeJSON(w, stdhttp.StatusOK, current.Site)
+}
+
+func (server *Server) publicUploadSettings(w stdhttp.ResponseWriter, r *stdhttp.Request) {
+	upload, err := server.currentUploadSettings(r.Context())
+	if err != nil {
+		writeError(w, stdhttp.StatusInternalServerError, "failed to load upload settings")
+		return
+	}
+	writeJSON(w, stdhttp.StatusOK, upload)
 }
 
 func (server *Server) health(w stdhttp.ResponseWriter, r *stdhttp.Request) {
@@ -104,6 +115,10 @@ func (server *Server) createSubmission(w stdhttp.ResponseWriter, r *stdhttp.Requ
 		writeError(w, stdhttp.StatusInternalServerError, "failed to load upload settings")
 		return
 	}
+	if !server.acquireUploadSlot(w, uploadSettings.MaxConcurrentUploads) {
+		return
+	}
+	defer server.releaseUploadSlot()
 	maxImageBytes := int64(uploadSettings.MaxFileSizeMB) * 1024 * 1024
 	maxVideoBytes := int64(uploadSettings.MaxVideoSizeMB) * 1024 * 1024
 	maxBatchBytes := max(maxImageBytes, maxVideoBytes) * int64(uploadSettings.MaxFilesPerUpload)
@@ -198,14 +213,61 @@ func (server *Server) createSubmission(w stdhttp.ResponseWriter, r *stdhttp.Requ
 	})
 }
 
+func (server *Server) acquireUploadSlot(w stdhttp.ResponseWriter, configuredLimit int) bool {
+	if server.uploadLimiter == nil {
+		return true
+	}
+	limit := configuredLimit
+	if limit <= 0 {
+		limit = 1
+	}
+	if limit > hardMaxConcurrentUploads {
+		limit = hardMaxConcurrentUploads
+	}
+	if len(server.uploadLimiter) >= limit {
+		writeError(w, stdhttp.StatusTooManyRequests, fmt.Sprintf("too many concurrent uploads, maximum is %d", limit))
+		return false
+	}
+	select {
+	case server.uploadLimiter <- struct{}{}:
+		return true
+	default:
+		writeError(w, stdhttp.StatusTooManyRequests, fmt.Sprintf("too many concurrent uploads, maximum is %d", limit))
+		return false
+	}
+}
+
+func (server *Server) releaseUploadSlot() {
+	if server.uploadLimiter == nil {
+		return
+	}
+	select {
+	case <-server.uploadLimiter:
+	default:
+	}
+}
+
 func (server *Server) listPublicPhotos(w stdhttp.ResponseWriter, r *stdhttp.Request) {
 	id, ok := parseIDParam(w, r, "id")
 	if !ok {
 		return
 	}
 
-	page, pageSize := parsePagination(r)
-	result, err := server.galleryService.ListForEventPageWithAccess(r.Context(), id, false, server.eventPrivateAccessUnlocked(r, id), viewerFingerprintHash(r), page, pageSize)
+	defaultPageSize := server.defaultGalleryPageSize(r.Context())
+	page, pageSize := parsePagination(r, defaultPageSize)
+	visibility, ok := parsePhotoVisibility(r)
+	if !ok {
+		writeError(w, stdhttp.StatusBadRequest, "invalid visibility")
+		return
+	}
+	result, err := server.galleryService.ListForEventPageWithOptions(r.Context(), id, gallery.ListOptions{
+		Admin:           false,
+		PrivateAccess:   server.eventPrivateAccessUnlocked(r, id),
+		FingerprintHash: viewerFingerprintHash(r),
+		Page:            page,
+		PageSize:        pageSize,
+		Visibility:      visibility,
+	})
 	if err != nil {
 		writeError(w, stdhttp.StatusInternalServerError, "failed to list photos")
 		return

@@ -389,9 +389,13 @@ func NormalizeStoragePolicy(policy StoragePolicy) (StoragePolicy, error) {
 
 func normalizeOIDC(oidc OIDCSettings) OIDCSettings {
 	oidc.Provider = strings.TrimSpace(oidc.Provider)
+	if oidc.Provider == "" {
+		oidc.Provider = "Keycloak"
+	}
 	oidc.IssuerURL = strings.TrimSpace(oidc.IssuerURL)
 	oidc.ClientID = strings.TrimSpace(oidc.ClientID)
-	oidc.RedirectURL = strings.TrimSpace(oidc.RedirectURL)
+	oidc.ClientSecret = strings.TrimSpace(oidc.ClientSecret)
+	oidc.RedirectURL = ""
 	return oidc
 }
 
@@ -456,6 +460,12 @@ func normalizeUpload(upload UploadSettings) UploadSettings {
 	if upload.MaxFilesPerUpload <= 0 {
 		upload.MaxFilesPerUpload = 20
 	}
+	if upload.DefaultPageSize <= 0 {
+		upload.DefaultPageSize = 24
+	}
+	if upload.MaxConcurrentUploads <= 0 {
+		upload.MaxConcurrentUploads = 2
+	}
 	if upload.MaxFileSizeMB > 1024 {
 		upload.MaxFileSizeMB = 1024
 	}
@@ -464,6 +474,12 @@ func normalizeUpload(upload UploadSettings) UploadSettings {
 	}
 	if upload.MaxFilesPerUpload > 200 {
 		upload.MaxFilesPerUpload = 200
+	}
+	if upload.DefaultPageSize > 100 {
+		upload.DefaultPageSize = 100
+	}
+	if upload.MaxConcurrentUploads > 8 {
+		upload.MaxConcurrentUploads = 8
 	}
 	return upload
 }

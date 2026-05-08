@@ -111,9 +111,11 @@ type SiteSettings struct {
 }
 
 type UploadSettings struct {
-	MaxFileSizeMB     int `json:"maxFileSizeMb"`
-	MaxVideoSizeMB    int `json:"maxVideoSizeMb"`
-	MaxFilesPerUpload int `json:"maxFilesPerUpload"`
+	MaxFileSizeMB        int `json:"maxFileSizeMb"`
+	MaxVideoSizeMB       int `json:"maxVideoSizeMb"`
+	MaxFilesPerUpload    int `json:"maxFilesPerUpload"`
+	DefaultPageSize      int `json:"defaultPageSize"`
+	MaxConcurrentUploads int `json:"maxConcurrentUploads"`
 }
 
 const DefaultHomeMarkdown = ""
@@ -159,9 +161,11 @@ func FromConfig(cfg config.Config) RuntimeSettings {
 			FooterText:        fmt.Sprintf("© %d %s. All rights reserved.", time.Now().Year(), cfg.App.Name),
 		},
 		Upload: UploadSettings{
-			MaxFileSizeMB:     cfg.Upload.MaxSizeMB,
-			MaxVideoSizeMB:    cfg.Upload.MaxVideoSizeMB,
-			MaxFilesPerUpload: cfg.Upload.MaxFilesPerUpload,
+			MaxFileSizeMB:        cfg.Upload.MaxSizeMB,
+			MaxVideoSizeMB:       cfg.Upload.MaxVideoSizeMB,
+			MaxFilesPerUpload:    cfg.Upload.MaxFilesPerUpload,
+			DefaultPageSize:      cfg.Upload.DefaultPageSize,
+			MaxConcurrentUploads: cfg.Upload.MaxConcurrentUploads,
 		},
 	}
 }

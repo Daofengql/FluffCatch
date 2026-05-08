@@ -24,6 +24,7 @@ func (server *Server) getSettings(w stdhttp.ResponseWriter, r *stdhttp.Request) 
 	}
 
 	sanitized := current.Sanitize()
+	sanitized.OIDC.RedirectURL = server.oidcRedirectURL(r)
 	sanitized.StoragePolicies = runtimeStoragePolicies.Sanitize()
 	writeJSON(w, stdhttp.StatusOK, map[string]any{
 		"settings": sanitized,
@@ -104,6 +105,7 @@ func (server *Server) updateOIDCSettings(w stdhttp.ResponseWriter, r *stdhttp.Re
 		writeError(w, stdhttp.StatusBadRequest, err.Error())
 		return
 	}
+	updated.RedirectURL = server.oidcRedirectURL(r)
 
 	writeJSON(w, stdhttp.StatusOK, map[string]any{
 		"oidc":    updated.Sanitize(),
@@ -165,5 +167,22 @@ func (server *Server) currentUploadSettings(ctx context.Context) (settings.Uploa
 	if upload.MaxFilesPerUpload <= 0 {
 		upload.MaxFilesPerUpload = server.cfg.Upload.MaxFilesPerUpload
 	}
+	if upload.DefaultPageSize <= 0 {
+		upload.DefaultPageSize = server.cfg.Upload.DefaultPageSize
+	}
+	if upload.MaxConcurrentUploads <= 0 {
+		upload.MaxConcurrentUploads = server.cfg.Upload.MaxConcurrentUploads
+	}
 	return upload, nil
+}
+
+func (server *Server) defaultGalleryPageSize(ctx context.Context) int {
+	upload, err := server.currentUploadSettings(ctx)
+	if err != nil || upload.DefaultPageSize <= 0 {
+		if server.cfg.Upload.DefaultPageSize > 0 {
+			return server.cfg.Upload.DefaultPageSize
+		}
+		return 24
+	}
+	return upload.DefaultPageSize
 }

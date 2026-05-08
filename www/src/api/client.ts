@@ -115,6 +115,32 @@ export type UploadSettings = {
   maxFileSizeMb: number;
   maxVideoSizeMb: number;
   maxFilesPerUpload: number;
+  defaultPageSize: number;
+  maxConcurrentUploads: number;
+};
+
+export type OIDCSettings = {
+  enabled: boolean;
+  provider: string;
+  issuerUrl: string;
+  clientId: string;
+  clientSecret?: string;
+  redirectUrl: string;
+};
+
+export type PublicOIDCSettings = {
+  enabled: boolean;
+  providerName: string;
+};
+
+export type OIDCStatus = {
+  enabled: boolean;
+  bound: boolean;
+  subject?: string;
+  username?: string;
+  email?: string;
+  boundAt?: string;
+  providerName?: string;
 };
 
 export type MeResponse = {
@@ -126,6 +152,7 @@ export type AdminSettingsResponse = {
   settings: {
     site: SiteSettings;
     upload: UploadSettings;
+    oidc: OIDCSettings;
     storagePolicies: {
       activePolicyId: string;
       policies: StoragePolicy[];
@@ -244,6 +271,14 @@ export async function getSiteSettings(): Promise<SiteSettings> {
   });
 }
 
+export async function getUploadSettings(): Promise<UploadSettings> {
+  return request<UploadSettings>('/api/v1/settings/upload', undefined, {
+    dedupe: true,
+    tags: [SITE_CACHE_TAG],
+    ttlMs: 30_000
+  });
+}
+
 export async function login(username: string, password: string, captchaId: string, captchaAnswer: string) {
   const result = await request<{ authenticated: boolean; username?: string; message: string }>('/api/v1/auth/login', {
     method: 'POST',
@@ -267,6 +302,18 @@ export async function getMe() {
   });
 }
 
+export async function getPublicOIDCSettings() {
+  return request<PublicOIDCSettings>('/api/v1/auth/oidc', undefined, {
+    dedupe: true,
+    tags: [SITE_CACHE_TAG],
+    ttlMs: 30_000
+  });
+}
+
+export async function getOIDCLoginURL() {
+  return request<{ url: string }>('/api/v1/auth/oidc/login');
+}
+
 export async function getEvents(admin = false): Promise<EventCard[]> {
   const payload = await request<{ events?: EventCard[] } | null>(admin ? '/api/v1/admin/events' : '/api/v1/events', undefined, {
     dedupe: true,
@@ -281,14 +328,20 @@ export async function getEvent(id: number): Promise<EventCard> {
   return payload.event;
 }
 
-export async function getPhotos(eventId: number, admin = false, page = 1, pageSize = 24): Promise<PhotoPage> {
-  const query = new URLSearchParams({ page: String(page), pageSize: String(pageSize) });
+export async function getPhotos(eventId: number, admin = false, page = 1, pageSize?: number, visibility: 'all' | Photo['visibility'] = 'all'): Promise<PhotoPage> {
+  const query = new URLSearchParams({ page: String(page) });
+  if (pageSize && pageSize > 0) {
+    query.set('pageSize', String(pageSize));
+  }
+  if (visibility !== 'all') {
+    query.set('visibility', visibility);
+  }
   const payload = await request<PhotoPage>(admin ? `/api/v1/admin/events/${eventId}/photos?${query}` : `/api/v1/events/${eventId}/photos?${query}`);
   return {
     photos: payload.photos ?? [],
     total: payload.total ?? 0,
     page: payload.page ?? page,
-    pageSize: payload.pageSize ?? pageSize,
+    pageSize: payload.pageSize ?? pageSize ?? 24,
     totalPages: payload.totalPages ?? 0
   };
 }
@@ -489,6 +542,27 @@ export async function updateUploadSettings(upload: UploadSettings) {
   });
   invalidateCacheTags(ADMIN_SETTINGS_CACHE_TAG);
   return result;
+}
+
+export async function updateOIDCSettings(oidc: OIDCSettings) {
+  const result = await request<{ oidc: OIDCSettings; message: string }>('/api/v1/admin/settings/oidc', {
+    method: 'PUT',
+    body: JSON.stringify(oidc)
+  });
+  invalidateCacheTags(SITE_CACHE_TAG, ADMIN_SETTINGS_CACHE_TAG);
+  return result;
+}
+
+export async function getOIDCStatus() {
+  return request<OIDCStatus>('/api/v1/admin/oidc/status');
+}
+
+export async function getOIDCBindURL() {
+  return request<{ url: string }>('/api/v1/admin/oidc/bind', { method: 'POST' });
+}
+
+export async function unbindOIDC() {
+  return request<{ message: string }>('/api/v1/admin/oidc/bind', { method: 'DELETE' });
 }
 
 export async function uploadSiteLogo(file: File) {

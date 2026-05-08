@@ -30,32 +30,7 @@ storage:
   driver: local
   local_path: data/uploads
   public_prefix: /media
-  public_base_url: ""
-  s3:
-    endpoint: ""
-    bucket: ""
-    region: us-east-1
-    access_key: ""
-    secret_key: ""
-    use_ssl: false
-    account_id: ""
 
 auth:
   admin_username: admin
   session_secret: change-me-in-production
-
-oidc:
-  enabled: false
-  provider: ""
-  issuer_url: ""
-  client_id: ""
-  client_secret: ""
-  redirect_url: ""
-
-upload:
-  max_size_mb: 20
-  max_files_per_upload: 20
-
-frontend:
-  mode: auto
-  static_root: www/dist

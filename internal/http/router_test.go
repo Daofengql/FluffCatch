@@ -116,8 +116,9 @@ func TestGetSettingsReturnsRuntimeStoragePolicy(t *testing.T) {
 			AdminUsername: "admin",
 		},
 		Upload: config.UploadConfig{
-			MaxSizeMB:         20,
-			MaxFilesPerUpload: 20,
+			MaxSizeMB:            20,
+			MaxFilesPerUpload:    20,
+			MaxConcurrentUploads: 2,
 		},
 		Frontend: config.FrontendConfig{
 			Mode:       "disabled",
@@ -225,8 +226,9 @@ func testServer(t *testing.T) *Server {
 			AdminUsername: "admin",
 		},
 		Upload: config.UploadConfig{
-			MaxSizeMB:         20,
-			MaxFilesPerUpload: 20,
+			MaxSizeMB:            20,
+			MaxFilesPerUpload:    20,
+			MaxConcurrentUploads: 2,
 		},
 		Frontend: config.FrontendConfig{
 			Mode:       "disabled",

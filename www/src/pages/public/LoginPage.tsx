@@ -1,15 +1,18 @@
-import { Refresh } from '@mui/icons-material';
-import { Alert, Box, Button, IconButton, Paper, Stack, TextField, Typography } from '@mui/material';
+import { Login, Refresh } from '@mui/icons-material';
+import { Alert, Box, Button, Divider, IconButton, Paper, Stack, TextField, Typography } from '@mui/material';
 import { type FormEvent, useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { getCaptcha, type CaptchaChallenge } from '../../api/client';
+import { getCaptcha, getOIDCLoginURL, getPublicOIDCSettings, type CaptchaChallenge, type PublicOIDCSettings } from '../../api/client';
 import { getCachedMe, loginAdmin, refreshMe } from '../../api/authState';
 
 export function LoginPage() {
   const navigate = useNavigate();
   const [error, setError] = useState('');
+  const [message, setMessage] = useState('');
   const [captcha, setCaptcha] = useState<CaptchaChallenge | null>(null);
+  const [oidcSettings, setOIDCSettings] = useState<PublicOIDCSettings | null>(null);
   const [submitting, setSubmitting] = useState(false);
+  const [oidcSubmitting, setOIDCSubmitting] = useState(false);
 
   async function refreshCaptcha() {
     setCaptcha(await getCaptcha());
@@ -17,6 +20,41 @@ export function LoginPage() {
 
   useEffect(() => {
     let cancelled = false;
+    const params = new URLSearchParams(window.location.search);
+    const oidcSuccess = params.get('oidc_success');
+    const oidcError = params.get('oidc_error');
+
+    if (oidcSuccess || oidcError) {
+      window.history.replaceState({}, '', window.location.pathname);
+    }
+
+    if (oidcError) {
+      setError(oidcError);
+    }
+
+    getPublicOIDCSettings()
+      .then((settings) => {
+        if (!cancelled) setOIDCSettings(settings);
+      })
+      .catch(() => {
+        if (!cancelled) setOIDCSettings({ enabled: false, providerName: 'Keycloak' });
+      });
+
+    if (oidcSuccess) {
+      setMessage(oidcSuccess);
+      refreshMe(true)
+        .then((payload) => {
+          if (!cancelled && payload.authenticated) {
+            navigate('/admin/events', { replace: true });
+          }
+        })
+        .catch(() => {
+          if (!cancelled) setError('OIDC 登录状态校验失败，请重试');
+        });
+      return () => {
+        cancelled = true;
+      };
+    }
 
     if (getCachedMe().authenticated) {
       navigate('/admin/events', { replace: true });
@@ -44,6 +82,20 @@ export function LoginPage() {
       cancelled = true;
     };
   }, [navigate]);
+
+  async function handleOIDCLogin() {
+    if (oidcSubmitting) return;
+    setError('');
+    setMessage('');
+    setOIDCSubmitting(true);
+    try {
+      const result = await getOIDCLoginURL();
+      window.location.href = result.url;
+    } catch (err) {
+      setError(err instanceof Error ? err.message : '发起 OIDC 登录失败');
+      setOIDCSubmitting(false);
+    }
+  }
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -79,6 +131,7 @@ export function LoginPage() {
               输入账号、密码和图片验证码进入后台。
             </Typography>
           </Box>
+          {message && <Alert severity="success">{message}</Alert>}
           {error && <Alert severity="error">{error}</Alert>}
           <TextField autoComplete="username" label="用户名" name="username" />
           <TextField autoComplete="current-password" label="密码" name="password" type="password" />
@@ -105,6 +158,14 @@ export function LoginPage() {
           <Button disabled={!captcha || submitting} size="large" type="submit" variant="contained">
             {submitting ? '登录中...' : '登录'}
           </Button>
+          {oidcSettings?.enabled && (
+            <>
+              <Divider>或</Divider>
+              <Button disabled={oidcSubmitting} onClick={() => void handleOIDCLogin()} size="large" startIcon={<Login />} variant="outlined">
+                {oidcSubmitting ? '跳转中...' : `使用 ${oidcSettings.providerName || 'Keycloak'} 登录`}
+              </Button>
+            </>
+          )}
         </Stack>
       </Paper>
     </Box>

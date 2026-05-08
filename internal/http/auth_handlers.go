@@ -55,7 +55,13 @@ func (server *Server) login(w stdhttp.ResponseWriter, r *stdhttp.Request) {
 		return
 	}
 
-	secure := r.TLS != nil || server.cfg.App.Env == "production"
+	setSessionCookie(w, r, server.cfg.App.Env, sessionID, expiresAt)
+
+	writeJSON(w, stdhttp.StatusOK, result)
+}
+
+func setSessionCookie(w stdhttp.ResponseWriter, r *stdhttp.Request, env string, sessionID string, expiresAt time.Time) {
+	secure := r.TLS != nil || env == "production"
 	stdhttp.SetCookie(w, &stdhttp.Cookie{
 		Name:     "fluffcatch_session",
 		Value:    sessionID,
@@ -65,8 +71,6 @@ func (server *Server) login(w stdhttp.ResponseWriter, r *stdhttp.Request) {
 		SameSite: stdhttp.SameSiteLaxMode,
 		Secure:   secure,
 	})
-
-	writeJSON(w, stdhttp.StatusOK, result)
 }
 
 func (server *Server) logout(w stdhttp.ResponseWriter, r *stdhttp.Request) {

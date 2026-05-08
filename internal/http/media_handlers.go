@@ -4,6 +4,7 @@ import (
 	"context"
 	"io"
 	stdhttp "net/http"
+	urlpath "path"
 	"strconv"
 	"strings"
 	"time"
@@ -97,18 +98,22 @@ func (server *Server) servePhotoMedia(w stdhttp.ResponseWriter, r *stdhttp.Reque
 	}
 
 	key := photo.ObjectKey
+	contentType := photo.ContentType
+	contentLength := photo.SizeBytes
 	if variant == "thumbnail" {
 		if photo.ThumbnailKey == "" {
 			writeError(w, stdhttp.StatusNotFound, "media not found")
 			return
 		}
 		key = photo.ThumbnailKey
+		contentType = thumbnailContentType(key)
+		contentLength = -1
 	}
 	if variant == "blur" {
 		server.serveBlurredPhotoPreview(w, r, photo)
 		return
 	}
-	server.serveStoredObject(w, r, photo.StoragePolicyID, key, photo.ContentType, photo.SizeBytes, photo.Visibility == gallery.VisibilityPublic)
+	server.serveStoredObject(w, r, photo.StoragePolicyID, key, contentType, contentLength, photo.Visibility == gallery.VisibilityPublic)
 }
 
 func (server *Server) serveBlurredPhotoPreview(w stdhttp.ResponseWriter, r *stdhttp.Request, photo gallery.Photo) {
@@ -154,6 +159,23 @@ func writeBlurredPreview(w stdhttp.ResponseWriter, preview []byte, contentType s
 	w.Header().Set("Content-Length", strconv.Itoa(len(preview)))
 	w.Header().Set("Cache-Control", "private, max-age=300")
 	_, _ = w.Write(preview)
+}
+
+func thumbnailContentType(key string) string {
+	switch strings.ToLower(urlpath.Ext(key)) {
+	case ".jpg", ".jpeg":
+		return "image/jpeg"
+	case ".png":
+		return "image/png"
+	case ".gif":
+		return "image/gif"
+	case ".webp":
+		return "image/webp"
+	case ".avif":
+		return "image/avif"
+	default:
+		return "image/jpeg"
+	}
 }
 
 func (server *Server) serveStoredObject(w stdhttp.ResponseWriter, r *stdhttp.Request, policyID string, key string, contentType string, contentLength int64, public bool) {

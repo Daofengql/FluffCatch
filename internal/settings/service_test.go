@@ -136,8 +136,11 @@ func TestUpdateUploadNormalizesLimits(t *testing.T) {
 	if upload.MaxFilesPerUpload != 20 {
 		t.Fatalf("expected default max files 20, got %d", upload.MaxFilesPerUpload)
 	}
+	if upload.MaxConcurrentUploads != 2 {
+		t.Fatalf("expected default concurrent uploads 2, got %d", upload.MaxConcurrentUploads)
+	}
 
-	upload, err = service.UpdateUpload(context.Background(), UploadSettings{MaxFileSizeMB: 2048, MaxVideoSizeMB: 20000, MaxFilesPerUpload: 500})
+	upload, err = service.UpdateUpload(context.Background(), UploadSettings{MaxFileSizeMB: 2048, MaxVideoSizeMB: 20000, MaxFilesPerUpload: 500, MaxConcurrentUploads: 99})
 	if err != nil {
 		t.Fatalf("UpdateUpload() returned error for high limits: %v", err)
 	}
@@ -149,6 +152,9 @@ func TestUpdateUploadNormalizesLimits(t *testing.T) {
 	}
 	if upload.MaxVideoSizeMB != 10240 {
 		t.Fatalf("expected capped max video size 10240, got %d", upload.MaxVideoSizeMB)
+	}
+	if upload.MaxConcurrentUploads != 8 {
+		t.Fatalf("expected capped concurrent uploads 8, got %d", upload.MaxConcurrentUploads)
 	}
 }
 
