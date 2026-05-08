@@ -173,6 +173,43 @@ func (service *Service) UpdatePhoto(ctx context.Context, photoID int64, req Upda
 	return photo, nil
 }
 
+func (service *Service) BatchUpdatePhotos(ctx context.Context, req BatchUpdatePhotosRequest) (int, error) {
+	if req.Visibility == "" {
+		req.Visibility = VisibilityPublic
+	}
+	switch req.Visibility {
+	case VisibilityPublic, VisibilityPrivate:
+	default:
+		return 0, fmt.Errorf("unsupported visibility %q", req.Visibility)
+	}
+	if len(req.PhotoIDs) == 0 {
+		return 0, nil
+	}
+
+	placeholders := make([]string, len(req.PhotoIDs))
+	idArgs := make([]any, len(req.PhotoIDs))
+	for i, id := range req.PhotoIDs {
+		placeholders[i] = "?"
+		idArgs[i] = id
+	}
+
+	countArgs := make([]any, 0, len(req.PhotoIDs)+1)
+	countArgs = append(countArgs, req.Visibility)
+	countArgs = append(countArgs, idArgs...)
+	var matched int
+	if err := service.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM photos WHERE visibility <> ? AND id IN ("+strings.Join(placeholders, ",")+")", countArgs...).Scan(&matched); err != nil {
+		return 0, fmt.Errorf("count photos for batch update: %w", err)
+	}
+	if matched == 0 {
+		return 0, nil
+	}
+
+	if _, err := service.db.ExecContext(ctx, "UPDATE photos SET visibility = ? WHERE id IN ("+strings.Join(placeholders, ",")+")", countArgs...); err != nil {
+		return 0, fmt.Errorf("batch update photos: %w", err)
+	}
+	return matched, nil
+}
+
 func (service *Service) DeletePhoto(ctx context.Context, photoID int64) (bool, []storage.StoredObject, error) {
 	photo, found, err := service.Get(ctx, photoID)
 	if err != nil {

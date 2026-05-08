@@ -30,6 +30,11 @@ type LoginResponse struct {
 	Username      string `json:"username,omitempty"`
 }
 
+type ChangePasswordRequest struct {
+	CurrentPassword string `json:"currentPassword"`
+	NewPassword     string `json:"newPassword"`
+}
+
 type MeResponse struct {
 	Authenticated bool   `json:"authenticated"`
 	Username      string `json:"username,omitempty"`

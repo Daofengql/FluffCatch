@@ -51,6 +51,11 @@ type UpdatePhotoRequest struct {
 	Tags             []string   `json:"tags"`
 }
 
+type BatchUpdatePhotosRequest struct {
+	PhotoIDs   []int64    `json:"photoIds"`
+	Visibility Visibility `json:"visibility"`
+}
+
 type LikeResult struct {
 	PhotoID   int64 `json:"photoId"`
 	LikeCount int64 `json:"likeCount"`

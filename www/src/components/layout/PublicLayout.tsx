@@ -255,8 +255,10 @@ function PublicLayoutFooter({ site }: { site: SiteSettings }) {
         borderTop: '1px solid',
         borderColor: 'rgba(255, 255, 255, 0.12)',
         color: 'rgba(255, 255, 255, 0.76)',
+        position: 'relative',
         px: { xs: 2, sm: 3 },
-        py: 2.5
+        py: 2.5,
+        zIndex: 1
       }}
     >
       <Container maxWidth="xl">

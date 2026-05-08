@@ -52,9 +52,20 @@ func (processor NoopProcessor) GenerateThumbnail(ctx context.Context, content io
 	}, nil
 }
 
+const maxDecodeMegapixels = 80
+
 func GenerateThumbnailBytes(content []byte, maxDimension int) ([]byte, string, error) {
 	if maxDimension <= 0 {
 		maxDimension = 480
+	}
+
+	cfg, _, err := stdimage.DecodeConfig(bytes.NewReader(content))
+	if err != nil {
+		return nil, "", fmt.Errorf("decode image config: %w", err)
+	}
+	mp := float64(cfg.Width) * float64(cfg.Height) / 1_000_000
+	if mp > maxDecodeMegapixels {
+		return nil, "", fmt.Errorf("image too large (%.0f MP, max %d MP)", mp, maxDecodeMegapixels)
 	}
 
 	source, _, err := stdimage.Decode(bytes.NewReader(content))
@@ -97,6 +108,15 @@ func GenerateThumbnailBytes(content []byte, maxDimension int) ([]byte, string, e
 func GenerateBlurredPreviewBytes(content []byte, maxDimension int) ([]byte, string, error) {
 	if maxDimension <= 0 {
 		maxDimension = 360
+	}
+
+	cfg, _, err := stdimage.DecodeConfig(bytes.NewReader(content))
+	if err != nil {
+		return nil, "", fmt.Errorf("decode image config: %w", err)
+	}
+	mp := float64(cfg.Width) * float64(cfg.Height) / 1_000_000
+	if mp > maxDecodeMegapixels {
+		return nil, "", fmt.Errorf("image too large (%.0f MP, max %d MP)", mp, maxDecodeMegapixels)
 	}
 
 	source, _, err := stdimage.Decode(bytes.NewReader(content))

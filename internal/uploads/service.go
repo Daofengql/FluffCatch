@@ -33,6 +33,7 @@ type FileUpload struct {
 	SubmissionPassword string
 	PhotographerName   string
 	Tags               []string
+	Visibility         string
 }
 
 type storedUpload struct {
@@ -103,6 +104,13 @@ func (service *Service) CreateWithLimit(ctx context.Context, eventID int64, uplo
 	return created, nil
 }
 
+func visibilityOrDefault(v string) string {
+	if v == string(gallery.VisibilityPublic) || v == string(gallery.VisibilityPrivate) {
+		return v
+	}
+	return string(gallery.VisibilityPublic)
+}
+
 func (service *Service) CreateApproved(ctx context.Context, eventID int64, upload FileUpload) (gallery.Photo, error) {
 	return service.CreateApprovedWithLimit(ctx, eventID, upload, service.maxSizeBytes)
 }
@@ -120,6 +128,8 @@ func (service *Service) CreateApprovedWithLimit(ctx context.Context, eventID int
 		return gallery.Photo{}, err
 	}
 
+	visibility := visibilityOrDefault(upload.Visibility)
+
 	tx, err := service.db.BeginTx(ctx, nil)
 	if err != nil {
 		service.deleteStoredUpload(ctx, store, storedUpload)
@@ -132,8 +142,8 @@ func (service *Service) CreateApprovedWithLimit(ctx context.Context, eventID int
 			event_id, storage_policy_id, object_key, thumbnail_key, content_hash,
 			content_type, size_bytes, photographer_name, visibility, sort_at
 		)
-		VALUES (?, ?, ?, NULLIF(?, ''), ?, ?, ?, NULLIF(?, ''), 'public', ?)
-	`, eventID, storedUpload.PolicyID, storedUpload.ObjectKey, storedUpload.ThumbnailKey, storedUpload.ContentHash, storedUpload.ContentType, storedUpload.SizeBytes, strings.TrimSpace(upload.PhotographerName), time.Now())
+		VALUES (?, ?, ?, NULLIF(?, ''), ?, ?, ?, NULLIF(?, ''), ?, ?)
+	`, eventID, storedUpload.PolicyID, storedUpload.ObjectKey, storedUpload.ThumbnailKey, storedUpload.ContentHash, storedUpload.ContentType, storedUpload.SizeBytes, strings.TrimSpace(upload.PhotographerName), visibility, time.Now())
 	if err != nil {
 		service.deleteStoredUpload(ctx, store, storedUpload)
 		return gallery.Photo{}, fmt.Errorf("create approved photo: %w", err)
@@ -368,10 +378,11 @@ func (service *Service) ListPendingForEvent(ctx context.Context, eventID int64) 
 	return submissions, nil
 }
 
-func (service *Service) ApproveBatch(ctx context.Context, ids []int64) (BatchResponse, error) {
+func (service *Service) ApproveBatch(ctx context.Context, ids []int64, visibility string) (BatchResponse, error) {
+	visibility = visibilityOrDefault(visibility)
 	processed := 0
 	for _, id := range ids {
-		ok, err := service.approveOne(ctx, id)
+		ok, err := service.approveOne(ctx, id, visibility)
 		if err != nil {
 			return BatchResponse{}, err
 		}
@@ -448,7 +459,7 @@ func (service *Service) verifyEventAllowsSubmission(ctx context.Context, eventID
 	return nil
 }
 
-func (service *Service) approveOne(ctx context.Context, id int64) (bool, error) {
+func (service *Service) approveOne(ctx context.Context, id int64, visibility string) (bool, error) {
 	submission, found, err := service.Get(ctx, id)
 	if err != nil {
 		return false, err
@@ -468,8 +479,8 @@ func (service *Service) approveOne(ctx context.Context, id int64) (bool, error) 
 			event_id, storage_policy_id, object_key, thumbnail_key, content_hash,
 			content_type, size_bytes, photographer_name, visibility, sort_at
 		)
-		VALUES (?, ?, ?, NULLIF(?, ''), ?, ?, ?, NULLIF(?, ''), 'public', ?)
-	`, submission.EventID, submission.StoragePolicyID, submission.ObjectKey, submission.ThumbnailKey, submission.ContentHash, submission.ContentType, submission.SizeBytes, submission.PhotographerName, time.Now())
+		VALUES (?, ?, ?, NULLIF(?, ''), ?, ?, ?, NULLIF(?, ''), ?, ?)
+	`, submission.EventID, submission.StoragePolicyID, submission.ObjectKey, submission.ThumbnailKey, submission.ContentHash, submission.ContentType, submission.SizeBytes, submission.PhotographerName, visibility, time.Now())
 	if err != nil {
 		return false, fmt.Errorf("create photo from submission: %w", err)
 	}

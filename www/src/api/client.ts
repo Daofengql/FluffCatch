@@ -277,6 +277,13 @@ export async function batchDeletePhotos(photoIds: number[], headers?: Record<str
   });
 }
 
+export async function batchUpdatePhotos(photoIds: number[], visibility: Photo['visibility']) {
+  return request<{ affected: number; message: string }>('/api/v1/admin/photos/batch-update', {
+    method: 'POST',
+    body: JSON.stringify({ photoIds, visibility })
+  });
+}
+
 export async function likePhoto(photoId: number) {
   return request<{ photoId: number; likeCount: number; liked: boolean; justLiked: boolean }>(`/api/v1/photos/${photoId}/like`, {
     method: 'POST'
@@ -329,10 +336,10 @@ export async function getEventPendingSubmissions(eventId: number): Promise<Submi
   return Array.isArray(payload?.submissions) ? payload.submissions : [];
 }
 
-export async function approveSubmissions(submissionIds: number[]) {
+export async function approveSubmissions(submissionIds: number[], visibility?: Photo['visibility']) {
   return request<{ processed: number; message: string }>('/api/v1/admin/submissions/batch-approve', {
     method: 'POST',
-    body: JSON.stringify({ submissionIds })
+    body: JSON.stringify({ submissionIds, visibility: visibility || 'public' })
   });
 }
 
@@ -407,5 +414,12 @@ export async function testStorageConnection(policy: StoragePolicy) {
   return request<{ success: boolean; error?: string }>('/api/v1/admin/settings/storage/test', {
     method: 'POST',
     body: JSON.stringify(policy)
+  });
+}
+
+export async function changePassword(currentPassword: string, newPassword: string) {
+  return request<{ message: string }>('/api/v1/admin/change-password', {
+    method: 'POST',
+    body: JSON.stringify({ currentPassword, newPassword })
   });
 }

@@ -1,4 +1,5 @@
-import { Alert, Box, Button, LinearProgress, Paper, Stack, TextField, Typography } from '@mui/material';
+import { Alert, Box, Button, FormControl, InputLabel, LinearProgress, MenuItem, Paper, Select, Stack, TextField, Typography } from '@mui/material';
+import type { SelectChangeEvent } from '@mui/material/Select';
 import { type ChangeEvent, type FormEvent, useEffect, useRef, useState } from 'react';
 import { submitPhotoWithProgress, type EventCard } from '../api/client';
 import { getCachedMe, refreshMe, subscribeAuthState } from '../api/authState';
@@ -27,6 +28,7 @@ export function SubmissionForm({ event, footer, initialSubmissionPassword = '', 
   const [submitting, setSubmitting] = useState(false);
   const [submissionPassword, setSubmissionPassword] = useState(initialSubmissionPassword);
   const [authenticated, setAuthenticated] = useState(() => getCachedMe().authenticated);
+  const [adminVisibility, setAdminVisibility] = useState<'public' | 'private'>('public');
   const [queue, setQueue] = useState<QueueItem[]>([]);
   const queueRef = useRef<QueueItem[]>([]);
   const hasInitialPassword = initialSubmissionPassword.trim() !== '';
@@ -97,6 +99,9 @@ export function SubmissionForm({ event, footer, initialSubmissionPassword = '', 
         const uploadForm = new FormData();
         uploadForm.append('submissionPassword', currentSubmissionPassword);
         uploadForm.append('photographerName', photographerName);
+        if (authenticated) {
+          uploadForm.append('visibility', adminVisibility);
+        }
         uploadForm.append('file', item.file);
 
         try {
@@ -156,6 +161,19 @@ export function SubmissionForm({ event, footer, initialSubmissionPassword = '', 
         )}
         <TextField fullWidth label="摄影师署名（可选）" name="photographerName" />
       </Stack>
+      {authenticated && (
+        <FormControl fullWidth>
+          <InputLabel>返图可见性</InputLabel>
+          <Select
+            label="返图可见性"
+            onChange={(e: SelectChangeEvent) => setAdminVisibility(e.target.value as 'public' | 'private')}
+            value={adminVisibility}
+          >
+            <MenuItem value="public">公开</MenuItem>
+            <MenuItem value="private">私密</MenuItem>
+          </Select>
+        </FormControl>
+      )}
       <Button component="label" variant="outlined">
         选择图片，可多选
         <input accept="image/*" hidden multiple onChange={handleFiles} type="file" />

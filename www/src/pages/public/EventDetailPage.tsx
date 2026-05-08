@@ -19,6 +19,7 @@ import {
   Grid,
   InputLabel,
   MenuItem,
+  Pagination,
   Paper,
   Select,
   Stack,
@@ -29,7 +30,7 @@ import type { SelectChangeEvent } from '@mui/material/Select';
 import { useEffect, useMemo, useState } from 'react';
 import { useParams } from 'react-router-dom';
 import { QRCodeSVG } from 'qrcode.react';
-import { batchDeletePhotos, deletePhoto, getEvent, getPhotos, likePhoto, unlockEventPrivatePhotos, updatePhoto, type EventCard, type Photo } from '../../api/client';
+import { batchDeletePhotos, batchUpdatePhotos, deletePhoto, getEvent, getPhotos, likePhoto, unlockEventPrivatePhotos, updatePhoto, type EventCard, type Photo } from '../../api/client';
 import { getCachedMe, refreshMe, subscribeAuthState } from '../../api/authState';
 import { BatchDownloadDialog } from '../../components/BatchDownloadDialog';
 import { ConfirmDialog } from '../../components/ConfirmDialog';
@@ -39,11 +40,14 @@ import { SubmissionDialog } from '../../components/SubmissionDialog';
 import { SubmissionReviewDialog } from '../../components/SubmissionReviewDialog';
 import { formatEventLocation } from '../../utils/eventLocation';
 import { downloadPhoto } from '../../utils/download';
+import { VisibilityOff, Visibility as VisibilityIcon } from '@mui/icons-material';
 
 export function EventDetailPage() {
   const eventId = Number(useParams().eventId);
   const [event, setEvent] = useState<EventCard | null>(null);
   const [photos, setPhotos] = useState<Photo[]>([]);
+  const [page, setPage] = useState(1);
+  const [totalPages, setTotalPages] = useState(1);
   const [previewIndex, setPreviewIndex] = useState(-1);
   const [submitOpen, setSubmitOpen] = useState(false);
   const [error, setError] = useState('');
@@ -73,13 +77,16 @@ export function EventDetailPage() {
   const [unlockingPassword, setUnlockingPassword] = useState(false);
   const [pendingProtectedPhoto, setPendingProtectedPhoto] = useState<Photo | null>(null);
 
-  function load() {
+  function load(p?: number) {
+    const targetPage = p ?? page;
     setLoading(true);
     setError('');
-    return Promise.all([getEvent(eventId), getPhotos(eventId, authenticated, 1, 24)])
+    return Promise.all([getEvent(eventId), getPhotos(eventId, authenticated, targetPage, 24)])
       .then(([eventData, photoData]) => {
         setEvent(eventData);
         setPhotos(photoData.photos);
+        setPage(photoData.page);
+        setTotalPages(photoData.totalPages || 1);
         return photoData.photos;
       })
       .catch((err: unknown) => {
@@ -89,8 +96,16 @@ export function EventDetailPage() {
       .finally(() => setLoading(false));
   }
 
+  function handlePageChange(_: React.ChangeEvent<unknown>, value: number) {
+    setPage(value);
+    setSelectedIds([]);
+    load(value);
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  }
+
   useEffect(() => {
-    void load();
+    setPage(1);
+    void load(1);
   }, [eventId, authenticated]);
 
   useEffect(() => {
@@ -537,21 +552,63 @@ export function EventDetailPage() {
       {likeError && <Alert severity="warning">{likeError}</Alert>}
 
       {manageMode && authenticated && (
-        <Stack direction="row" sx={{ alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 1 }}>
-          <Stack direction="row" sx={{ gap: 1, alignItems: 'center' }}>
+        <Paper sx={{ borderRadius: 3, p: { xs: 1.5, sm: 2 } }} variant="outlined">
+          <Stack direction="row" sx={{ alignItems: 'center', flexWrap: 'wrap', gap: 1 }}>
             <Button
-              disabled={!photos.length}
-              onClick={() => setSelectedIds((prev) => prev.length === photos.length ? [] : photos.map((p) => p.id))}
+              disabled={!publicPhotos.length}
+              onClick={() => {
+                const pubIds = publicPhotos.map((p) => p.id);
+                setSelectedIds((prev) => pubIds.every((id) => prev.includes(id)) ? prev.filter((id) => !pubIds.includes(id)) : Array.from(new Set([...prev, ...pubIds])));
+              }}
               size="small"
-              variant={selectedIds.length === photos.length && photos.length > 0 ? 'contained' : 'outlined'}
+              variant="outlined"
             >
-              {selectedIds.length === photos.length && photos.length > 0 ? '取消全选' : '全选'}
+              全选公开
             </Button>
-            <Typography color="text.secondary" variant="body2">
-              已选择 {selectedIds.length} 张
+            <Button
+              disabled={!restrictedPhotos.length}
+              onClick={() => {
+                const privIds = restrictedPhotos.map((p) => p.id);
+                setSelectedIds((prev) => privIds.every((id) => prev.includes(id)) ? prev.filter((id) => !privIds.includes(id)) : Array.from(new Set([...prev, ...privIds])));
+              }}
+              size="small"
+              variant="outlined"
+            >
+              全选私密
+            </Button>
+            <Button disabled={!selectedIds.length} onClick={() => setSelectedIds([])} size="small">
+              取消
+            </Button>
+            <Typography color="text.secondary" sx={{ mx: 0.5 }} variant="body2">
+              已选 {selectedIds.length} 张
             </Typography>
-          </Stack>
-          <Stack direction="row" sx={{ gap: 1 }}>
+            <Box sx={{ flex: 1 }} />
+            <Button
+              disabled={!selectedIds.length}
+              onClick={() => {
+                setError('');
+                batchUpdatePhotos(selectedIds, 'public')
+                  .then((result) => { setMessage(result.message); setSelectedIds([]); load(); })
+                  .catch((err: unknown) => setError(err instanceof Error ? err.message : '批量设置失败'));
+              }}
+              size="small"
+              variant="outlined"
+            >
+              设为公开
+            </Button>
+            <Button
+              disabled={!selectedIds.length}
+              onClick={() => {
+                setError('');
+                batchUpdatePhotos(selectedIds, 'private')
+                  .then((result) => { setMessage(result.message); setSelectedIds([]); load(); })
+                  .catch((err: unknown) => setError(err instanceof Error ? err.message : '批量设置失败'));
+              }}
+              size="small"
+              variant="outlined"
+            >
+              设为私密
+            </Button>
             <Button
               disabled={!selectedIds.length}
               onClick={handleBatchDownload}
@@ -559,7 +616,7 @@ export function EventDetailPage() {
               startIcon={<CloudDownload />}
               variant="outlined"
             >
-              批量下载{selectedIds.length ? ` (${selectedIds.length})` : ''}
+              下载{selectedIds.length ? ` ${selectedIds.length}` : ''}
             </Button>
             <Button
               color="error"
@@ -569,10 +626,10 @@ export function EventDetailPage() {
               startIcon={<Delete />}
               variant="outlined"
             >
-              批量删除{selectedIds.length ? ` (${selectedIds.length})` : ''}
+              删除{selectedIds.length ? ` ${selectedIds.length}` : ''}
             </Button>
           </Stack>
-        </Stack>
+        </Paper>
       )}
 
       <PhotoSection title="公开返图" subtitle={`${publicPhotos.length} 张公开图片`}>
@@ -592,6 +649,21 @@ export function EventDetailPage() {
           </Grid>
         </PhotoSection>
       )}
+
+      {totalPages > 1 && (
+        <Stack sx={{ alignItems: 'center', py: 2 }}>
+          <Pagination
+            color="primary"
+            count={totalPages}
+            onChange={handlePageChange}
+            page={page}
+            showFirstButton
+            showLastButton
+            size="large"
+          />
+        </Stack>
+      )}
+
       <ImagePreviewDialog
         images={previewItems}
         index={previewIndex < 0 ? 0 : previewIndex}

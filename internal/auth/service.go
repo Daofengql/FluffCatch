@@ -157,6 +157,47 @@ func EnsureInitialAdmin(ctx context.Context, dbConn *sql.DB, username string) (s
 	return password, true, nil
 }
 
+func (service *Service) ChangePassword(ctx context.Context, username string, currentPassword string, newPassword string, currentSessionID string) error {
+	if service.db == nil {
+		return fmt.Errorf("database-backed admin login is not available")
+	}
+	if strings.TrimSpace(newPassword) == "" {
+		return fmt.Errorf("new password is required")
+	}
+	if len(newPassword) < 8 {
+		return fmt.Errorf("new password must be at least 8 characters")
+	}
+
+	var passwordHash string
+	err := service.db.QueryRowContext(ctx, "SELECT password_hash FROM admin_users WHERE username = ? LIMIT 1", username).Scan(&passwordHash)
+	if err == sql.ErrNoRows {
+		return fmt.Errorf("admin user not found")
+	}
+	if err != nil {
+		return fmt.Errorf("load admin user: %w", err)
+	}
+
+	ok, err := VerifyPassword(currentPassword, passwordHash)
+	if err != nil || !ok {
+		return fmt.Errorf("current password is incorrect")
+	}
+
+	newHash, err := HashPassword(newPassword)
+	if err != nil {
+		return fmt.Errorf("hash new password: %w", err)
+	}
+
+	if _, err := service.db.ExecContext(ctx, "UPDATE admin_users SET password_hash = ?, updated_at = CURRENT_TIMESTAMP WHERE username = ?", newHash, username); err != nil {
+		return fmt.Errorf("update password: %w", err)
+	}
+
+	if _, err := service.db.ExecContext(ctx, "DELETE FROM sessions WHERE admin_user_id = (SELECT id FROM admin_users WHERE username = ? LIMIT 1) AND id <> ?", username, currentSessionID); err != nil {
+		return fmt.Errorf("invalidate other sessions: %w", err)
+	}
+
+	return nil
+}
+
 func ResetAdminPassword(ctx context.Context, dbConn *sql.DB, username string, password string) (string, error) {
 	if strings.TrimSpace(username) == "" {
 		return "", fmt.Errorf("admin username is required")

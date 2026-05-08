@@ -1,5 +1,5 @@
 import MDEditor from '@uiw/react-md-editor';
-import { Article, ColorLens, Image, Info, Storage, UploadFile } from '@mui/icons-material';
+import { Article, ColorLens, Image, Info, Key, Storage, UploadFile } from '@mui/icons-material';
 import {
   Alert,
   Avatar,
@@ -26,6 +26,7 @@ import type { SelectChangeEvent } from '@mui/material/Select';
 import { type ChangeEvent, type FocusEvent, type FormEvent, type ReactNode, useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import {
+  changePassword,
   clearSiteBackground,
   clearSiteLogo,
   getAdminSettings,
@@ -46,7 +47,7 @@ import { PageHeader } from '../../components/common/PageHeader';
 import { useThemePreference } from '../../theme/ThemePreferenceProvider';
 import { appPalettes, normalizeThemeColor } from '../../theme/theme';
 
-type SettingsSection = 'site' | 'theme' | 'background' | 'footer' | 'upload' | 'storage';
+type SettingsSection = 'site' | 'theme' | 'background' | 'footer' | 'upload' | 'storage' | 'password';
 type BackgroundVariant = 'desktop' | 'mobile';
 
 const fallbackSite: SiteSettings = {
@@ -91,7 +92,8 @@ const settingsSections: { icon: ReactNode; key: SettingsSection; label: string }
   { icon: <Image />, key: 'background', label: '前台背景' },
   { icon: <Article />, key: 'footer', label: '页脚备案' },
   { icon: <UploadFile />, key: 'upload', label: '上传限制' },
-  { icon: <Storage />, key: 'storage', label: '存储策略' }
+  { icon: <Storage />, key: 'storage', label: '存储策略' },
+  { icon: <Key />, key: 'password', label: '修改密码' }
 ];
 
 export function AdminSettingsPage() {
@@ -156,7 +158,9 @@ export function AdminSettingsPage() {
         setUpload({ ...fallbackUpload, ...payload.settings.upload });
         const policies = payload.settings.storagePolicies.policies;
         if (policies.length > 0) {
-          setStoragePolicy(policies[0]);
+          const activeId = payload.settings.storagePolicies.activePolicyId;
+          const active = policies.find((p) => p.id === activeId) ?? policies[0];
+          setStoragePolicy(active);
         }
       })
       .catch((err: unknown) => {
@@ -793,6 +797,10 @@ export function AdminSettingsPage() {
               </Stack>
             </Stack>
           )}
+
+          {activeSection === 'password' && (
+            <PasswordChangePanel />
+          )}
         </Paper>
       </Stack>
     </Stack>
@@ -912,7 +920,90 @@ function normalizeSection(section: string | undefined): SettingsSection {
 }
 
 function isSettingsSection(section: string | undefined): section is SettingsSection {
-  return section === 'site' || section === 'theme' || section === 'background' || section === 'footer' || section === 'upload' || section === 'storage';
+  return section === 'site' || section === 'theme' || section === 'background' || section === 'footer' || section === 'upload' || section === 'storage' || section === 'password';
+}
+
+function PasswordChangePanel() {
+  const [currentPassword, setCurrentPassword] = useState('');
+  const [newPassword, setNewPassword] = useState('');
+  const [confirmPassword, setConfirmPassword] = useState('');
+  const [message, setMessage] = useState('');
+  const [error, setError] = useState('');
+  const [saving, setSaving] = useState(false);
+
+  async function handleSubmit(formEvent: FormEvent<HTMLFormElement>) {
+    formEvent.preventDefault();
+    setError('');
+    setMessage('');
+    if (!currentPassword) {
+      setError('请输入当前密码');
+      return;
+    }
+    if (newPassword.length < 8) {
+      setError('新密码至少需要 8 位字符');
+      return;
+    }
+    if (newPassword !== confirmPassword) {
+      setError('两次输入的新密码不一致');
+      return;
+    }
+    if (currentPassword === newPassword) {
+      setError('新密码不能与当前密码相同');
+      return;
+    }
+    setSaving(true);
+    try {
+      const result = await changePassword(currentPassword, newPassword);
+      setMessage(result.message);
+      setCurrentPassword('');
+      setNewPassword('');
+      setConfirmPassword('');
+    } catch (err) {
+      setError(err instanceof Error ? err.message : '修改密码失败');
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <Stack component="form" onSubmit={handleSubmit} sx={{ gap: 2.5 }}>
+      <Typography color="text.secondary">
+        修改管理员登录密码。你需要先输入当前密码进行验证。
+      </Typography>
+      {message && <Alert severity="success">{message}</Alert>}
+      {error && <Alert severity="error">{error}</Alert>}
+      <TextField
+        autoComplete="current-password"
+        fullWidth
+        label="当前密码"
+        onChange={(e) => setCurrentPassword(e.target.value)}
+        type="password"
+        value={currentPassword}
+      />
+      <TextField
+        autoComplete="new-password"
+        fullWidth
+        helperText="至少 8 位字符"
+        label="新密码"
+        onChange={(e) => setNewPassword(e.target.value)}
+        type="password"
+        value={newPassword}
+      />
+      <TextField
+        autoComplete="new-password"
+        fullWidth
+        label="确认新密码"
+        onChange={(e) => setConfirmPassword(e.target.value)}
+        type="password"
+        value={confirmPassword}
+      />
+      <Box>
+        <Button disabled={saving} type="submit" variant="contained">
+          {saving ? '保存中...' : '修改密码'}
+        </Button>
+      </Box>
+    </Stack>
+  );
 }
 
 function formatBytes(bytes: number) {

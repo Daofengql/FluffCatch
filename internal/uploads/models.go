@@ -34,6 +34,7 @@ type CreateSubmissionRequest struct {
 
 type BatchRequest struct {
 	SubmissionIDs []int64 `json:"submissionIds"`
+	Visibility    string  `json:"visibility"`
 }
 
 type BatchResponse struct {

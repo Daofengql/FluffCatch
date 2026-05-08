@@ -171,6 +171,8 @@ func (server *Server) Routes() stdhttp.Handler {
 			admin.Put("/photos/{id}", server.updatePhoto)
 			admin.Delete("/photos/{id}", server.deletePhoto)
 			admin.Post("/photos/batch-delete", server.batchDeletePhotos)
+			admin.Post("/photos/batch-update", server.batchUpdatePhotos)
+			admin.Post("/change-password", server.changePassword)
 			admin.Get("/settings", server.getSettings)
 			admin.Put("/settings/storage", server.updateStorageSettings)
 			admin.Post("/settings/storage/test", server.testStorageConnection)
@@ -391,6 +393,7 @@ func (server *Server) createSubmission(w stdhttp.ResponseWriter, r *stdhttp.Requ
 				SubmissionPassword: r.FormValue("submissionPassword"),
 				PhotographerName:   r.FormValue("photographerName"),
 				Tags:               parseTagsValue(r.FormValue("tags")),
+				Visibility:         r.FormValue("visibility"),
 			}
 			if isAdmin {
 				photo, err := server.uploadService.CreateApprovedWithLimit(r.Context(), id, upload, maxFileBytes)
@@ -427,6 +430,7 @@ func (server *Server) createSubmission(w stdhttp.ResponseWriter, r *stdhttp.Requ
 			SubmissionPassword: r.FormValue("submissionPassword"),
 			PhotographerName:   r.FormValue("photographerName"),
 			Tags:               parseTagsValue(r.FormValue("tags")),
+			Visibility:         r.FormValue("visibility"),
 		}
 		if isAdmin {
 			photo, err := server.uploadService.CreateApprovedWithLimit(r.Context(), id, upload, maxFileBytes)
@@ -750,7 +754,7 @@ func (server *Server) approveSubmissions(w stdhttp.ResponseWriter, r *stdhttp.Re
 		return
 	}
 
-	result, err := server.uploadService.ApproveBatch(r.Context(), req.SubmissionIDs)
+	result, err := server.uploadService.ApproveBatch(r.Context(), req.SubmissionIDs, req.Visibility)
 	if err != nil {
 		writeError(w, stdhttp.StatusInternalServerError, "failed to approve submissions")
 		return
@@ -794,6 +798,20 @@ func (server *Server) updatePhoto(w stdhttp.ResponseWriter, r *stdhttp.Request) 
 		return
 	}
 	writeJSON(w, stdhttp.StatusOK, map[string]any{"photo": photo})
+}
+
+func (server *Server) batchUpdatePhotos(w stdhttp.ResponseWriter, r *stdhttp.Request) {
+	var req gallery.BatchUpdatePhotosRequest
+	if err := decodeJSON(r, &req); err != nil {
+		writeError(w, stdhttp.StatusBadRequest, "invalid batch update payload")
+		return
+	}
+	affected, err := server.galleryService.BatchUpdatePhotos(r.Context(), req)
+	if err != nil {
+		writeError(w, stdhttp.StatusBadRequest, err.Error())
+		return
+	}
+	writeJSON(w, stdhttp.StatusOK, map[string]any{"affected": affected, "message": fmt.Sprintf("updated %d photos", affected)})
 }
 
 func (server *Server) deletePhoto(w stdhttp.ResponseWriter, r *stdhttp.Request) {
@@ -881,6 +899,33 @@ func (server *Server) adminDashboard(w stdhttp.ResponseWriter, r *stdhttp.Reques
 		stats["photoBytes"] = bytes
 	}
 	writeJSON(w, stdhttp.StatusOK, map[string]any{"stats": stats})
+}
+
+func (server *Server) changePassword(w stdhttp.ResponseWriter, r *stdhttp.Request) {
+	admin, ok, err := server.currentAdmin(r)
+	if err != nil || !ok {
+		writeError(w, stdhttp.StatusUnauthorized, "admin authentication required")
+		return
+	}
+
+	var req auth.ChangePasswordRequest
+	if err := decodeJSON(r, &req); err != nil {
+		writeError(w, stdhttp.StatusBadRequest, "invalid password change payload")
+		return
+	}
+
+	cookie, _ := r.Cookie("fluffcatch_session")
+	sessionID := ""
+	if cookie != nil {
+		sessionID = cookie.Value
+	}
+
+	if err := server.authService.ChangePassword(r.Context(), admin.Username, req.CurrentPassword, req.NewPassword, sessionID); err != nil {
+		writeError(w, stdhttp.StatusBadRequest, err.Error())
+		return
+	}
+
+	writeJSON(w, stdhttp.StatusOK, map[string]string{"message": "password changed successfully"})
 }
 
 func (server *Server) getSettings(w stdhttp.ResponseWriter, r *stdhttp.Request) {

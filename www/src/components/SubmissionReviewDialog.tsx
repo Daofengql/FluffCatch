@@ -10,8 +10,12 @@ import {
   DialogActions,
   DialogContent,
   DialogTitle,
+  FormControl,
   Grid,
+  InputLabel,
+  MenuItem,
   Paper,
+  Select,
   Stack,
   Table,
   TableBody,
@@ -23,8 +27,9 @@ import {
   ToggleButtonGroup,
   Typography
 } from '@mui/material';
+import type { SelectChangeEvent } from '@mui/material/Select';
 import { useEffect, useMemo, useState } from 'react';
-import { approveSubmissions, deleteSubmissions, getEventPendingSubmissions, type EventCard, type Submission } from '../api/client';
+import { approveSubmissions, deleteSubmissions, getEventPendingSubmissions, type EventCard, type Photo, type Submission } from '../api/client';
 import { usePersistentState } from '../hooks/usePersistentState';
 import { ImagePreviewDialog, type ImagePreviewItem } from './ImagePreviewDialog';
 
@@ -45,6 +50,7 @@ export function SubmissionReviewDialog({ event, onChanged, onClose, open }: Subm
   const [loading, setLoading] = useState(false);
   const [previewIndex, setPreviewIndex] = useState<number | null>(null);
   const [viewMode, setViewMode] = usePersistentState<ViewMode>('fluffcatch.event.submissions.viewMode', 'card', viewModes);
+  const [approveVisibility, setApproveVisibility] = useState<Photo['visibility']>('public');
 
   const previewItems = useMemo<ImagePreviewItem[]>(
     () =>
@@ -85,7 +91,7 @@ export function SubmissionReviewDialog({ event, onChanged, onClose, open }: Subm
     if (!selected.length) return;
     setError('');
     try {
-      if (action === 'approve') await approveSubmissions(selected);
+      if (action === 'approve') await approveSubmissions(selected, approveVisibility);
       else await deleteSubmissions(selected);
       setSelected([]);
       refresh();
@@ -115,11 +121,22 @@ export function SubmissionReviewDialog({ event, onChanged, onClose, open }: Subm
               <ToggleButton value="card">卡片</ToggleButton>
               <ToggleButton value="list">列表</ToggleButton>
             </ToggleButtonGroup>
+            <FormControl size="small" sx={{ minWidth: 100 }}>
+              <InputLabel>通过为</InputLabel>
+              <Select
+                label="通过为"
+                onChange={(e: SelectChangeEvent) => setApproveVisibility(e.target.value as Photo['visibility'])}
+                value={approveVisibility}
+              >
+                <MenuItem value="public">公开</MenuItem>
+                <MenuItem value="private">私密</MenuItem>
+              </Select>
+            </FormControl>
             <Button disabled={!selected.length} onClick={() => void batch('approve')} variant="contained">
-              批量通过
+              批量通过 ({selected.length})
             </Button>
             <Button color="error" disabled={!selected.length} onClick={() => void batch('delete')} variant="outlined">
-              批量删除
+              批量删除 ({selected.length})
             </Button>
           </Stack>
         </Stack>
