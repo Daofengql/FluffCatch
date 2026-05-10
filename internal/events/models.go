@@ -2,27 +2,34 @@ package events
 
 import "time"
 
+type Page struct {
+	Items      []Event `json:"events"`
+	Total      int64   `json:"total"`
+	Page       int     `json:"page"`
+	PageSize   int     `json:"pageSize"`
+	TotalPages int     `json:"totalPages"`
+}
+
 type Event struct {
-	ID                 int64      `json:"id"`
-	Title              string     `json:"title"`
-	Description        string     `json:"description"`
-	Location           string     `json:"location"`
-	ProvinceCode       string     `json:"provinceCode,omitempty"`
-	ProvinceName       string     `json:"provinceName,omitempty"`
-	CityCode           string     `json:"cityCode,omitempty"`
-	CityName           string     `json:"cityName,omitempty"`
-	StartTime          *time.Time `json:"startTime,omitempty"`
-	EndTime            *time.Time `json:"endTime,omitempty"`
-	CoverPolicyID      string     `json:"coverPolicyId,omitempty"`
-	CoverObjectKey     string     `json:"coverObjectKey,omitempty"`
-	CoverURL           string     `json:"coverUrl,omitempty"`
-	IsPublic           bool       `json:"isPublic"`
-	SubmissionEnabled  bool       `json:"submissionEnabled"`
-	SubmissionPassword string     `json:"submissionPassword,omitempty"`
-	PrivatePassword    string     `json:"privatePassword,omitempty"`
-	PhotoCount         int64      `json:"photoCount"`
-	CreatedAt          time.Time  `json:"createdAt"`
-	UpdatedAt          time.Time  `json:"updatedAt"`
+	ID                int64      `json:"id"`
+	Title             string     `json:"title"`
+	Description       string     `json:"description"`
+	Location          string     `json:"location"`
+	ProvinceCode      string     `json:"provinceCode,omitempty"`
+	ProvinceName      string     `json:"provinceName,omitempty"`
+	CityCode          string     `json:"cityCode,omitempty"`
+	CityName          string     `json:"cityName,omitempty"`
+	StartTime         *time.Time `json:"startTime,omitempty"`
+	EndTime           *time.Time `json:"endTime,omitempty"`
+	CoverPolicyID     string     `json:"coverPolicyId,omitempty"`
+	CoverObjectKey    string     `json:"coverObjectKey,omitempty"`
+	CoverURL          string     `json:"coverUrl,omitempty"`
+	IsPublic          bool       `json:"isPublic"`
+	SubmissionEnabled bool       `json:"submissionEnabled"`
+	PrivatePassword   string     `json:"privatePassword,omitempty"`
+	PhotoCount        int64      `json:"photoCount"`
+	CreatedAt         time.Time  `json:"createdAt"`
+	UpdatedAt         time.Time  `json:"updatedAt"`
 }
 
 type CreateEventRequest struct {
@@ -41,6 +48,16 @@ type CreateEventRequest struct {
 	RemoveCover       bool   `json:"removeCover"`
 	IsPublic          bool   `json:"isPublic"`
 	SubmissionEnabled bool   `json:"submissionEnabled"`
-	SubmissionPass    string `json:"submissionPassword"`
 	PrivatePassword   string `json:"privatePassword"`
+}
+
+type ListOptions struct {
+	CityCode     string
+	EndDate      *time.Time
+	Page         int
+	PageSize     int
+	ProvinceCode string
+	Query        string
+	Sort         string
+	StartDate    *time.Time
 }

@@ -24,10 +24,14 @@ func (server *Server) listAdminPhotos(w stdhttp.ResponseWriter, r *stdhttp.Reque
 		return
 	}
 	result, err := server.galleryService.ListForEventPageWithOptions(r.Context(), id, gallery.ListOptions{
-		Admin:      true,
-		Page:       page,
-		PageSize:   pageSize,
-		Visibility: visibility,
+		Admin:        true,
+		Page:         page,
+		PageSize:     pageSize,
+		Visibility:   visibility,
+		Tag:          r.URL.Query().Get("tag"),
+		Photographer: r.URL.Query().Get("photographer"),
+		MediaType:    r.URL.Query().Get("mediaType"),
+		Sort:         r.URL.Query().Get("sort"),
 	})
 	if err != nil {
 		writeError(w, stdhttp.StatusInternalServerError, "failed to list photos")

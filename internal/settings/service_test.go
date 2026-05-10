@@ -86,13 +86,17 @@ func TestUpdateSiteAllowsEmptyHomeMarkdown(t *testing.T) {
 	service := NewService(NewStore(nil, RuntimeSettings{}))
 
 	site, err := service.UpdateSite(context.Background(), SiteSettings{
-		Name:              "Test",
-		ThemeMode:         "  dark  ",
-		ThemePreset:       "custom",
-		ThemePrimaryColor: "  #ABCDEF  ",
-		FooterText:        "  Copyright 2026  ",
-		ICPNumber:         "  粤ICP备12345678号  ",
-		ContactEmail:      "  hello@example.com  ",
+		Name:               "Test",
+		ThemeMode:          "  dark  ",
+		ThemePreset:        "custom",
+		ThemePrimaryColor:  "  #ABCDEF  ",
+		ContactWidgetTitle: "  联系方式  ",
+		ContactWidgetHTML:  "  <p>QQ 123456</p>  ",
+		FooterSections: []FooterSection{
+			{Title: "  关于站点  ", HTML: "  <p>Copyright 2026</p>  "},
+			{Title: "  快速入口  ", HTML: `  <ul><li><a href="/">首页</a></li></ul>  `},
+			{Title: "  站点信息  ", HTML: "  <p>粤ICP备12345678号</p>  "},
+		},
 	})
 	if err != nil {
 		t.Fatalf("UpdateSite() returned error: %v", err)
@@ -100,14 +104,14 @@ func TestUpdateSiteAllowsEmptyHomeMarkdown(t *testing.T) {
 	if site.HomeMarkdown != "" {
 		t.Fatalf("expected empty home markdown, got %q", site.HomeMarkdown)
 	}
-	if site.FooterText != "Copyright 2026" {
-		t.Fatalf("expected trimmed footer text, got %q", site.FooterText)
+	if len(site.FooterSections) != 3 {
+		t.Fatalf("expected three footer sections, got %d", len(site.FooterSections))
 	}
-	if site.ICPNumber != "粤ICP备12345678号" {
-		t.Fatalf("expected trimmed ICP number, got %q", site.ICPNumber)
+	if site.FooterSections[0].Title != "关于站点" || site.FooterSections[0].HTML != "<p>Copyright 2026</p>" {
+		t.Fatalf("expected trimmed first footer section, got %#v", site.FooterSections[0])
 	}
-	if site.ContactEmail != "hello@example.com" {
-		t.Fatalf("expected trimmed contact email, got %q", site.ContactEmail)
+	if site.ContactWidgetTitle != "联系方式" || site.ContactWidgetHTML != "<p>QQ 123456</p>" {
+		t.Fatalf("expected trimmed contact widget, got title=%q html=%q", site.ContactWidgetTitle, site.ContactWidgetHTML)
 	}
 	if site.ThemeMode != "dark" {
 		t.Fatalf("expected normalized theme mode, got %q", site.ThemeMode)

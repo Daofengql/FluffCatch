@@ -2,6 +2,7 @@ package gallery
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"math"
@@ -99,13 +100,14 @@ func (service *Service) ListForEventPageWithOptions(ctx context.Context, eventID
 	if !options.Admin {
 		baseQuery = baseQuery.Where("visibility IN ?", []string{string(VisibilityPublic), string(VisibilityPrivate)})
 	}
+	baseQuery = applyListFilters(baseQuery, options)
 	if err := baseQuery.Count(&total).Error; err != nil {
 		return Page{}, fmt.Errorf("count photos: %w", err)
 	}
 
 	offset := (page - 1) * pageSize
 	var records []appdb.Photo
-	if err := baseQuery.Order("sort_at DESC").Order("id DESC").Limit(pageSize).Offset(offset).Find(&records).Error; err != nil {
+	if err := applyListSort(baseQuery, options.Sort).Limit(pageSize).Offset(offset).Find(&records).Error; err != nil {
 		return Page{}, fmt.Errorf("list photos: %w", err)
 	}
 
@@ -136,6 +138,51 @@ func (service *Service) ListForEventPageWithOptions(ctx context.Context, eventID
 	return Page{Items: photos, Total: total, Page: page, PageSize: pageSize, TotalPages: totalPages}, nil
 }
 
+func applyListFilters(query *gorm.DB, options ListOptions) *gorm.DB {
+	if tag := normalizeFilterTag(options.Tag); tag != "" {
+		query = query.Joins("INNER JOIN photo_tags filter_photo_tags ON filter_photo_tags.photo_id = photos.id").
+			Joins("INNER JOIN tags filter_tags ON filter_tags.id = filter_photo_tags.tag_id").
+			Where("filter_tags.name = ?", tag)
+	}
+	if photographer := strings.TrimSpace(options.Photographer); photographer != "" {
+		query = query.Where("photographer_name LIKE ?", "%"+photographer+"%")
+	}
+	switch strings.ToLower(strings.TrimSpace(options.MediaType)) {
+	case "image":
+		query = query.Where("content_type LIKE ?", "image/%")
+	case "video":
+		query = query.Where("content_type LIKE ?", "video/%")
+	}
+	return query
+}
+
+func applyListSort(query *gorm.DB, sort string) *gorm.DB {
+	switch strings.ToLower(strings.TrimSpace(sort)) {
+	case "oldest":
+		return query.Order("COALESCE(taken_at, created_at) ASC").Order("id ASC")
+	case "taken_desc":
+		return query.Order("taken_at IS NULL").Order("taken_at DESC").Order("created_at DESC").Order("id DESC")
+	case "taken_asc":
+		return query.Order("taken_at IS NULL").Order("taken_at ASC").Order("created_at ASC").Order("id ASC")
+	case "likes":
+		return query.Order("like_count DESC").Order("created_at DESC").Order("id DESC")
+	default:
+		return query.Order("sort_at DESC").Order("id DESC")
+	}
+}
+
+func normalizeFilterTag(tag string) string {
+	tag = strings.TrimSpace(tag)
+	if tag == "" {
+		return ""
+	}
+	tag = strings.TrimPrefix(tag, "#")
+	if tag == "" {
+		return ""
+	}
+	return "#" + tag
+}
+
 func (service *Service) UpdatePhoto(ctx context.Context, photoID int64, req UpdatePhotoRequest) (Photo, error) {
 	if req.Visibility == "" {
 		req.Visibility = VisibilityPublic
@@ -146,10 +193,15 @@ func (service *Service) UpdatePhoto(ctx context.Context, photoID int64, req Upda
 		return Photo{}, fmt.Errorf("unsupported visibility %q", req.Visibility)
 	}
 
-	err := service.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+	takenAt, err := parseOptionalTime(req.TakenAt)
+	if err != nil {
+		return Photo{}, err
+	}
+	err = service.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		if err := tx.Model(&appdb.Photo{}).Where("id = ?", photoID).Updates(map[string]any{
 			"visibility":        req.Visibility,
 			"photographer_name": stringPtr(req.PhotographerName),
+			"taken_at":          takenAt,
 		}).Error; err != nil {
 			return fmt.Errorf("update photo: %w", err)
 		}
@@ -177,30 +229,53 @@ func (service *Service) UpdatePhoto(ctx context.Context, photoID int64, req Upda
 }
 
 func (service *Service) BatchUpdatePhotos(ctx context.Context, req BatchUpdatePhotosRequest) (int, error) {
-	if req.Visibility == "" {
-		req.Visibility = VisibilityPublic
-	}
-	switch req.Visibility {
-	case VisibilityPublic, VisibilityPrivate:
-	default:
-		return 0, fmt.Errorf("unsupported visibility %q", req.Visibility)
+	if req.Visibility != "" {
+		switch req.Visibility {
+		case VisibilityPublic, VisibilityPrivate:
+		default:
+			return 0, fmt.Errorf("unsupported visibility %q", req.Visibility)
+		}
 	}
 	if len(req.PhotoIDs) == 0 {
 		return 0, nil
 	}
 
 	var matched int64
-	if err := service.db.WithContext(ctx).Model(&appdb.Photo{}).Where("visibility <> ? AND id IN ?", req.Visibility, req.PhotoIDs).Count(&matched).Error; err != nil {
+	if err := service.db.WithContext(ctx).Model(&appdb.Photo{}).Where("id IN ?", req.PhotoIDs).Count(&matched).Error; err != nil {
 		return 0, fmt.Errorf("count photos for batch update: %w", err)
 	}
 	if matched == 0 {
 		return 0, nil
 	}
 
-	if err := service.db.WithContext(ctx).Model(&appdb.Photo{}).Where("visibility <> ? AND id IN ?", req.Visibility, req.PhotoIDs).Update("visibility", req.Visibility).Error; err != nil {
-		return 0, fmt.Errorf("batch update photos: %w", err)
-	}
-	return int(matched), nil
+	err := service.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		updates := map[string]any{}
+		if req.Visibility != "" {
+			updates["visibility"] = req.Visibility
+		}
+		if req.PhotographerName != nil {
+			updates["photographer_name"] = stringPtr(*req.PhotographerName)
+		}
+		if len(updates) > 0 {
+			if err := tx.Model(&appdb.Photo{}).Where("id IN ?", req.PhotoIDs).Updates(updates).Error; err != nil {
+				return fmt.Errorf("batch update photos: %w", err)
+			}
+		}
+		if req.ReplaceTags {
+			if err := tx.Where("photo_id IN ?", req.PhotoIDs).Delete(&appdb.PhotoTag{}).Error; err != nil {
+				return fmt.Errorf("clear photo tags: %w", err)
+			}
+		}
+		if len(req.Tags) > 0 {
+			for _, photoID := range req.PhotoIDs {
+				if err := upsertPhotoTags(ctx, tx, photoID, req.Tags); err != nil {
+					return err
+				}
+			}
+		}
+		return nil
+	})
+	return int(matched), err
 }
 
 func (service *Service) DeletePhoto(ctx context.Context, photoID int64) (bool, []storage.StoredObject, error) {
@@ -397,9 +472,13 @@ func (service *Service) photoFromRecord(record appdb.Photo) Photo {
 		PhotographerName: stringValue(record.PhotographerName),
 		Visibility:       Visibility(record.Visibility),
 		Tags:             []Tag{},
+		Exif:             map[string]any{},
 		TakenAt:          record.TakenAt,
 		CreatedAt:        record.CreatedAt,
 		UpdatedAt:        record.UpdatedAt,
+	}
+	if len(record.Exif) > 0 {
+		_ = json.Unmarshal(record.Exif, &photo.Exif)
 	}
 	service.applyPhotoURLs(&photo)
 	return photo
@@ -555,4 +634,17 @@ func normalizeTags(tags []string) []string {
 		normalized = append(normalized, tag)
 	}
 	return normalized
+}
+
+func parseOptionalTime(value string) (*time.Time, error) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return nil, nil
+	}
+	for _, layout := range []string{time.RFC3339, "2006-01-02T15:04", "2006-01-02 15:04:05", "2006-01-02"} {
+		if parsed, err := time.ParseInLocation(layout, value, time.Local); err == nil {
+			return &parsed, nil
+		}
+	}
+	return nil, fmt.Errorf("invalid takenAt")
 }

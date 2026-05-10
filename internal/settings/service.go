@@ -412,14 +412,29 @@ func normalizeSite(site SiteSettings) SiteSettings {
 	site.ThemePrimaryColor = normalizeThemePrimaryColor(site.ThemePrimaryColor)
 	site.PublicBackgroundDesktopURL = strings.TrimSpace(site.PublicBackgroundDesktopURL)
 	site.PublicBackgroundMobileURL = strings.TrimSpace(site.PublicBackgroundMobileURL)
-	site.FooterText = strings.TrimSpace(site.FooterText)
-	site.ICPNumber = strings.TrimSpace(site.ICPNumber)
-	site.PoliceRecordNumber = strings.TrimSpace(site.PoliceRecordNumber)
-	site.PoliceRecordURL = strings.TrimSpace(site.PoliceRecordURL)
-	site.ContactText = strings.TrimSpace(site.ContactText)
-	site.ContactEmail = strings.TrimSpace(site.ContactEmail)
-	site.ContactURL = strings.TrimSpace(site.ContactURL)
+	site.FooterSections = normalizeFooterSections(site)
+	site.ContactWidgetTitle = strings.TrimSpace(site.ContactWidgetTitle)
+	if site.ContactWidgetTitle == "" {
+		site.ContactWidgetTitle = "联系我"
+	}
+	site.ContactWidgetHTML = strings.TrimSpace(site.ContactWidgetHTML)
 	return site
+}
+
+func normalizeFooterSections(site SiteSettings) []FooterSection {
+	defaults := defaultFooterSections(site.Name, site.Subtitle)
+	sections := make([]FooterSection, 3)
+	for index := range sections {
+		if index < len(site.FooterSections) {
+			sections[index] = FooterSection{
+				Title: strings.TrimSpace(site.FooterSections[index].Title),
+				HTML:  strings.TrimSpace(site.FooterSections[index].HTML),
+			}
+			continue
+		}
+		sections[index] = defaults[index]
+	}
+	return sections
 }
 
 func normalizeThemeMode(mode string) string {

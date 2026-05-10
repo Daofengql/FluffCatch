@@ -55,14 +55,42 @@ func (server *Server) health(w stdhttp.ResponseWriter, r *stdhttp.Request) {
 }
 
 func (server *Server) listPublicEvents(w stdhttp.ResponseWriter, r *stdhttp.Request) {
-	eventList, err := server.eventService.ListPublic(r.Context())
+	if server.eventListLimiter != nil && !server.eventListLimiter.Allow(clientIPFromRequest(r)) {
+		writeError(w, stdhttp.StatusTooManyRequests, "too many event list requests")
+		return
+	}
+
+	page, pageSize := parsePagination(r, 24)
+	startDate, ok := parseOptionalDate(w, r.URL.Query().Get("startDate"), "startDate", false)
+	if !ok {
+		return
+	}
+	endDate, ok := parseOptionalDate(w, r.URL.Query().Get("endDate"), "endDate", true)
+	if !ok {
+		return
+	}
+
+	eventPage, err := server.eventService.ListPublicPage(r.Context(), events.ListOptions{
+		CityCode:     r.URL.Query().Get("cityCode"),
+		EndDate:      endDate,
+		Page:         page,
+		PageSize:     pageSize,
+		ProvinceCode: r.URL.Query().Get("provinceCode"),
+		Query:        r.URL.Query().Get("q"),
+		Sort:         r.URL.Query().Get("sort"),
+		StartDate:    startDate,
+	})
 	if err != nil {
 		writeError(w, stdhttp.StatusInternalServerError, "failed to list events")
 		return
 	}
 
 	writeJSON(w, stdhttp.StatusOK, map[string]any{
-		"events": eventList,
+		"events":     eventPage.Items,
+		"page":       eventPage.Page,
+		"pageSize":   eventPage.PageSize,
+		"total":      eventPage.Total,
+		"totalPages": eventPage.TotalPages,
 	})
 }
 
@@ -138,12 +166,12 @@ func (server *Server) createSubmission(w stdhttp.ResponseWriter, r *stdhttp.Requ
 		if err == nil {
 			defer file.Close()
 			upload := uploads.FileUpload{
-				File:               file,
-				Header:             header,
-				SubmissionPassword: r.FormValue("submissionPassword"),
-				PhotographerName:   r.FormValue("photographerName"),
-				Tags:               parseTagsValue(r.FormValue("tags")),
-				Visibility:         r.FormValue("visibility"),
+				File:             file,
+				Header:           header,
+				SubmissionToken:  r.FormValue("submissionToken"),
+				PhotographerName: r.FormValue("photographerName"),
+				Tags:             parseTagsValue(r.FormValue("tags")),
+				Visibility:       r.FormValue("visibility"),
 			}
 			if isAdmin {
 				photo, err := server.uploadService.CreateApprovedWithLimits(r.Context(), id, upload, maxImageBytes, maxVideoBytes)
@@ -175,12 +203,12 @@ func (server *Server) createSubmission(w stdhttp.ResponseWriter, r *stdhttp.Requ
 			return
 		}
 		upload := uploads.FileUpload{
-			File:               file,
-			Header:             header,
-			SubmissionPassword: r.FormValue("submissionPassword"),
-			PhotographerName:   r.FormValue("photographerName"),
-			Tags:               parseTagsValue(r.FormValue("tags")),
-			Visibility:         r.FormValue("visibility"),
+			File:             file,
+			Header:           header,
+			SubmissionToken:  r.FormValue("submissionToken"),
+			PhotographerName: r.FormValue("photographerName"),
+			Tags:             parseTagsValue(r.FormValue("tags")),
+			Visibility:       r.FormValue("visibility"),
 		}
 		if isAdmin {
 			photo, err := server.uploadService.CreateApprovedWithLimits(r.Context(), id, upload, maxImageBytes, maxVideoBytes)
@@ -263,16 +291,21 @@ func (server *Server) listPublicPhotos(w stdhttp.ResponseWriter, r *stdhttp.Requ
 	result, err := server.galleryService.ListForEventPageWithOptions(r.Context(), id, gallery.ListOptions{
 		Admin:           false,
 		PrivateAccess:   server.eventPrivateAccessUnlocked(r, id),
-		FingerprintHash: viewerFingerprintHash(r),
+		FingerprintHash: server.viewerFingerprintHash(w, r),
 		Page:            page,
 		PageSize:        pageSize,
 		Visibility:      visibility,
+		Tag:             r.URL.Query().Get("tag"),
+		Photographer:    r.URL.Query().Get("photographer"),
+		MediaType:       r.URL.Query().Get("mediaType"),
+		Sort:            r.URL.Query().Get("sort"),
 	})
 	if err != nil {
 		writeError(w, stdhttp.StatusInternalServerError, "failed to list photos")
 		return
 	}
 
+	w.Header().Set("Cache-Control", "private, no-store")
 	writeJSON(w, stdhttp.StatusOK, map[string]any{
 		"photos":     result.Items,
 		"total":      result.Total,
@@ -323,7 +356,7 @@ func (server *Server) likePhoto(w stdhttp.ResponseWriter, r *stdhttp.Request) {
 		return
 	}
 
-	result, err := server.galleryService.Like(r.Context(), id, viewerFingerprintHash(r))
+	result, err := server.galleryService.Like(r.Context(), id, server.viewerFingerprintHash(w, r))
 	if err != nil {
 		if strings.Contains(err.Error(), "not found") {
 			writeError(w, stdhttp.StatusNotFound, err.Error())
@@ -333,5 +366,6 @@ func (server *Server) likePhoto(w stdhttp.ResponseWriter, r *stdhttp.Request) {
 		return
 	}
 
+	w.Header().Set("Cache-Control", "private, no-store")
 	writeJSON(w, stdhttp.StatusOK, result)
 }

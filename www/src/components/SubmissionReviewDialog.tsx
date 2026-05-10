@@ -29,7 +29,7 @@ import {
 } from '@mui/material';
 import type { SelectChangeEvent } from '@mui/material/Select';
 import { useEffect, useMemo, useState } from 'react';
-import { approveSubmissions, deleteSubmissions, getEventPendingSubmissions, type EventCard, type Photo, type Submission } from '../api/client';
+import { approveSubmissions, deleteSubmissions, getEventPendingSubmissions, getPendingSubmissions, type EventCard, type Photo, type Submission } from '../api/client';
 import { usePersistentState } from '../hooks/usePersistentState';
 import { ImagePreviewDialog, type ImagePreviewItem } from './ImagePreviewDialog';
 
@@ -56,6 +56,7 @@ export function SubmissionReviewDialog({ event, onChanged, onClose, open }: Subm
     () =>
       submissions.map((submission) => ({
         contentType: submission.contentType,
+        previewSrc: submission.thumbnailUrl,
         src: submission.url,
         subtitle: submission.photographerName ? `摄影师：${submission.photographerName}` : '匿名投稿',
         title: `投稿 #${submission.id}`
@@ -64,10 +65,9 @@ export function SubmissionReviewDialog({ event, onChanged, onClose, open }: Subm
   );
 
   function refresh() {
-    if (!event) return;
     setLoading(true);
     setError('');
-    getEventPendingSubmissions(event.id)
+    (event ? getEventPendingSubmissions(event.id) : getPendingSubmissions())
       .then((items) => {
         setSubmissions(items);
         setSelected((prev) => prev.filter((id) => items.some((item) => item.id === id)));
@@ -118,7 +118,7 @@ export function SubmissionReviewDialog({ event, onChanged, onClose, open }: Subm
               审核返图
             </Typography>
             <Typography color="text.secondary" variant="body2">
-              {event?.title || '当前兽聚'} / 当前待审核 {submissions.length} 个
+              {event?.title || '全部兽聚'} / 当前待审核 {submissions.length} 个
             </Typography>
           </Box>
           <Stack direction="row" sx={{ gap: 1 }}>

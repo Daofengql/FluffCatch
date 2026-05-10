@@ -403,6 +403,11 @@ func HashPassword(password string) (string, error) {
 	), nil
 }
 
+func TokenHash(token string) string {
+	sum := sha256.Sum256([]byte(token))
+	return hex.EncodeToString(sum[:])
+}
+
 func VerifyPassword(password string, encoded string) (bool, error) {
 	parts := strings.Split(encoded, "$")
 	if len(parts) != 4 {

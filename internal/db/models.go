@@ -73,6 +73,7 @@ type Photo struct {
 	LikeCount        int64      `gorm:"column:like_count"`
 	PhotographerName *string    `gorm:"column:photographer_name"`
 	Visibility       string     `gorm:"column:visibility"`
+	Exif             []byte     `gorm:"column:exif;type:json"`
 	TakenAt          *time.Time `gorm:"column:taken_at"`
 	SortAt           time.Time  `gorm:"column:sort_at"`
 	CreatedAt        time.Time  `gorm:"column:created_at"`
@@ -93,6 +94,8 @@ type Submission struct {
 	PhotographerName *string    `gorm:"column:photographer_name"`
 	Tags             []byte     `gorm:"column:tags;type:json"`
 	Status           string     `gorm:"column:status"`
+	Exif             []byte     `gorm:"column:exif;type:json"`
+	TakenAt          *time.Time `gorm:"column:taken_at"`
 	CreatedAt        time.Time  `gorm:"column:created_at"`
 	ApprovedAt       *time.Time `gorm:"column:approved_at"`
 }
@@ -122,3 +125,19 @@ type PhotoLike struct {
 }
 
 func (PhotoLike) TableName() string { return "photo_likes" }
+
+type SubmissionLink struct {
+	ID               int64      `gorm:"column:id;primaryKey;autoIncrement"`
+	EventID          int64      `gorm:"column:event_id"`
+	TokenHash        string     `gorm:"column:token_hash"`
+	Label            string     `gorm:"column:label"`
+	PhotographerName *string    `gorm:"column:photographer_name"`
+	ExpiresAt        *time.Time `gorm:"column:expires_at"`
+	MaxUses          int        `gorm:"column:max_uses"`
+	UseCount         int        `gorm:"column:use_count"`
+	RevokedAt        *time.Time `gorm:"column:revoked_at"`
+	CreatedAt        time.Time  `gorm:"column:created_at"`
+	UpdatedAt        time.Time  `gorm:"column:updated_at"`
+}
+
+func (SubmissionLink) TableName() string { return "submission_links" }

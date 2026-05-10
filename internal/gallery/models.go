@@ -26,6 +26,7 @@ type Photo struct {
 	PhotographerName string     `json:"photographerName,omitempty"`
 	Visibility       Visibility `json:"visibility"`
 	Tags             []Tag      `json:"tags"`
+	Exif             map[string]any `json:"exif,omitempty"`
 	TakenAt          *time.Time `json:"takenAt,omitempty"`
 	CreatedAt        time.Time  `json:"createdAt"`
 	UpdatedAt        time.Time  `json:"updatedAt"`
@@ -52,17 +53,25 @@ type ListOptions struct {
 	Page            int
 	PageSize        int
 	Visibility      Visibility
+	Tag             string
+	Photographer    string
+	MediaType       string
+	Sort            string
 }
 
 type UpdatePhotoRequest struct {
 	PhotographerName string     `json:"photographerName"`
 	Visibility       Visibility `json:"visibility"`
 	Tags             []string   `json:"tags"`
+	TakenAt          string     `json:"takenAt"`
 }
 
 type BatchUpdatePhotosRequest struct {
-	PhotoIDs   []int64    `json:"photoIds"`
-	Visibility Visibility `json:"visibility"`
+	PhotoIDs          []int64    `json:"photoIds"`
+	Visibility        Visibility `json:"visibility"`
+	PhotographerName  *string    `json:"photographerName"`
+	Tags              []string   `json:"tags"`
+	ReplaceTags       bool       `json:"replaceTags"`
 }
 
 type LikeResult struct {

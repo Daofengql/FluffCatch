@@ -1,7 +1,9 @@
 package http
 
 import (
+	"crypto/rand"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -13,12 +15,16 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 
 	"fluffcatch/internal/gallery"
 	frontend "fluffcatch/www"
 
 	"github.com/gin-gonic/gin"
 )
+
+const viewerCookieName = "fluffcatch_viewer"
+const viewerCookieMaxAge = 365 * 24 * 60 * 60
 
 func (server *Server) mountStaticApp(r *gin.Engine) {
 	switch server.cfg.Frontend.Mode {
@@ -127,6 +133,22 @@ func parsePagination(r *stdhttp.Request, defaultPageSize int) (int, int) {
 	return page, pageSize
 }
 
+func parseOptionalDate(w stdhttp.ResponseWriter, value string, name string, endOfDay bool) (*time.Time, bool) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return nil, true
+	}
+	parsed, err := time.ParseInLocation("2006-01-02", value, time.Local)
+	if err != nil {
+		writeError(w, stdhttp.StatusBadRequest, fmt.Sprintf("invalid %s", name))
+		return nil, false
+	}
+	if endOfDay {
+		parsed = parsed.Add(24*time.Hour - time.Nanosecond)
+	}
+	return &parsed, true
+}
+
 func parsePhotoVisibility(r *stdhttp.Request) (gallery.Visibility, bool) {
 	switch strings.ToLower(strings.TrimSpace(r.URL.Query().Get("visibility"))) {
 	case "", "all":
@@ -177,7 +199,57 @@ func siteBackgroundObjectKey(variant string, contentHash string) string {
 	return fmt.Sprintf("site/backgrounds/%s/%s.jpg", variant, contentHash)
 }
 
-func viewerFingerprintHash(r *stdhttp.Request) string {
+func (server *Server) viewerFingerprintHash(w stdhttp.ResponseWriter, r *stdhttp.Request) string {
+	viewerID := server.viewerID(w, r)
+	sum := sha256.Sum256([]byte(viewerID))
+	return hex.EncodeToString(sum[:])
+}
+
+func (server *Server) viewerID(w stdhttp.ResponseWriter, r *stdhttp.Request) string {
+	if cookie, err := r.Cookie(viewerCookieName); err == nil {
+		value := strings.TrimSpace(cookie.Value)
+		if isValidViewerID(value) {
+			return value
+		}
+	}
+
+	value := newViewerID()
+	secure := r.TLS != nil || server.cfg.App.Env == "production"
+	stdhttp.SetCookie(w, &stdhttp.Cookie{
+		Name:     viewerCookieName,
+		Value:    value,
+		Path:     "/",
+		MaxAge:   viewerCookieMaxAge,
+		HttpOnly: true,
+		SameSite: stdhttp.SameSiteLaxMode,
+		Secure:   secure,
+	})
+	return value
+}
+
+func newViewerID() string {
+	raw := make([]byte, 32)
+	if _, err := rand.Read(raw); err != nil {
+		fallback := sha256.Sum256([]byte(strings.Join([]string{time.Now().String(), strconv.FormatInt(time.Now().UnixNano(), 10)}, "|")))
+		return base64.RawURLEncoding.EncodeToString(fallback[:])
+	}
+	return base64.RawURLEncoding.EncodeToString(raw)
+}
+
+func isValidViewerID(value string) bool {
+	if len(value) < 32 || len(value) > 96 {
+		return false
+	}
+	for _, char := range value {
+		if (char >= 'a' && char <= 'z') || (char >= 'A' && char <= 'Z') || (char >= '0' && char <= '9') || char == '-' || char == '_' {
+			continue
+		}
+		return false
+	}
+	return true
+}
+
+func clientIPFromRequest(r *stdhttp.Request) string {
 	ip := strings.TrimSpace(r.RemoteAddr)
 	if host, _, err := net.SplitHostPort(ip); err == nil {
 		ip = host
@@ -185,17 +257,11 @@ func viewerFingerprintHash(r *stdhttp.Request) string {
 	if forwarded := strings.TrimSpace(r.Header.Get("X-Forwarded-For")); forwarded != "" {
 		parts := strings.Split(forwarded, ",")
 		if first := strings.TrimSpace(parts[0]); first != "" {
-			ip = first
+			return first
 		}
 	}
 	if realIP := strings.TrimSpace(r.Header.Get("X-Real-IP")); realIP != "" {
-		ip = realIP
+		return realIP
 	}
-
-	sum := sha256.Sum256([]byte(strings.Join([]string{
-		ip,
-		r.UserAgent(),
-		strings.TrimSpace(r.Header.Get("Accept-Language")),
-	}, "|")))
-	return hex.EncodeToString(sum[:])
+	return ip
 }

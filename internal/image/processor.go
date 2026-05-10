@@ -3,6 +3,7 @@ package image
 import (
 	"bytes"
 	"context"
+	"encoding/binary"
 	"fmt"
 	stdimage "image"
 	"image/color"
@@ -10,6 +11,8 @@ import (
 	"image/jpeg"
 	"io"
 	"math"
+	"strings"
+	"time"
 
 	_ "image/gif"
 	_ "image/png"
@@ -21,6 +24,166 @@ type Metadata struct {
 	CameraMake  string `json:"cameraMake,omitempty"`
 	CameraModel string `json:"cameraModel,omitempty"`
 	TakenAt     string `json:"takenAt,omitempty"`
+}
+
+func ExtractMetadataBytes(content []byte) Metadata {
+	metadata := Metadata{}
+	if cfg, _, err := stdimage.DecodeConfig(bytes.NewReader(content)); err == nil {
+		metadata.Width = cfg.Width
+		metadata.Height = cfg.Height
+	}
+	metadata = mergeMetadata(metadata, extractJPEGEXIF(content))
+	return metadata
+}
+
+func mergeMetadata(base Metadata, extra Metadata) Metadata {
+	if base.Width == 0 {
+		base.Width = extra.Width
+	}
+	if base.Height == 0 {
+		base.Height = extra.Height
+	}
+	if base.CameraMake == "" {
+		base.CameraMake = extra.CameraMake
+	}
+	if base.CameraModel == "" {
+		base.CameraModel = extra.CameraModel
+	}
+	if base.TakenAt == "" {
+		base.TakenAt = extra.TakenAt
+	}
+	return base
+}
+
+func extractJPEGEXIF(content []byte) Metadata {
+	if len(content) < 4 || content[0] != 0xff || content[1] != 0xd8 {
+		return Metadata{}
+	}
+	for offset := 2; offset+4 <= len(content); {
+		if content[offset] != 0xff {
+			return Metadata{}
+		}
+		marker := content[offset+1]
+		offset += 2
+		if marker == 0xda || marker == 0xd9 {
+			return Metadata{}
+		}
+		if offset+2 > len(content) {
+			return Metadata{}
+		}
+		segmentLen := int(binary.BigEndian.Uint16(content[offset : offset+2]))
+		offset += 2
+		if segmentLen < 2 || offset+segmentLen-2 > len(content) {
+			return Metadata{}
+		}
+		segment := content[offset : offset+segmentLen-2]
+		if marker == 0xe1 && len(segment) > 6 && bytes.Equal(segment[:6], []byte("Exif\x00\x00")) {
+			return parseTIFFMetadata(segment[6:])
+		}
+		offset += segmentLen - 2
+	}
+	return Metadata{}
+}
+
+func parseTIFFMetadata(data []byte) Metadata {
+	if len(data) < 8 {
+		return Metadata{}
+	}
+	var order binary.ByteOrder
+	switch string(data[:2]) {
+	case "II":
+		order = binary.LittleEndian
+	case "MM":
+		order = binary.BigEndian
+	default:
+		return Metadata{}
+	}
+	if order.Uint16(data[2:4]) != 42 {
+		return Metadata{}
+	}
+	ifdOffset := int(order.Uint32(data[4:8]))
+	metadata, exifOffset := parseIFD(data, order, ifdOffset)
+	if exifOffset > 0 {
+		exifMetadata, _ := parseIFD(data, order, exifOffset)
+		metadata = mergeMetadata(metadata, exifMetadata)
+	}
+	return metadata
+}
+
+func parseIFD(data []byte, order binary.ByteOrder, offset int) (Metadata, int) {
+	metadata := Metadata{}
+	if offset <= 0 || offset+2 > len(data) {
+		return metadata, 0
+	}
+	count := int(order.Uint16(data[offset : offset+2]))
+	pos := offset + 2
+	exifOffset := 0
+	for i := 0; i < count; i++ {
+		entry := pos + i*12
+		if entry+12 > len(data) {
+			break
+		}
+		tag := order.Uint16(data[entry : entry+2])
+		fieldType := order.Uint16(data[entry+2 : entry+4])
+		fieldCount := int(order.Uint32(data[entry+4 : entry+8]))
+		value := exifFieldBytes(data, order, entry+8, fieldType, fieldCount)
+		switch tag {
+		case 0x010f:
+			metadata.CameraMake = cleanEXIFString(value)
+		case 0x0110:
+			metadata.CameraModel = cleanEXIFString(value)
+		case 0x8769:
+			if len(value) >= 4 {
+				exifOffset = int(order.Uint32(value[:4]))
+			}
+		case 0x9003, 0x0132:
+			if parsed := parseEXIFTime(cleanEXIFString(value)); parsed != "" {
+				metadata.TakenAt = parsed
+			}
+		}
+	}
+	return metadata, exifOffset
+}
+
+func exifFieldBytes(data []byte, order binary.ByteOrder, valueOffset int, fieldType uint16, count int) []byte {
+	unitSize := 1
+	switch fieldType {
+	case 3:
+		unitSize = 2
+	case 4, 9:
+		unitSize = 4
+	case 5, 10:
+		unitSize = 8
+	}
+	size := unitSize * count
+	if size <= 0 {
+		return nil
+	}
+	if size <= 4 {
+		return data[valueOffset : valueOffset+4]
+	}
+	target := int(order.Uint32(data[valueOffset : valueOffset+4]))
+	if target < 0 || target+size > len(data) {
+		return nil
+	}
+	return data[target : target+size]
+}
+
+func cleanEXIFString(value []byte) string {
+	text := strings.TrimRight(string(value), "\x00 ")
+	return strings.TrimSpace(text)
+}
+
+func parseEXIFTime(value string) string {
+	if value == "" {
+		return ""
+	}
+	for _, layout := range []string{"2006:01:02 15:04:05", "2006-01-02 15:04:05", time.RFC3339} {
+		if parsed, err := time.ParseInLocation(layout, value, time.Local); err == nil {
+			return parsed.Format(time.RFC3339)
+		}
+	}
+	return ""
 }
 
 type Thumbnail struct {

@@ -1,7 +1,7 @@
 import MDEditor from '@uiw/react-md-editor/nohighlight';
 import '@uiw/react-md-editor/markdown-editor.css';
 import '@uiw/react-markdown-preview/markdown.css';
-import { Article, ColorLens, Image, Info, Key, Lock, Security, Storage, UploadFile } from '@mui/icons-material';
+import { Article, ChatBubbleOutlined, ColorLens, Image, Info, Key, Lock, Search, Security, Storage, UploadFile } from '@mui/icons-material';
 import {
   Alert,
   Avatar,
@@ -10,6 +10,7 @@ import {
   Chip,
   Divider,
   FormControl,
+  FormControlLabel,
   Grid,
   InputLabel,
   List,
@@ -20,6 +21,7 @@ import {
   Paper,
   Select,
   Stack,
+  Switch,
   TextField,
   Typography
 } from '@mui/material';
@@ -34,6 +36,8 @@ import {
   getAdminSettings,
   getOIDCBindURL,
   getOIDCStatus,
+  scanMissingThumbnails,
+  scanOrphanStorageObjects,
   testStorageConnection,
   updateSiteSettings,
   updateOIDCSettings,
@@ -43,6 +47,7 @@ import {
   uploadSiteBackground,
   uploadSiteLogo,
   type AdminSettingsResponse,
+  type FooterSection,
   type OIDCSettings,
   type OIDCStatus,
   type S3Settings,
@@ -54,9 +59,25 @@ import {
 import { PageHeader } from '../../components/common/PageHeader';
 import { useThemePreference } from '../../theme/ThemePreferenceProvider';
 import { appPalettes, normalizeThemeColor } from '../../theme/theme';
+import { sanitizeFooterHtml } from '../../utils/html';
 
-type SettingsSection = 'site' | 'theme' | 'background' | 'footer' | 'upload' | 'storage' | 'oidc' | 'security';
+type SettingsSection = 'site' | 'theme' | 'background' | 'contact' | 'footer' | 'upload' | 'storage' | 'maintenance' | 'oidc' | 'security';
 type BackgroundVariant = 'desktop' | 'mobile';
+
+const fallbackFooterSections: FooterSection[] = [
+  {
+    title: '关于站点',
+    html: `<p>兽聚返图收集与画廊</p><p>© ${new Date().getFullYear()} FluffCatch. All rights reserved.</p>`
+  },
+  {
+    title: '快速入口',
+    html: '<ul><li><a href="/">首页</a></li><li><a href="/submit">返图入口</a></li></ul>'
+  },
+  {
+    title: '站点信息',
+    html: '<p>公开画廊、限时投稿和活动返图都会在这里汇总。</p>'
+  }
+];
 
 const fallbackSite: SiteSettings = {
   name: 'FluffCatch',
@@ -68,13 +89,10 @@ const fallbackSite: SiteSettings = {
   themePrimaryColor: '#2563eb',
   publicBackgroundDesktopUrl: '',
   publicBackgroundMobileUrl: '',
-  footerText: `© ${new Date().getFullYear()} FluffCatch. All rights reserved.`,
-  icpNumber: '',
-  policeRecordNumber: '',
-  policeRecordUrl: '',
-  contactText: '',
-  contactEmail: '',
-  contactUrl: ''
+  contactWidgetEnabled: false,
+  contactWidgetTitle: '联系我',
+  contactWidgetHtml: '',
+  footerSections: fallbackFooterSections
 };
 
 const fallbackUpload: UploadSettings = {
@@ -110,9 +128,11 @@ const settingsSections: { icon: ReactNode; key: SettingsSection; label: string }
   { icon: <Info />, key: 'site', label: '站点信息' },
   { icon: <ColorLens />, key: 'theme', label: '主题配色' },
   { icon: <Image />, key: 'background', label: '前台背景' },
+  { icon: <ChatBubbleOutlined />, key: 'contact', label: '联系卡片' },
   { icon: <Article />, key: 'footer', label: '页脚备案' },
   { icon: <UploadFile />, key: 'upload', label: '上传限制' },
   { icon: <Storage />, key: 'storage', label: '存储策略' },
+  { icon: <Search />, key: 'maintenance', label: '存储维护' },
   { icon: <Lock />, key: 'oidc', label: 'OIDC 登录' },
   { icon: <Security />, key: 'security', label: '账号安全' }
 ];
@@ -204,6 +224,14 @@ export function AdminSettingsPage() {
     setSite((prev) => ({ ...prev, [event.target.name]: event.target.value }));
   }
 
+  function updateFooterSection(index: number, patch: Partial<FooterSection>) {
+    setSite((prev) => {
+      const sections = normalizeFooterSections(prev.footerSections);
+      sections[index] = { ...sections[index], ...patch };
+      return { ...prev, footerSections: sections };
+    });
+  }
+
   function updateThemeDraft(patch: Partial<Pick<SiteSettings, 'themeMode' | 'themePreset' | 'themePrimaryColor'>>) {
     setSite((prev) => {
       const next = { ...prev, ...patch };
@@ -270,7 +298,12 @@ export function AdminSettingsPage() {
 
   async function handleFooterSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    await saveSite(site, '页脚备案已保存。');
+    await saveSite({ ...site, footerSections: normalizeFooterSections(site.footerSections) }, '页脚内容已保存。');
+  }
+
+  async function handleContactSubmit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    await saveSite(site, '联系卡片已保存。');
   }
 
   async function handleUploadSubmit(event: FormEvent<HTMLFormElement>) {
@@ -665,50 +698,81 @@ export function AdminSettingsPage() {
 
           {activeSection === 'footer' && (
             <Stack component="form" onSubmit={handleFooterSubmit} sx={{ gap: 2.5 }}>
-              <TextField
-                fullWidth
-                helperText="例如：© 2026 FluffCatch. All rights reserved."
-                label="页脚版权文案"
-                multiline
-                name="footerText"
-                onChange={handleSiteChange}
-                value={site.footerText}
-              />
-              <TextField fullWidth label="ICP备案号" name="icpNumber" onChange={handleSiteChange} placeholder="例如：粤ICP备12345678号" value={site.icpNumber} />
               <Grid container spacing={2}>
-                <Grid size={{ xs: 12, md: 6 }}>
-                  <TextField fullWidth label="公安备案号" name="policeRecordNumber" onChange={handleSiteChange} placeholder="例如：粤公网安备 44000000000000号" value={site.policeRecordNumber} />
-                </Grid>
-                <Grid size={{ xs: 12, md: 6 }}>
-                  <TextField fullWidth label="公安备案链接" name="policeRecordUrl" onChange={handleSiteChange} placeholder="https://beian.mps.gov.cn/..." value={site.policeRecordUrl} />
-                </Grid>
-                <Grid size={{ xs: 12, md: 4 }}>
-                  <TextField fullWidth label="联系方式文案" name="contactText" onChange={handleSiteChange} placeholder="例如：联系我们" value={site.contactText} />
-                </Grid>
-                <Grid size={{ xs: 12, md: 4 }}>
-                  <TextField fullWidth label="联系邮箱" name="contactEmail" onChange={handleSiteChange} placeholder="hello@example.com" value={site.contactEmail} />
-                </Grid>
-                <Grid size={{ xs: 12, md: 4 }}>
-                  <TextField fullWidth label="联系链接" name="contactUrl" onChange={handleSiteChange} placeholder="https://example.com/contact" value={site.contactUrl} />
-                </Grid>
+                {normalizeFooterSections(site.footerSections).map((section, index) => (
+                  <Grid key={`footer-editor-${index}`} size={{ xs: 12, md: index === 0 ? 12 : 6 }}>
+                    <Paper sx={{ p: 2 }} variant="outlined">
+                      <Stack sx={{ gap: 1.5 }}>
+                        <TextField
+                          fullWidth
+                          label={`分区 ${index + 1} 标题`}
+                          onChange={(event) => updateFooterSection(index, { title: event.target.value })}
+                          value={section.title}
+                        />
+                        <TextField
+                          fullWidth
+                          label={`分区 ${index + 1} HTML`}
+                          minRows={index === 0 ? 5 : 8}
+                          multiline
+                          onChange={(event) => updateFooterSection(index, { html: event.target.value })}
+                          placeholder='<p>联系方式、备案号、社群链接等内容都可以放在这里。</p>'
+                          value={section.html}
+                        />
+                      </Stack>
+                    </Paper>
+                  </Grid>
+                ))}
               </Grid>
-              <Box sx={{ bgcolor: '#030712', border: '1px solid rgba(255, 255, 255, 0.12)', borderRadius: 2, color: 'rgba(255, 255, 255, 0.76)', p: 2 }}>
-                <Typography sx={{ color: '#ffffff', fontWeight: 700, mb: 1 }} variant="body2">页脚预览</Typography>
-                <Stack direction={{ xs: 'column', md: 'row' }} sx={{ alignItems: { xs: 'flex-start', md: 'center' }, gap: 1.25, justifyContent: 'space-between' }}>
-                  <Typography sx={{ color: 'rgba(255, 255, 255, 0.76)' }} variant="body2">
-                    {site.footerText || fallbackSite.footerText}
-                  </Typography>
-                  <Stack direction="row" sx={{ flexWrap: 'wrap', gap: 1.5 }}>
-                    {site.icpNumber && <Typography sx={{ color: 'rgba(255, 255, 255, 0.76)' }} variant="body2">{site.icpNumber}</Typography>}
-                    {site.policeRecordNumber && <Typography sx={{ color: 'rgba(255, 255, 255, 0.76)' }} variant="body2">{site.policeRecordNumber}</Typography>}
-                    {(site.contactText || site.contactEmail || site.contactUrl) && (
-                      <Typography sx={{ color: 'rgba(255, 255, 255, 0.76)' }} variant="body2">{site.contactText || site.contactEmail || site.contactUrl}</Typography>
-                    )}
-                  </Stack>
-                </Stack>
-              </Box>
+              <FooterPreview sections={normalizeFooterSections(site.footerSections)} site={site} />
               <Box>
-                <Button type="submit" variant="contained">保存页脚备案</Button>
+                <Button type="submit" variant="contained">保存页脚内容</Button>
+              </Box>
+            </Stack>
+          )}
+
+          {activeSection === 'contact' && (
+            <Stack component="form" onSubmit={handleContactSubmit} sx={{ gap: 2.5 }}>
+              <Paper sx={{ p: 2 }} variant="outlined">
+                <Stack sx={{ gap: 2 }}>
+                  <Stack direction={{ xs: 'column', md: 'row' }} sx={{ alignItems: { xs: 'stretch', md: 'center' }, gap: 2, justifyContent: 'space-between' }}>
+                    <Box>
+                      <Typography sx={{ fontWeight: 900 }}>悬浮联系卡片</Typography>
+                      <Typography color="text.secondary" variant="body2">显示在前台右下角，适合放 QQ、微信或社群二维码。</Typography>
+                    </Box>
+                    <FormControlLabel
+                      control={<Switch checked={site.contactWidgetEnabled} onChange={(event) => setSite((prev) => ({ ...prev, contactWidgetEnabled: event.target.checked }))} />}
+                      label="启用"
+                    />
+                  </Stack>
+                  <Grid container spacing={2}>
+                    <Grid size={{ xs: 12, md: 4 }}>
+                      <TextField
+                        fullWidth
+                        label="按钮标题"
+                        name="contactWidgetTitle"
+                        onChange={handleSiteChange}
+                        placeholder="联系我"
+                        value={site.contactWidgetTitle}
+                      />
+                    </Grid>
+                    <Grid size={{ xs: 12, md: 8 }}>
+                      <TextField
+                        fullWidth
+                        label="卡片 HTML"
+                        minRows={6}
+                        multiline
+                        name="contactWidgetHtml"
+                        onChange={handleSiteChange}
+                        placeholder='<p>扫码联系</p><img src="https://example.com/qrcode.png" alt="二维码" />'
+                        value={site.contactWidgetHtml}
+                      />
+                    </Grid>
+                  </Grid>
+                  <ContactWidgetPreview site={site} />
+                </Stack>
+              </Paper>
+              <Box>
+                <Button type="submit" variant="contained">保存联系卡片</Button>
               </Box>
             </Stack>
           )}
@@ -919,6 +983,10 @@ export function AdminSettingsPage() {
             </Stack>
           )}
 
+          {activeSection === 'maintenance' && (
+            <StorageMaintenancePanel />
+          )}
+
           {activeSection === 'security' && (
             <AccountSecurityPanel />
           )}
@@ -944,6 +1012,127 @@ function resolveThemePreview(site: SiteSettings, colorScheme: string | undefined
     text: isDark ? '#f8fafc' : '#111827'
   };
 }
+
+function FooterPreview({ sections, site }: { sections: FooterSection[]; site: SiteSettings }) {
+  const siteName = site.name || fallbackSite.name;
+  const subtitle = site.subtitle || fallbackSite.subtitle;
+  const [introSection, ...detailSections] = sections;
+
+  return (
+    <Box sx={{ bgcolor: '#030712', border: '1px solid rgba(255, 255, 255, 0.12)', borderRadius: 2, color: 'rgba(255, 255, 255, 0.76)', p: 2.5 }}>
+      <Typography sx={{ color: '#ffffff', fontWeight: 700, mb: 2 }} variant="body2">页脚预览</Typography>
+      <Stack direction={{ xs: 'column', md: 'row' }} sx={{ alignItems: 'flex-start', gap: { xs: 3, md: 4 } }}>
+        <Stack sx={{ flex: 1.1, gap: 1.75, maxWidth: 520, minWidth: { xs: '100%', md: 0 } }}>
+          <Stack direction="row" sx={{ alignItems: 'center', gap: 1.5, minWidth: 0 }}>
+            {site.logoUrl ? (
+              <Box alt={siteName} component="img" src={site.logoUrl} sx={{ flexShrink: 0, height: 40, maxWidth: 150, objectFit: 'contain' }} />
+            ) : (
+              <Box
+                sx={{
+                  alignItems: 'center',
+                  bgcolor: 'rgba(255, 255, 255, 0.1)',
+                  border: '1px solid rgba(255, 255, 255, 0.16)',
+                  borderRadius: 1.5,
+                  color: '#ffffff',
+                  display: 'flex',
+                  flexShrink: 0,
+                  fontWeight: 900,
+                  height: 40,
+                  justifyContent: 'center',
+                  width: 40
+                }}
+              >
+                {siteName.slice(0, 1).toUpperCase()}
+              </Box>
+            )}
+            <Box sx={{ minWidth: 0 }}>
+              <Typography noWrap sx={{ color: '#ffffff', fontWeight: 900 }} variant="subtitle1">{siteName}</Typography>
+              <Typography sx={{ color: 'rgba(255, 255, 255, 0.58)', lineHeight: 1.5 }} variant="body2">{subtitle}</Typography>
+            </Box>
+          </Stack>
+          <FooterPreviewColumn section={introSection} showEmpty />
+        </Stack>
+        <Stack direction={{ xs: 'column', sm: 'row' }} sx={{ flex: 1.25, gap: { xs: 3, sm: 4 }, minWidth: 0, width: '100%' }}>
+          {detailSections.map((section, index) => (
+            <FooterPreviewColumn key={`footer-preview-${index}`} section={section} showEmpty />
+          ))}
+        </Stack>
+      </Stack>
+    </Box>
+  );
+}
+
+function FooterPreviewColumn({ section, showEmpty = false }: { section?: FooterSection; showEmpty?: boolean }) {
+  const title = section?.title.trim() || '未命名分区';
+  const html = section?.html.trim() || (showEmpty ? '<p>暂无内容</p>' : '');
+  return (
+    <Stack sx={{ flex: 1, gap: 1.1, minWidth: 0 }}>
+      <Typography sx={{ color: '#ffffff', fontSize: '0.78rem', fontWeight: 900 }} variant="overline">{title}</Typography>
+      <Box dangerouslySetInnerHTML={{ __html: sanitizeFooterHtml(html) }} sx={footerPreviewHtmlSx} />
+    </Stack>
+  );
+}
+
+function ContactWidgetPreview({ site }: { site: SiteSettings }) {
+  const html = site.contactWidgetHtml.trim() || '<p>暂无内容</p>';
+  return (
+    <Box sx={{ bgcolor: 'background.default', border: '1px dashed', borderColor: 'divider', borderRadius: 2, p: 2 }}>
+      <Stack direction="row" sx={{ alignItems: 'center', gap: 1, justifyContent: 'space-between', mb: 1 }}>
+        <Typography sx={{ fontWeight: 900 }} variant="subtitle2">
+          {site.contactWidgetTitle || '联系我'}
+        </Typography>
+        <Typography color={site.contactWidgetEnabled ? 'success.main' : 'text.secondary'} variant="caption">
+          {site.contactWidgetEnabled ? '已启用' : '未启用'}
+        </Typography>
+      </Stack>
+      <Box dangerouslySetInnerHTML={{ __html: sanitizeFooterHtml(html) }} sx={contactWidgetPreviewHtmlSx} />
+    </Box>
+  );
+}
+
+function normalizeFooterSections(sections: FooterSection[] | undefined) {
+  const normalized: FooterSection[] = [];
+  for (let index = 0; index < 3; index += 1) {
+    const source = sections?.[index] ?? fallbackFooterSections[index];
+    normalized.push({
+      html: source.html.trim(),
+      title: source.title.trim()
+    });
+  }
+  return normalized;
+}
+
+const footerPreviewHtmlSx = {
+  color: 'rgba(255, 255, 255, 0.72)',
+  fontSize: '0.875rem',
+  lineHeight: 1.75,
+  overflowWrap: 'anywhere',
+  '& :first-of-type': { mt: 0 },
+  '& :last-child': { mb: 0 },
+  '& a': { color: 'rgba(255, 255, 255, 0.8)', textDecoration: 'none' },
+  '& p': { mb: 1, mt: 0 },
+  '& ul, & ol': { mb: 1, mt: 0, pl: 2.2 },
+  '& li': { mb: 0.5 },
+  '& strong, & b': { color: '#ffffff', fontWeight: 800 },
+  '& img': { borderRadius: 1, display: 'block', height: 'auto', maxHeight: 110, maxWidth: '100%', objectFit: 'contain' },
+  '& h1, & h2, & h3, & h4, & h5, & h6': { color: '#ffffff', fontSize: '0.95rem', fontWeight: 800, lineHeight: 1.4, mb: 1, mt: 0 }
+};
+
+const contactWidgetPreviewHtmlSx = {
+  color: 'text.secondary',
+  fontSize: '0.875rem',
+  lineHeight: 1.7,
+  overflowWrap: 'anywhere',
+  '& :first-of-type': { mt: 0 },
+  '& :last-child': { mb: 0 },
+  '& a': { color: 'primary.main', textDecoration: 'none' },
+  '& p': { mb: 1, mt: 0 },
+  '& ul, & ol': { mb: 1, mt: 0, pl: 2.2 },
+  '& li': { mb: 0.5 },
+  '& strong, & b': { color: 'text.primary', fontWeight: 800 },
+  '& img': { border: '1px solid', borderColor: 'divider', borderRadius: 1.5, display: 'block', height: 'auto', maxHeight: 180, maxWidth: '100%', objectFit: 'contain' },
+  '& h1, & h2, & h3, & h4, & h5, & h6': { color: 'text.primary', fontSize: '1rem', fontWeight: 900, lineHeight: 1.35, mb: 1, mt: 0 }
+};
 
 function applyThemePreviewVariables(node: HTMLElement, preview: ReturnType<typeof resolveThemePreview>) {
   node.style.setProperty('--theme-preview-background', preview.background);
@@ -1042,7 +1231,7 @@ function normalizeSection(section: string | undefined): SettingsSection {
 }
 
 function isSettingsSection(section: string | undefined): section is SettingsSection {
-  return section === 'site' || section === 'theme' || section === 'background' || section === 'footer' || section === 'upload' || section === 'storage' || section === 'oidc' || section === 'security';
+  return section === 'site' || section === 'theme' || section === 'background' || section === 'contact' || section === 'footer' || section === 'upload' || section === 'storage' || section === 'maintenance' || section === 'oidc' || section === 'security';
 }
 
 function AccountSecurityPanel() {
@@ -1194,6 +1383,72 @@ function AccountSecurityPanel() {
           </Button>
         </Box>
       </Stack>
+    </Stack>
+  );
+}
+
+function StorageMaintenancePanel() {
+  const [orphanResult, setOrphanResult] = useState<Awaited<ReturnType<typeof scanOrphanStorageObjects>> | null>(null);
+  const [thumbnailResult, setThumbnailResult] = useState<Awaited<ReturnType<typeof scanMissingThumbnails>> | null>(null);
+  const [error, setError] = useState('');
+  const [loading, setLoading] = useState('');
+
+  async function runScan(kind: 'orphans' | 'thumbnails') {
+    setError('');
+    setLoading(kind);
+    try {
+      if (kind === 'orphans') setOrphanResult(await scanOrphanStorageObjects());
+      else setThumbnailResult(await scanMissingThumbnails());
+    } catch (err) {
+      setError(err instanceof Error ? err.message : '扫描失败');
+    } finally {
+      setLoading('');
+    }
+  }
+
+  return (
+    <Stack sx={{ gap: 2.5 }}>
+      {error && <Alert severity="error">{error}</Alert>}
+      <Paper sx={{ p: 2 }} variant="outlined">
+        <Stack direction={{ xs: 'column', sm: 'row' }} sx={{ alignItems: { xs: 'stretch', sm: 'center' }, gap: 2, justifyContent: 'space-between' }}>
+          <Box>
+            <Typography sx={{ fontWeight: 800 }}>孤儿文件扫描</Typography>
+            <Typography color="text.secondary" variant="body2">扫描本地存储中未被数据库引用的文件，只生成报告，不自动删除。</Typography>
+          </Box>
+          <Button disabled={loading === 'orphans'} onClick={() => void runScan('orphans')} variant="contained">{loading === 'orphans' ? '扫描中...' : '开始扫描'}</Button>
+        </Stack>
+        {orphanResult && (
+          <Box sx={{ mt: 2 }}>
+            <Typography color="text.secondary" variant="body2">
+              发现 {orphanResult.total} 个可疑文件，约 {formatBytes(orphanResult.totalSizeBytes)}；已扫描 {orphanResult.scannedPolicies} 个本地策略，跳过 {orphanResult.skippedPolicies} 个非本地策略。
+            </Typography>
+            {orphanResult.items.slice(0, 20).map((item) => (
+              <Typography key={`${item.policyId}-${item.key}`} sx={{ display: 'block', overflowWrap: 'anywhere' }} variant="caption">
+                {item.policyId}: {item.key}
+              </Typography>
+            ))}
+          </Box>
+        )}
+      </Paper>
+      <Paper sx={{ p: 2 }} variant="outlined">
+        <Stack direction={{ xs: 'column', sm: 'row' }} sx={{ alignItems: { xs: 'stretch', sm: 'center' }, gap: 2, justifyContent: 'space-between' }}>
+          <Box>
+            <Typography sx={{ fontWeight: 800 }}>缩略图缺失扫描</Typography>
+            <Typography color="text.secondary" variant="body2">查找图片记录中没有缩略图键的正式图片和待审投稿。</Typography>
+          </Box>
+          <Button disabled={loading === 'thumbnails'} onClick={() => void runScan('thumbnails')} variant="contained">{loading === 'thumbnails' ? '扫描中...' : '开始扫描'}</Button>
+        </Stack>
+        {thumbnailResult && (
+          <Box sx={{ mt: 2 }}>
+            <Typography color="text.secondary" variant="body2">发现 {thumbnailResult.total} 条记录。</Typography>
+            {thumbnailResult.items.slice(0, 20).map((item) => (
+              <Typography key={`${item.kind}-${item.id}`} sx={{ display: 'block', overflowWrap: 'anywhere' }} variant="caption">
+                {item.kind} #{item.id} / event #{item.eventId}: {item.objectKey}
+              </Typography>
+            ))}
+          </Box>
+        )}
+      </Paper>
     </Stack>
   );
 }

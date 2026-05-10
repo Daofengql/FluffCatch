@@ -1,6 +1,7 @@
-import { ChevronLeft, ChevronRight, Close, Fullscreen, FullscreenExit, RotateRight, ZoomIn, ZoomOut } from '@mui/icons-material';
-import { Box, Button, Dialog, IconButton, Slider, Stack, Typography } from '@mui/material';
-import { useEffect, useMemo, useState } from 'react';
+import { ChevronLeft, ChevronRight, Close, CloudDownload, Fullscreen, FullscreenExit, RestartAlt, RotateRight, ZoomIn, ZoomOut } from '@mui/icons-material';
+import { Box, Button, CircularProgress, Dialog, IconButton, Slider, Stack, Tooltip, Typography } from '@mui/material';
+import { type PointerEvent as ReactPointerEvent, type WheelEvent, useEffect, useMemo, useRef, useState } from 'react';
+import { downloadPhoto } from '../utils/download';
 
 type ImagePreviewDialogProps = {
   open: boolean;
@@ -16,32 +17,473 @@ type ImagePreviewDialogProps = {
 export type ImagePreviewItem = {
   src: string;
   contentType?: string;
+  downloadFilename?: string;
+  downloadUrl?: string;
+  previewSrc?: string;
   title?: string;
   subtitle?: string;
+};
+
+type Point = {
+  x: number;
+  y: number;
 };
 
 export function ImagePreviewDialog({ images, index = 0, onClose, onIndexChange, open, src, subtitle, title }: ImagePreviewDialogProps) {
   const [zoom, setZoom] = useState(1);
   const [rotation, setRotation] = useState(0);
   const [fullscreen, setFullscreen] = useState(false);
+  const [offset, setOffset] = useState<Point>({ x: 0, y: 0 });
+  const [dragging, setDragging] = useState(false);
+  const [downloading, setDownloading] = useState(false);
+  const [downloadError, setDownloadError] = useState('');
+  const [pinchDistance, setPinchDistance] = useState(0);
+  const [loadedOriginalSrc, setLoadedOriginalSrc] = useState('');
+  const [loadedOriginals, setLoadedOriginals] = useState<Set<string>>(() => new Set());
+  const [trackOffset, setTrackOffset] = useState(0);
+  const [trackAnimating, setTrackAnimating] = useState(false);
+  const pointersRef = useRef<Map<number, Point>>(new Map());
+  const dragStartRef = useRef<Point | null>(null);
+  const stageRef = useRef<HTMLDivElement | null>(null);
+  const swipeStartRef = useRef<Point | null>(null);
+  const swipeLockRef = useRef<'vertical' | 'horizontal' | null>(null);
+  const slideTimerRef = useRef<number | null>(null);
+  const stageWidthRef = useRef(0);
+  const lastTapRef = useRef(0);
+  const [activeIndex, setActiveIndex] = useState(index);
   const slides = useMemo<ImagePreviewItem[]>(() => images?.length ? images : [{ src: src || '', title, subtitle }], [images, src, subtitle, title]);
-  const currentIndex = Math.min(Math.max(index, 0), Math.max(slides.length - 1, 0));
+  const requestedIndex = Math.min(Math.max(index, 0), Math.max(slides.length - 1, 0));
+  const currentIndex = Math.min(Math.max(activeIndex, 0), Math.max(slides.length - 1, 0));
   const current = slides[currentIndex] ?? { src: '', title, subtitle };
   const hasMany = slides.length > 1;
   const isVideo = current.contentType?.toLowerCase().startsWith('video/') || false;
+  const displaySrc = isVideo ? current.src : displaySourceFor(current, true);
 
   useEffect(() => {
     if (open) {
-      setZoom(1);
-      setRotation(0);
+      setActiveIndex(requestedIndex);
+    }
+  }, [open]);
+
+  useEffect(() => {
+    if (!open) return;
+    resetView();
+  }, [open, currentIndex]);
+
+  useEffect(() => {
+    if (!open || isVideo || !current.src) {
+      setLoadedOriginalSrc('');
+      return undefined;
+    }
+    if (loadedOriginals.has(current.src)) {
+      setLoadedOriginalSrc(current.src);
+      return undefined;
+    }
+    if (!current.previewSrc || current.previewSrc === current.src) {
+      setLoadedOriginalSrc(current.src);
+      setLoadedOriginals((prev) => new Set(prev).add(current.src));
+      return undefined;
+    }
+
+    let cancelled = false;
+    setLoadedOriginalSrc('');
+    const image = new Image();
+    image.onload = () => {
+      if (!cancelled) {
+        setLoadedOriginalSrc(current.src);
+        setLoadedOriginals((prev) => new Set(prev).add(current.src));
+      }
+    };
+    image.onerror = () => {
+      if (!cancelled) {
+        setLoadedOriginalSrc(current.previewSrc || current.src);
+      }
+    };
+    image.src = current.src;
+    return () => {
+      cancelled = true;
+    };
+  }, [current.previewSrc, current.src, isVideo, loadedOriginals, open]);
+
+  useEffect(() => {
+    if (open) {
       setFullscreen(false);
     }
-  }, [open, currentIndex]);
+  }, [open]);
+
+  useEffect(() => () => {
+    if (slideTimerRef.current !== null) {
+      window.clearTimeout(slideTimerRef.current);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!open) return undefined;
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'ArrowLeft') go(currentIndex - 1);
+      if (event.key === 'ArrowRight') go(currentIndex + 1);
+      if (event.key === '0') resetView();
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [currentIndex, open, slides.length]);
+
+  function resetView() {
+    setZoom(1);
+    setRotation(0);
+    setOffset({ x: 0, y: 0 });
+    setDragging(false);
+    setTrackAnimating(false);
+    setTrackOffset(0);
+    setPinchDistance(0);
+    pointersRef.current.clear();
+    dragStartRef.current = null;
+    swipeStartRef.current = null;
+    swipeLockRef.current = null;
+    if (slideTimerRef.current !== null) {
+      window.clearTimeout(slideTimerRef.current);
+      slideTimerRef.current = null;
+    }
+  }
 
   function go(nextIndex: number) {
     if (!slides.length) return;
     const wrapped = (nextIndex + slides.length) % slides.length;
-    onIndexChange?.(wrapped);
+    if (wrapped === currentIndex) return;
+    animateToIndex(wrapped, nextIndex > currentIndex ? 1 : -1);
+  }
+
+  async function handleDownloadCurrent() {
+    const url = current.downloadUrl || current.src;
+    if (!url || downloading) return;
+    setDownloadError('');
+    setDownloading(true);
+    try {
+      await downloadPhoto(url, current.downloadFilename || fallbackDownloadFilename(current.title, current.contentType));
+    } catch (err) {
+      setDownloadError(err instanceof Error ? err.message : '下载失败');
+    } finally {
+      setDownloading(false);
+    }
+  }
+
+  function updateZoom(nextZoom: number, origin?: Point) {
+    setZoom((currentZoom) => {
+      const clamped = clampZoom(nextZoom);
+      if (origin && currentZoom !== clamped) {
+        const ratio = clamped / currentZoom;
+        setOffset((currentOffset) => ({
+          x: origin.x - (origin.x - currentOffset.x) * ratio,
+          y: origin.y - (origin.y - currentOffset.y) * ratio
+        }));
+      }
+      if (clamped === 1) {
+        setOffset({ x: 0, y: 0 });
+      }
+      return clamped;
+    });
+  }
+
+  function handleWheel(event: WheelEvent<HTMLDivElement>) {
+    if (isVideo) return;
+    event.preventDefault();
+    const rect = event.currentTarget.getBoundingClientRect();
+    updateZoom(zoom + (event.deltaY < 0 ? 0.18 : -0.18), {
+      x: event.clientX - rect.left - rect.width / 2,
+      y: event.clientY - rect.top - rect.height / 2
+    });
+  }
+
+  function handlePointerDown(event: ReactPointerEvent<HTMLDivElement>) {
+    if (isVideo || trackAnimating) return;
+    event.currentTarget.setPointerCapture(event.pointerId);
+    stageWidthRef.current = event.currentTarget.getBoundingClientRect().width || window.innerWidth || 1;
+    pointersRef.current.set(event.pointerId, { x: event.clientX, y: event.clientY });
+
+    const now = Date.now();
+    if (event.pointerType === 'touch' && now - lastTapRef.current < 260 && pointersRef.current.size === 1) {
+      updateZoom(zoom > 1 ? 1 : 2);
+      swipeStartRef.current = null;
+      swipeLockRef.current = null;
+      lastTapRef.current = 0;
+      return;
+    }
+    lastTapRef.current = now;
+
+    if (pointersRef.current.size === 2) {
+      setPinchDistance(pointerDistance());
+      swipeStartRef.current = null;
+      swipeLockRef.current = null;
+      setTrackOffset(0);
+      return;
+    }
+    if (event.pointerType === 'touch' && hasMany && zoom <= 1.05) {
+      swipeStartRef.current = { x: event.clientX, y: event.clientY };
+      swipeLockRef.current = null;
+    }
+    if (zoom > 1) {
+      setDragging(true);
+      dragStartRef.current = { x: event.clientX - offset.x, y: event.clientY - offset.y };
+    }
+  }
+
+  function handlePointerMove(event: ReactPointerEvent<HTMLDivElement>) {
+    if (isVideo || trackAnimating || !pointersRef.current.has(event.pointerId)) return;
+    pointersRef.current.set(event.pointerId, { x: event.clientX, y: event.clientY });
+    if (pointersRef.current.size === 2 && pinchDistance > 0) {
+      const nextDistance = pointerDistance();
+      updateZoom(zoom * (nextDistance / pinchDistance));
+      setPinchDistance(nextDistance);
+      setTrackOffset(0);
+      return;
+    }
+    if (event.pointerType === 'touch' && hasMany && zoom <= 1.05 && swipeStartRef.current) {
+      const deltaX = event.clientX - swipeStartRef.current.x;
+      const deltaY = event.clientY - swipeStartRef.current.y;
+      const distance = Math.hypot(deltaX, deltaY);
+      if (!swipeLockRef.current && distance > 8) {
+        swipeLockRef.current = Math.abs(deltaX) > Math.abs(deltaY) * 1.15 ? 'horizontal' : 'vertical';
+      }
+      if (swipeLockRef.current === 'horizontal') {
+        const width = currentStageWidth();
+        setTrackOffset(Math.max(-width, Math.min(width, deltaX)));
+        return;
+      }
+    }
+    if (dragging && dragStartRef.current) {
+      setOffset({ x: event.clientX - dragStartRef.current.x, y: event.clientY - dragStartRef.current.y });
+    }
+  }
+
+  function handlePointerUp(event: ReactPointerEvent<HTMLDivElement>) {
+    const wasHorizontalSwipe = event.pointerType === 'touch' && hasMany && zoom <= 1.05 && swipeStartRef.current && swipeLockRef.current === 'horizontal' && pointersRef.current.size <= 1;
+    if (event.pointerType === 'touch' && hasMany && zoom <= 1.05 && swipeStartRef.current && swipeLockRef.current === 'horizontal' && pointersRef.current.size <= 1) {
+      const deltaX = event.clientX - swipeStartRef.current.x;
+      const deltaY = event.clientY - swipeStartRef.current.y;
+      const width = currentStageWidth();
+      const threshold = Math.min(110, Math.max(72, width * 0.22));
+      if (Math.abs(deltaX) > threshold && Math.abs(deltaX) > Math.abs(deltaY) * 1.15) {
+        animateToIndex(wrapIndex(currentIndex + (deltaX < 0 ? 1 : -1)), deltaX < 0 ? 1 : -1);
+      } else {
+        snapTrackBack();
+      }
+    }
+    if (!wasHorizontalSwipe) {
+      setTrackOffset(0);
+    }
+    swipeStartRef.current = null;
+    swipeLockRef.current = null;
+    pointersRef.current.delete(event.pointerId);
+    if (pointersRef.current.size < 2) {
+      setPinchDistance(0);
+    }
+    if (!pointersRef.current.size) {
+      setDragging(false);
+      dragStartRef.current = null;
+    }
+  }
+
+  function pointerDistance() {
+    const points = Array.from(pointersRef.current.values());
+    if (points.length < 2) return 0;
+    return Math.hypot(points[0].x - points[1].x, points[0].y - points[1].y);
+  }
+
+  function currentStageWidth() {
+    const width = stageRef.current?.getBoundingClientRect().width || stageWidthRef.current || window.innerWidth || 1;
+    stageWidthRef.current = width;
+    return width;
+  }
+
+  function wrapIndex(nextIndex: number) {
+    return (nextIndex + slides.length) % slides.length;
+  }
+
+  function animateToIndex(nextIndex: number, direction: 1 | -1) {
+    if (!hasMany || trackAnimating) return;
+    const wrapped = wrapIndex(nextIndex);
+    if (wrapped === currentIndex) return;
+    if (slideTimerRef.current !== null) {
+      window.clearTimeout(slideTimerRef.current);
+    }
+    const width = currentStageWidth();
+    setTrackAnimating(true);
+    setTrackOffset(direction > 0 ? -width : width);
+    slideTimerRef.current = window.setTimeout(() => {
+      slideTimerRef.current = null;
+      setActiveIndex(wrapped);
+      setTrackOffset(0);
+      setTrackAnimating(false);
+      onIndexChange?.(wrapped);
+    }, 270);
+  }
+
+  function snapTrackBack() {
+    if (slideTimerRef.current !== null) {
+      window.clearTimeout(slideTimerRef.current);
+    }
+    setTrackAnimating(true);
+    setTrackOffset(0);
+    slideTimerRef.current = window.setTimeout(() => {
+      slideTimerRef.current = null;
+      setTrackAnimating(false);
+    }, 180);
+  }
+
+  function displaySourceFor(item: ImagePreviewItem, active: boolean) {
+    if (item.contentType?.toLowerCase().startsWith('video/')) return item.src;
+    if (loadedOriginals.has(item.src)) return item.src;
+    if (active && loadedOriginalSrc === item.src) return item.src;
+    return item.previewSrc || item.src;
+  }
+
+  function markOriginalLoaded(value: string) {
+    if (!value) return;
+    setLoadedOriginalSrc((prev) => prev || (value === current.src ? value : prev));
+    setLoadedOriginals((prev) => {
+      if (prev.has(value)) return prev;
+      const next = new Set(prev);
+      next.add(value);
+      return next;
+    });
+  }
+
+  function renderVisibleSlides() {
+    if (!slides.length) return null;
+    if (!hasMany) {
+      return renderSlide(currentIndex, 0);
+    }
+    if (slides.length === 2) {
+      const otherIndex = wrapIndex(currentIndex + 1);
+      const side = trackOffset > 0 ? -1 : 1;
+      return (
+        <>
+          {renderSlide(currentIndex, 0)}
+          {renderSlide(otherIndex, side)}
+        </>
+      );
+    }
+    return (
+      <>
+        {renderSlide(wrapIndex(currentIndex - 1), -1)}
+        {renderSlide(currentIndex, 0)}
+        {renderSlide(wrapIndex(currentIndex + 1), 1)}
+      </>
+    );
+  }
+
+  function renderSlide(itemIndex: number, slot: -1 | 0 | 1) {
+    const item = slides[itemIndex];
+    if (!item) return null;
+    const active = slot === 0;
+    const itemIsVideo = item.contentType?.toLowerCase().startsWith('video/') || false;
+    const itemSrc = displaySourceFor(item, active);
+    const isLoadedOriginal = itemIsVideo || loadedOriginals.has(item.src) || (active && loadedOriginalSrc === item.src);
+    if (!itemSrc) return null;
+    return (
+      <Box
+        key={`${itemIndex}-${item.src}`}
+        sx={{
+          alignItems: 'center',
+          display: 'flex',
+          inset: 0,
+          justifyContent: 'center',
+          overflow: 'hidden',
+          position: 'absolute',
+          transform: `translate3d(calc(${slot * 100}% + ${trackOffset}px), 0, 0)`,
+          transition: trackAnimating ? 'transform 260ms cubic-bezier(0.2, 0, 0, 1)' : 'none',
+          width: '100%',
+          willChange: 'transform'
+        }}
+      >
+        {itemIsVideo ? (
+          <Box
+            component="video"
+            controls={active}
+            muted={!active}
+            preload="metadata"
+            src={itemSrc}
+            sx={{
+              bgcolor: 'common.black',
+              display: 'block',
+              maxHeight: '100%',
+              maxWidth: '100%',
+              objectFit: 'contain',
+              pointerEvents: active ? 'auto' : 'none',
+              width: '100%'
+            }}
+          />
+        ) : (
+          <Box
+            sx={{
+              display: 'block',
+              maxHeight: { xs: '100%', sm: 'calc(100% - 24px)' },
+              maxWidth: { xs: '100%', sm: 'calc(100% - 24px)' },
+              position: 'relative',
+              transform: active ? `translate3d(${offset.x}px, ${offset.y}px, 0) scale(${zoom}) rotate(${rotation}deg)` : 'none',
+              transformOrigin: 'center center',
+              transition: active && !dragging && !pinchDistance && !trackAnimating ? 'transform 100ms ease, opacity 100ms ease' : 'none',
+              willChange: 'transform'
+            }}
+          >
+            {item.previewSrc && item.previewSrc !== item.src ? (
+              <>
+                <Box
+                  alt={item.title || title || 'preview'}
+                  component="img"
+                  draggable={false}
+                  src={item.previewSrc}
+                  sx={{
+                    display: 'block',
+                    filter: isLoadedOriginal ? undefined : 'blur(1.5px)',
+                    height: 'auto',
+                    maxHeight: { xs: '100%', sm: 'calc(100% - 24px)' },
+                    maxWidth: { xs: '100%', sm: 'calc(100% - 24px)' },
+                    objectFit: 'contain',
+                    opacity: isLoadedOriginal ? 0 : 1,
+                    transition: 'opacity 180ms ease, filter 180ms ease',
+                    width: 'auto'
+                  }}
+                />
+                <Box
+                  alt={item.title || title || 'preview'}
+                  component="img"
+                  draggable={false}
+                  onLoad={() => markOriginalLoaded(item.src)}
+                  src={item.src}
+                  sx={{
+                    display: 'block',
+                    height: '100%',
+                    inset: 0,
+                    maxHeight: '100%',
+                    maxWidth: '100%',
+                    objectFit: 'contain',
+                    opacity: isLoadedOriginal ? 1 : 0,
+                    position: 'absolute',
+                    transition: 'opacity 180ms ease',
+                    width: '100%'
+                  }}
+                />
+              </>
+            ) : (
+              <Box
+                alt={item.title || title || 'preview'}
+                component="img"
+                draggable={false}
+                onLoad={() => markOriginalLoaded(item.src)}
+                src={itemSrc}
+                sx={{
+                  display: 'block',
+                  maxHeight: { xs: '100%', sm: 'calc(100% - 24px)' },
+                  maxWidth: { xs: '100%', sm: 'calc(100% - 24px)' },
+                  objectFit: 'contain'
+                }}
+              />
+            )}
+          </Box>
+        )}
+      </Box>
+    );
   }
 
   return (
@@ -51,26 +493,36 @@ export function ImagePreviewDialog({ images, index = 0, onClose, onIndexChange, 
       onClose={onClose}
       open={open}
       slotProps={{
-        backdrop: { sx: { bgcolor: 'rgba(2, 6, 23, 0.72)' } },
+        backdrop: { sx: { bgcolor: 'rgba(2, 6, 23, 0.78)' } },
         paper: {
           sx: {
             bgcolor: '#0f172a',
-            border: '1px solid rgba(255,255,255,0.12)',
-            borderRadius: fullscreen ? 0 : 4,
+            border: { xs: 0, sm: '1px solid rgba(255,255,255,0.12)' },
+            borderRadius: { xs: 0, sm: fullscreen ? 0 : 3 },
             boxShadow: fullscreen ? 'none' : '0 16px 40px rgba(2, 6, 23, 0.45)',
             color: 'white',
-            height: fullscreen ? '100vh' : '80vh',
-            maxHeight: fullscreen ? '100vh' : '80vh',
-            maxWidth: fullscreen ? '100vw' : '80vw',
+            height: { xs: '100dvh', sm: fullscreen ? '100vh' : '86vh' },
+            m: { xs: 0, sm: fullscreen ? 0 : 4 },
+            maxHeight: { xs: '100dvh', sm: fullscreen ? '100vh' : '86vh' },
+            maxWidth: { xs: '100vw', sm: fullscreen ? '100vw' : '90vw' },
             overflow: 'hidden',
-            width: fullscreen ? '100vw' : '80vw'
+            width: { xs: '100vw', sm: fullscreen ? '100vw' : '90vw' }
           }
         }
       }}
     >
       <Stack sx={{ height: '100%', overflow: 'hidden' }}>
-        <Stack direction="row" sx={{ alignItems: 'center', borderBottom: '1px solid rgba(255,255,255,0.08)', gap: 1.5, p: 1.5 }}>
-          <Box sx={{ flex: 1, minWidth: 0 }}>
+        <Stack
+          direction="row"
+          sx={{
+            alignItems: 'center',
+            borderBottom: '1px solid rgba(255,255,255,0.08)',
+            flexWrap: { xs: 'wrap', sm: 'nowrap' },
+            gap: { xs: 0.75, sm: 1 },
+            p: { xs: 1, sm: 1.5 }
+          }}
+        >
+          <Box sx={{ flex: 1, minWidth: { xs: 'calc(100% - 48px)', sm: 0 }, order: { xs: 1, sm: 0 } }}>
             <Typography noWrap sx={{ fontWeight: 800 }}>
               {current.title || title || '图片预览'}
             </Typography>
@@ -79,106 +531,100 @@ export function ImagePreviewDialog({ images, index = 0, onClose, onIndexChange, 
                 {[current.subtitle || subtitle, hasMany ? `${currentIndex + 1} / ${slides.length}` : ''].filter(Boolean).join(' · ')}
               </Typography>
             )}
+            {downloadError && (
+              <Typography color="error.light" noWrap variant="caption">
+                {downloadError}
+              </Typography>
+            )}
           </Box>
-          <Stack direction="row" sx={{ alignItems: 'center', display: { xs: 'none', md: 'flex' }, gap: 1, minWidth: 240 }}>
+          <Stack direction="row" sx={{ alignItems: 'center', display: { xs: 'none', md: 'flex' }, gap: 1, minWidth: 220, order: { xs: 3, sm: 0 } }}>
             <Typography variant="caption">{Math.round(zoom * 100)}%</Typography>
             <Slider
-              max={3}
+              disabled={isVideo}
+              max={4}
               min={0.5}
-              onChange={(_, value) => setZoom(Array.isArray(value) ? value[0] : value)}
+              onChange={(_, value) => updateZoom(Array.isArray(value) ? value[0] : value)}
               size="small"
               step={0.1}
               value={zoom}
             />
           </Stack>
-          <IconButton color="inherit" disabled={isVideo} onClick={() => setZoom((value) => Math.max(0.5, Number((value - 0.1).toFixed(1))))}>
-            <ZoomOut />
-          </IconButton>
-          <IconButton color="inherit" disabled={isVideo} onClick={() => setZoom((value) => Math.min(3, Number((value + 0.1).toFixed(1))))}>
-            <ZoomIn />
-          </IconButton>
-          <IconButton color="inherit" disabled={isVideo} onClick={() => setRotation((value) => (value + 90) % 360)}>
-            <RotateRight />
-          </IconButton>
-          <IconButton color="inherit" onClick={() => setFullscreen((value) => !value)}>
-            {fullscreen ? <FullscreenExit /> : <Fullscreen />}
-          </IconButton>
-          <IconButton color="inherit" onClick={onClose}>
-            <Close />
-          </IconButton>
+          <Stack direction="row" sx={{ gap: 0.25, order: { xs: 2, sm: 0 } }}>
+            <IconButton color="inherit" disabled={isVideo} onClick={() => updateZoom(zoom - 0.2)} size="small">
+              <ZoomOut />
+            </IconButton>
+            <IconButton color="inherit" disabled={isVideo} onClick={() => updateZoom(zoom + 0.2)} size="small">
+              <ZoomIn />
+            </IconButton>
+            <IconButton color="inherit" disabled={isVideo} onClick={() => setRotation((value) => (value + 90) % 360)} size="small">
+              <RotateRight />
+            </IconButton>
+            <IconButton color="inherit" disabled={isVideo} onClick={resetView} size="small">
+              <RestartAlt />
+            </IconButton>
+            <Tooltip title="下载当前媒体">
+              <span>
+                <IconButton color="inherit" disabled={downloading || !current.src} onClick={() => void handleDownloadCurrent()} size="small">
+                  {downloading ? <CircularProgress color="inherit" size={20} /> : <CloudDownload />}
+                </IconButton>
+              </span>
+            </Tooltip>
+            <IconButton color="inherit" onClick={() => setFullscreen((value) => !value)} size="small" sx={{ display: { xs: 'none', sm: 'inline-flex' } }}>
+              {fullscreen ? <FullscreenExit /> : <Fullscreen />}
+            </IconButton>
+            <IconButton color="inherit" onClick={onClose} size="small">
+              <Close />
+            </IconButton>
+          </Stack>
         </Stack>
         <Box
+          ref={stageRef}
+          onPointerCancel={handlePointerUp}
+          onPointerDown={handlePointerDown}
+          onPointerLeave={handlePointerUp}
+          onPointerMove={handlePointerMove}
+          onPointerUp={handlePointerUp}
+          onWheel={handleWheel}
           sx={{
             alignItems: 'center',
+            cursor: isVideo ? 'default' : zoom > 1 ? dragging ? 'grabbing' : 'grab' : 'zoom-in',
             display: 'flex',
             flex: 1,
             justifyContent: 'center',
-            overflow: zoom > 1 ? 'auto' : 'hidden',
+            overflow: 'hidden',
             position: 'relative',
-            p: fullscreen ? 2 : 3
+            touchAction: isVideo ? 'auto' : 'none',
+            userSelect: 'none'
           }}
         >
           {hasMany && (
             <IconButton
               color="inherit"
               onClick={() => go(currentIndex - 1)}
-              sx={{ bgcolor: 'rgba(15,23,42,0.55)', left: 16, position: 'absolute', top: '50%', zIndex: 2 }}
+              sx={{ bgcolor: 'rgba(15,23,42,0.55)', display: { xs: 'none', sm: 'inline-flex' }, left: 16, position: 'absolute', top: '50%', zIndex: 2 }}
             >
               <ChevronLeft />
             </IconButton>
           )}
-          {current.src && (
-            <Box sx={{ alignItems: 'center', display: 'flex', height: '100%', justifyContent: 'center', maxHeight: '100%', maxWidth: '100%', overflow: 'hidden', width: '100%' }}>
-              {isVideo ? (
-                <Box
-                  component="video"
-                  controls
-                  preload="metadata"
-                  src={current.src}
-                  sx={{
-                    bgcolor: 'common.black',
-                    display: 'block',
-                    maxHeight: '100%',
-                    maxWidth: '100%',
-                    objectFit: 'contain'
-                  }}
-                />
-              ) : (
-                <Box
-                  alt={current.title || title || 'preview'}
-                  component="img"
-                  src={current.src}
-                  sx={{
-                    display: 'block',
-                    height: zoom === 1 ? '100%' : 'auto',
-                    maxHeight: '100%',
-                    maxWidth: '100%',
-                    objectFit: 'contain',
-                    transform: `scale(${zoom}) rotate(${rotation}deg)`,
-                    transformOrigin: 'center center',
-                    transition: 'transform 120ms ease',
-                    width: zoom === 1 ? '100%' : 'auto'
-                  }}
-                />
-              )}
-            </Box>
-          )}
+          <Box sx={{ inset: 0, overflow: 'hidden', position: 'absolute' }}>
+            {renderVisibleSlides()}
+          </Box>
           {hasMany && (
             <IconButton
               color="inherit"
               onClick={() => go(currentIndex + 1)}
-              sx={{ bgcolor: 'rgba(15,23,42,0.55)', position: 'absolute', right: 16, top: '50%', zIndex: 2 }}
+              sx={{ bgcolor: 'rgba(15,23,42,0.55)', display: { xs: 'none', sm: 'inline-flex' }, position: 'absolute', right: 16, top: '50%', zIndex: 2 }}
             >
               <ChevronRight />
             </IconButton>
           )}
         </Box>
         {hasMany && (
-          <Stack direction="row" sx={{ borderTop: '1px solid rgba(255,255,255,0.08)', gap: 1, justifyContent: 'center', p: 1.5 }}>
-            <Button color="inherit" onClick={() => go(currentIndex - 1)} startIcon={<ChevronLeft />} variant="outlined">
+          <Stack direction="row" sx={{ borderTop: '1px solid rgba(255,255,255,0.08)', gap: 1, justifyContent: 'center', p: { xs: 1, sm: 1.5 } }}>
+            <Button color="inherit" fullWidth onClick={() => go(currentIndex - 1)} startIcon={<ChevronLeft />} variant="outlined">
               上一张
             </Button>
-            <Button color="inherit" endIcon={<ChevronRight />} onClick={() => go(currentIndex + 1)} variant="outlined">
+            <Button color="inherit" endIcon={<ChevronRight />} fullWidth onClick={() => go(currentIndex + 1)} variant="outlined">
               下一张
             </Button>
           </Stack>
@@ -186,4 +632,14 @@ export function ImagePreviewDialog({ images, index = 0, onClose, onIndexChange, 
       </Stack>
     </Dialog>
   );
+}
+
+function clampZoom(value: number) {
+  return Math.max(0.5, Math.min(4, Number(value.toFixed(2))));
+}
+
+function fallbackDownloadFilename(title?: string, contentType?: string) {
+  const extension = contentType?.includes('png') ? 'png' : contentType?.startsWith('video/') ? 'mp4' : 'jpg';
+  const name = (title || 'fluffcatch-media').replace(/[\\/:*?"<>|]+/g, '_').trim() || 'fluffcatch-media';
+  return `${name}.${extension}`;
 }

@@ -175,3 +175,43 @@ func (server *Server) uploadEventCover(w stdhttp.ResponseWriter, r *stdhttp.Requ
 
 	writeJSON(w, stdhttp.StatusOK, map[string]any{"policyId": stored.PolicyID, "objectKey": stored.Key, "url": stored.URL})
 }
+
+func (server *Server) setEventCoverFromPhoto(w stdhttp.ResponseWriter, r *stdhttp.Request) {
+	eventID, ok := parseIDParam(w, r, "id")
+	if !ok {
+		return
+	}
+	var req struct {
+		PhotoID int64 `json:"photoId"`
+	}
+	if err := decodeJSON(r, &req); err != nil || req.PhotoID <= 0 {
+		writeError(w, stdhttp.StatusBadRequest, "invalid cover photo payload")
+		return
+	}
+	var photo appdb.Photo
+	err := server.db.WithContext(r.Context()).
+		Where("id = ? AND event_id = ?", req.PhotoID, eventID).
+		Take(&photo).Error
+	if err != nil {
+		writeError(w, stdhttp.StatusNotFound, "photo not found")
+		return
+	}
+	coverKey := photo.ObjectKey
+	if photo.ThumbnailKey != nil && strings.TrimSpace(*photo.ThumbnailKey) != "" {
+		coverKey = *photo.ThumbnailKey
+	}
+	result := server.db.WithContext(r.Context()).Model(&appdb.Event{}).Where("id = ?", eventID).Updates(map[string]any{
+		"cover_storage_policy_id": photo.StoragePolicyID,
+		"cover_object_key":        coverKey,
+	})
+	if result.Error != nil {
+		writeError(w, stdhttp.StatusInternalServerError, "failed to update event cover")
+		return
+	}
+	store, err := server.storageManager.StoreForPolicy(photo.StoragePolicyID)
+	url := storage.MediaURL(photo.StoragePolicyID, coverKey)
+	if err == nil {
+		url = store.PublicURL(coverKey)
+	}
+	writeJSON(w, stdhttp.StatusOK, map[string]any{"policyId": photo.StoragePolicyID, "objectKey": coverKey, "url": url})
+}

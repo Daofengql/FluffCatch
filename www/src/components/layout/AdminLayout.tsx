@@ -29,13 +29,23 @@ const fallbackSite: SiteSettings = {
   themePrimaryColor: '#2563eb',
   publicBackgroundDesktopUrl: '',
   publicBackgroundMobileUrl: '',
-  footerText: `© ${new Date().getFullYear()} FluffCatch. All rights reserved.`,
-  icpNumber: '',
-  policeRecordNumber: '',
-  policeRecordUrl: '',
-  contactText: '',
-  contactEmail: '',
-  contactUrl: ''
+  contactWidgetEnabled: false,
+  contactWidgetTitle: '联系我',
+  contactWidgetHtml: '',
+  footerSections: [
+    {
+      title: '关于站点',
+      html: `<p>兽聚返图收集与画廊</p><p>© ${new Date().getFullYear()} FluffCatch. All rights reserved.</p>`
+    },
+    {
+      title: '快速入口',
+      html: '<ul><li><a href="/">首页</a></li><li><a href="/submit">返图入口</a></li></ul>'
+    },
+    {
+      title: '站点信息',
+      html: '<p>公开画廊、限时投稿和活动返图都会在这里汇总。</p>'
+    }
+  ]
 };
 
 const navItems = [

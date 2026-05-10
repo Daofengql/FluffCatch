@@ -23,11 +23,13 @@ type Submission struct {
 	PhotographerName string           `json:"photographerName,omitempty"`
 	Tags             []string         `json:"tags"`
 	Status           SubmissionStatus `json:"status"`
+	Exif             map[string]any   `json:"exif,omitempty"`
+	TakenAt          *time.Time       `json:"takenAt,omitempty"`
 	CreatedAt        time.Time        `json:"createdAt"`
 }
 
 type CreateSubmissionRequest struct {
-	SubmissionPassword string   `json:"submissionPassword"`
+	SubmissionToken    string   `json:"submissionToken"`
 	PhotographerName   string   `json:"photographerName"`
 	Tags               []string `json:"tags"`
 }

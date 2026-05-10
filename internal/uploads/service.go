@@ -37,7 +37,7 @@ type Service struct {
 type FileUpload struct {
 	File               multipart.File
 	Header             *multipart.FileHeader
-	SubmissionPassword string
+	SubmissionToken    string
 	PhotographerName   string
 	Tags               []string
 	Visibility         string
@@ -50,6 +50,8 @@ type storedUpload struct {
 	ContentHash  string
 	ContentType  string
 	SizeBytes    int64
+	Exif         []byte
+	TakenAt      *time.Time
 }
 
 type bufferedUpload struct {
@@ -91,7 +93,8 @@ func (service *Service) CreateWithLimits(ctx context.Context, eventID int64, upl
 		return Submission{}, fmt.Errorf("database is required")
 	}
 
-	if err := service.verifySubmissionPassword(ctx, eventID, upload.SubmissionPassword); err != nil {
+	upload, err := service.applySubmissionAccess(ctx, eventID, upload)
+	if err != nil {
 		return Submission{}, err
 	}
 	storedUpload, store, err := service.storeUpload(ctx, eventID, upload, uploadLimits{MaxImageBytes: maxImageBytes, MaxVideoBytes: maxVideoBytes})
@@ -116,6 +119,8 @@ func (service *Service) CreateWithLimits(ctx context.Context, eventID int64, upl
 		PhotographerName: stringPtr(upload.PhotographerName),
 		Tags:             tagsJSON,
 		Status:           string(SubmissionPending),
+		Exif:             storedUpload.Exif,
+		TakenAt:          storedUpload.TakenAt,
 	}
 	err = service.db.WithContext(ctx).Create(&record).Error
 	if err != nil {
@@ -176,6 +181,8 @@ func (service *Service) CreateApprovedWithLimits(ctx context.Context, eventID in
 			SizeBytes:        storedUpload.SizeBytes,
 			PhotographerName: stringPtr(upload.PhotographerName),
 			Visibility:       visibility,
+			Exif:             storedUpload.Exif,
+			TakenAt:          storedUpload.TakenAt,
 			SortAt:           time.Now(),
 		}
 		if err := tx.Create(&record).Error; err != nil {
@@ -244,6 +251,7 @@ func (service *Service) storeUpload(ctx context.Context, eventID int64, upload F
 
 	contentType := buffered.ContentType
 	objectKey := mediaObjectKey(eventID, buffered.ContentHash, upload.Header.Filename, contentType)
+	result := storedUpload{}
 	thumbnailKey := ""
 
 	if _, err := buffered.File.Seek(0, io.SeekStart); err != nil {
@@ -270,6 +278,15 @@ func (service *Service) storeUpload(ctx context.Context, eventID int64, upload F
 			_ = store.Delete(ctx, stored.Key)
 			return storedUpload{}, nil, fmt.Errorf("read image for thumbnail: %w", err)
 		}
+		metadata := appimage.ExtractMetadataBytes(content)
+		if raw, err := json.Marshal(metadata); err == nil && string(raw) != "{}" {
+			result.Exif = raw
+		}
+		if metadata.TakenAt != "" {
+			if parsed, err := time.Parse(time.RFC3339, metadata.TakenAt); err == nil {
+				result.TakenAt = &parsed
+			}
+		}
 		thumbnailKey = thumbnailObjectKey(eventID, buffered.ContentHash)
 		thumbnail, thumbnailContentType, err := appimage.GenerateThumbnailBytes(content, 640)
 		if err == nil && len(thumbnail) > 0 {
@@ -288,14 +305,13 @@ func (service *Service) storeUpload(ctx context.Context, eventID int64, upload F
 		}
 	}
 
-	return storedUpload{
-		PolicyID:     stored.PolicyID,
-		ObjectKey:    stored.Key,
-		ThumbnailKey: storedThumbnail.Key,
-		ContentHash:  buffered.ContentHash,
-		ContentType:  contentType,
-		SizeBytes:    buffered.SizeBytes,
-	}, store, nil
+	result.PolicyID = stored.PolicyID
+	result.ObjectKey = stored.Key
+	result.ThumbnailKey = storedThumbnail.Key
+	result.ContentHash = buffered.ContentHash
+	result.ContentType = contentType
+	result.SizeBytes = buffered.SizeBytes
+	return result, store, nil
 }
 
 func (service *Service) deleteStoredUpload(ctx context.Context, store storage.Store, upload storedUpload) {
@@ -411,28 +427,57 @@ func (service *Service) DeleteBatch(ctx context.Context, ids []int64) (BatchResp
 	return BatchResponse{Processed: processed, Message: "submissions deleted"}, nil
 }
 
-func (service *Service) verifySubmissionPassword(ctx context.Context, eventID int64, password string) error {
-	var event appdb.Event
-	err := service.db.WithContext(ctx).Select("submission_enabled", "submission_password_hash").Where("id = ?", eventID).Take(&event).Error
-	if errors.Is(err, gorm.ErrRecordNotFound) {
-		return fmt.Errorf("event not found")
+func (service *Service) applySubmissionAccess(ctx context.Context, eventID int64, upload FileUpload) (FileUpload, error) {
+	if strings.TrimSpace(upload.SubmissionToken) == "" {
+		return upload, fmt.Errorf("submission link is required")
 	}
+	link, ok, err := service.consumeSubmissionLink(ctx, eventID, upload.SubmissionToken)
 	if err != nil {
-		return fmt.Errorf("load event submission settings: %w", err)
+		return upload, err
 	}
-	if !event.SubmissionEnabled {
-		return fmt.Errorf("submissions are closed")
+	if !ok {
+		return upload, fmt.Errorf("invalid or expired submission link")
 	}
-	if event.SubmissionPasswordHash == nil || *event.SubmissionPasswordHash == "" {
+	if strings.TrimSpace(link.PhotographerName) != "" {
+		upload.PhotographerName = link.PhotographerName
+	}
+	return upload, nil
+}
+
+type consumedSubmissionLink struct {
+	PhotographerName string
+}
+
+func (service *Service) consumeSubmissionLink(ctx context.Context, eventID int64, token string) (consumedSubmissionLink, bool, error) {
+	tokenHash := auth.TokenHash(token)
+	var link consumedSubmissionLink
+	var consumed bool
+	err := service.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var record appdb.SubmissionLink
+		err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
+			Where("event_id = ? AND token_hash = ?", eventID, tokenHash).
+			Take(&record).Error
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil
+		}
+		if err != nil {
+			return fmt.Errorf("load submission link: %w", err)
+		}
+		now := time.Now()
+		if record.RevokedAt != nil || (record.ExpiresAt != nil && now.After(*record.ExpiresAt)) || (record.MaxUses > 0 && record.UseCount >= record.MaxUses) {
+			return nil
+		}
+		if err := tx.Model(&appdb.SubmissionLink{}).Where("id = ?", record.ID).Update("use_count", gorm.Expr("use_count + 1")).Error; err != nil {
+			return fmt.Errorf("consume submission link: %w", err)
+		}
+		link.PhotographerName = stringValue(record.PhotographerName)
+		consumed = true
 		return nil
+	})
+	if err != nil {
+		return link, false, err
 	}
-
-	ok, err := auth.VerifyPassword(password, *event.SubmissionPasswordHash)
-	if err != nil || !ok {
-		return fmt.Errorf("invalid submission password")
-	}
-
-	return nil
+	return link, consumed, nil
 }
 
 func (service *Service) verifyEventAllowsSubmission(ctx context.Context, eventID int64) error {
@@ -458,6 +503,10 @@ func (service *Service) approveOne(ctx context.Context, id int64, visibility str
 	if !found || submission.Status != SubmissionPending {
 		return false, nil
 	}
+	var submissionRecord appdb.Submission
+	if err := service.db.WithContext(ctx).Select("exif").Where("id = ?", id).Take(&submissionRecord).Error; err != nil {
+		return false, fmt.Errorf("load submission metadata: %w", err)
+	}
 
 	if err := service.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		record := appdb.Photo{
@@ -470,6 +519,8 @@ func (service *Service) approveOne(ctx context.Context, id int64, visibility str
 			SizeBytes:        submission.SizeBytes,
 			PhotographerName: stringPtr(submission.PhotographerName),
 			Visibility:       visibility,
+			Exif:             submissionRecord.Exif,
+			TakenAt:          submission.TakenAt,
 			SortAt:           time.Now(),
 		}
 		if err := tx.Create(&record).Error; err != nil {
@@ -524,6 +575,8 @@ func (service *Service) submissionFromRecord(record appdb.Submission) Submission
 		SizeBytes:        record.SizeBytes,
 		PhotographerName: stringValue(record.PhotographerName),
 		Status:           SubmissionStatus(record.Status),
+		Exif:             map[string]any{},
+		TakenAt:          record.TakenAt,
 		CreatedAt:        record.CreatedAt,
 	}
 	if store, err := service.storageManager.StoreForPolicy(submission.StoragePolicyID); err == nil {
@@ -536,6 +589,9 @@ func (service *Service) submissionFromRecord(record appdb.Submission) Submission
 	}
 	if len(record.Tags) > 0 {
 		_ = json.Unmarshal(record.Tags, &submission.Tags)
+	}
+	if len(record.Exif) > 0 {
+		_ = json.Unmarshal(record.Exif, &submission.Exif)
 	}
 
 	return submission
@@ -579,9 +635,13 @@ func scanPhoto(record appdb.Photo, storageManager *storage.Manager) gallery.Phot
 		Visibility:       gallery.Visibility(record.Visibility),
 		AccessGranted:    true,
 		Tags:             []gallery.Tag{},
+		Exif:             map[string]any{},
 		TakenAt:          record.TakenAt,
 		CreatedAt:        record.CreatedAt,
 		UpdatedAt:        record.UpdatedAt,
+	}
+	if len(record.Exif) > 0 {
+		_ = json.Unmarshal(record.Exif, &photo.Exif)
 	}
 
 	if store, err := storageManager.StoreForPolicy(photo.StoragePolicyID); err == nil {

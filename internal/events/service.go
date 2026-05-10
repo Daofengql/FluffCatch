@@ -24,11 +24,21 @@ func NewService(dbConn *gorm.DB, storageManager *storage.Manager) *Service {
 }
 
 func (service *Service) ListPublic(ctx context.Context) ([]Event, error) {
-	return service.listWithOptions(ctx, true, false)
+	page, err := service.ListPublicPage(ctx, ListOptions{})
+	return page.Items, err
+}
+
+func (service *Service) ListPublicWithOptions(ctx context.Context, options ListOptions) ([]Event, error) {
+	page, err := service.ListPublicPage(ctx, options)
+	return page.Items, err
+}
+
+func (service *Service) ListPublicPage(ctx context.Context, options ListOptions) (Page, error) {
+	return service.listPageWithOptions(ctx, true, false, options)
 }
 
 func (service *Service) ListAdmin(ctx context.Context) ([]Event, error) {
-	return service.listWithOptions(ctx, false, true)
+	return service.listWithOptions(ctx, false, true, ListOptions{})
 }
 
 func (service *Service) GetPublic(ctx context.Context, id int64) (Event, bool, error) {
@@ -49,34 +59,28 @@ func (service *Service) Create(ctx context.Context, req CreateEventRequest) (Eve
 		return Event{}, err
 	}
 
-	passwordHash, err := optionalPasswordHash(req.SubmissionPass)
-	if err != nil {
-		return Event{}, err
-	}
 	privatePasswordHash, err := optionalPasswordHash(req.PrivatePassword)
 	if err != nil {
 		return Event{}, err
 	}
 
 	record := appdb.Event{
-		Title:                   event.Title,
-		Description:             event.Description,
-		Location:                event.Location,
-		ProvinceCode:            stringPtr(event.ProvinceCode),
-		ProvinceName:            stringPtr(event.ProvinceName),
-		CityCode:                stringPtr(event.CityCode),
-		CityName:                stringPtr(event.CityName),
-		StartsAt:                event.StartTime,
-		EndsAt:                  event.EndTime,
-		CoverStoragePolicyID:    stringPtr(event.CoverPolicyID),
-		CoverObjectKey:          stringPtr(event.CoverObjectKey),
-		IsPublic:                event.IsPublic,
-		SubmissionEnabled:       event.SubmissionEnabled,
-		SubmissionPasswordHash:  stringPtr(passwordHash),
-		SubmissionPasswordPlain: stringPtr(req.SubmissionPass),
-		PrivatePasswordHash:     stringPtr(privatePasswordHash),
-		PrivatePasswordPlain:    stringPtr(req.PrivatePassword),
-		SortAt:                  eventSortTime(event.StartTime),
+		Title:                event.Title,
+		Description:          event.Description,
+		Location:             event.Location,
+		ProvinceCode:         stringPtr(event.ProvinceCode),
+		ProvinceName:         stringPtr(event.ProvinceName),
+		CityCode:             stringPtr(event.CityCode),
+		CityName:             stringPtr(event.CityName),
+		StartsAt:             event.StartTime,
+		EndsAt:               event.EndTime,
+		CoverStoragePolicyID: stringPtr(event.CoverPolicyID),
+		CoverObjectKey:       stringPtr(event.CoverObjectKey),
+		IsPublic:             event.IsPublic,
+		SubmissionEnabled:    event.SubmissionEnabled,
+		PrivatePasswordHash:  stringPtr(privatePasswordHash),
+		PrivatePasswordPlain: stringPtr(req.PrivatePassword),
+		SortAt:               eventSortTime(event.StartTime),
 	}
 	err = service.db.WithContext(ctx).Create(&record).Error
 	if err != nil {
@@ -104,10 +108,6 @@ func (service *Service) Update(ctx context.Context, id int64, req CreateEventReq
 		return Event{}, err
 	}
 
-	passwordHash, err := optionalPasswordHash(req.SubmissionPass)
-	if err != nil {
-		return Event{}, err
-	}
 	privatePasswordHash, err := optionalPasswordHash(req.PrivatePassword)
 	if err != nil {
 		return Event{}, err
@@ -141,10 +141,6 @@ func (service *Service) Update(ctx context.Context, id int64, req CreateEventReq
 	if req.RemoveCover || event.CoverPolicyID != "" || event.CoverObjectKey != "" {
 		updates["cover_storage_policy_id"] = stringPtr(event.CoverPolicyID)
 		updates["cover_object_key"] = stringPtr(event.CoverObjectKey)
-	}
-	if passwordHash != "" {
-		updates["submission_password_hash"] = passwordHash
-		updates["submission_password_plain"] = strings.TrimSpace(req.SubmissionPass)
 	}
 	if privatePasswordHash != "" {
 		updates["private_password_hash"] = privatePasswordHash
@@ -185,53 +181,98 @@ func (service *Service) Delete(ctx context.Context, id int64) (bool, []storage.S
 	return result.RowsAffected > 0, objects, nil
 }
 
-func (service *Service) SubmissionPasswordHash(ctx context.Context, eventID int64) (string, bool, bool, error) {
-	var event appdb.Event
-	err := service.db.WithContext(ctx).Select("submission_enabled", "submission_password_hash").Where("id = ?", eventID).Take(&event).Error
-	if errors.Is(err, gorm.ErrRecordNotFound) {
-		return "", false, false, nil
-	}
-	if err != nil {
-		return "", false, false, fmt.Errorf("load submission password: %w", err)
-	}
-
-	if event.SubmissionPasswordHash == nil {
-		return "", false, event.SubmissionEnabled, nil
-	}
-	return *event.SubmissionPasswordHash, strings.TrimSpace(*event.SubmissionPasswordHash) != "", event.SubmissionEnabled, nil
+func (service *Service) listWithOptions(ctx context.Context, onlyPublic bool, includePrivatePassword bool, options ListOptions) ([]Event, error) {
+	page, err := service.listPageWithOptions(ctx, onlyPublic, includePrivatePassword, options)
+	return page.Items, err
 }
 
-func (service *Service) listWithOptions(ctx context.Context, onlyPublic bool, includeSubmissionPassword bool) ([]Event, error) {
+func (service *Service) listPageWithOptions(ctx context.Context, onlyPublic bool, includePrivatePassword bool, options ListOptions) (Page, error) {
+	pageNumber, pageSize, paginated := normalizeListPagination(options)
 	if service.db == nil {
-		return []Event{}, nil
+		return Page{Items: []Event{}, Page: pageNumber, PageSize: pageSize}, nil
 	}
 
 	var records []appdb.Event
-	query := service.db.WithContext(ctx).Order("sort_at DESC").Order("id DESC")
+	query := service.db.WithContext(ctx).Model(&appdb.Event{})
 	if onlyPublic {
 		query = query.Where("is_public = ?", true)
 	}
+	if keyword := strings.TrimSpace(options.Query); keyword != "" {
+		query = query.Where("LOWER(title) LIKE ?", "%"+strings.ToLower(keyword)+"%")
+	}
+	if cityCode := strings.TrimSpace(options.CityCode); cityCode != "" {
+		query = query.Where("city_code = ?", cityCode)
+	} else if provinceCode := strings.TrimSpace(options.ProvinceCode); provinceCode != "" {
+		query = query.Where("province_code = ?", provinceCode)
+	}
+	if options.StartDate != nil {
+		query = query.Where("COALESCE(ends_at, starts_at) >= ?", *options.StartDate)
+	}
+	if options.EndDate != nil {
+		query = query.Where("COALESCE(starts_at, ends_at) <= ?", *options.EndDate)
+	}
+
+	var total int64
+	if err := query.Count(&total).Error; err != nil {
+		return Page{}, fmt.Errorf("count events: %w", err)
+	}
+
+	query = applyEventListSort(query, options.Sort)
+	if paginated {
+		query = query.Limit(pageSize).Offset((pageNumber - 1) * pageSize)
+	}
 	if err := query.Find(&records).Error; err != nil {
-		return nil, fmt.Errorf("list events: %w", err)
+		return Page{}, fmt.Errorf("list events: %w", err)
 	}
 
 	events := make([]Event, 0, len(records))
 	for _, record := range records {
-		event, err := service.eventFromRecord(ctx, record, includeSubmissionPassword)
+		event, err := service.eventFromRecord(ctx, record, includePrivatePassword)
 		if err != nil {
-			return nil, err
+			return Page{}, err
 		}
 		events = append(events, event)
 	}
 
-	return events, nil
+	if !paginated {
+		pageSize = len(events)
+	}
+	totalPages := 0
+	if pageSize > 0 && total > 0 {
+		totalPages = int((total + int64(pageSize) - 1) / int64(pageSize))
+	}
+	return Page{Items: events, Total: total, Page: pageNumber, PageSize: pageSize, TotalPages: totalPages}, nil
+}
+
+func normalizeListPagination(options ListOptions) (int, int, bool) {
+	page := options.Page
+	if page < 1 {
+		page = 1
+	}
+	pageSize := options.PageSize
+	if pageSize <= 0 {
+		return page, 0, false
+	}
+	if pageSize > 100 {
+		pageSize = 100
+	}
+	return page, pageSize, true
+}
+
+func applyEventListSort(query *gorm.DB, sort string) *gorm.DB {
+	switch strings.ToLower(strings.TrimSpace(sort)) {
+	case "start_asc", "time_asc", "date_asc", "oldest":
+		return query.Order("sort_at ASC").Order("id ASC")
+	default:
+		return query.Order("sort_at DESC").Order("id DESC")
+	}
 }
 
 func (service *Service) get(ctx context.Context, id int64, onlyPublic bool) (Event, bool, error) {
 	return service.getWithOptions(ctx, id, onlyPublic, false)
 }
 
-func (service *Service) getWithOptions(ctx context.Context, id int64, onlyPublic bool, includeSubmissionPassword bool) (Event, bool, error) {
+func (service *Service) getWithOptions(ctx context.Context, id int64, onlyPublic bool, includePrivatePassword bool) (Event, bool, error) {
 	if service.db == nil {
 		return Event{}, false, nil
 	}
@@ -249,7 +290,7 @@ func (service *Service) getWithOptions(ctx context.Context, id int64, onlyPublic
 		return Event{}, false, err
 	}
 
-	event, err := service.eventFromRecord(ctx, record, includeSubmissionPassword)
+	event, err := service.eventFromRecord(ctx, record, includePrivatePassword)
 	if err != nil {
 		return Event{}, false, err
 	}
@@ -309,7 +350,7 @@ func (service *Service) appendSubmissionObjects(ctx context.Context, objects *[]
 	return nil
 }
 
-func (service *Service) eventFromRecord(ctx context.Context, record appdb.Event, includeSubmissionPassword bool) (Event, error) {
+func (service *Service) eventFromRecord(ctx context.Context, record appdb.Event, includePrivatePassword bool) (Event, error) {
 	event := Event{
 		ID:                record.ID,
 		Title:             record.Title,
@@ -328,13 +369,12 @@ func (service *Service) eventFromRecord(ctx context.Context, record appdb.Event,
 		CreatedAt:         record.CreatedAt,
 		UpdatedAt:         record.UpdatedAt,
 	}
-	if includeSubmissionPassword {
-		event.SubmissionPassword = stringValue(record.SubmissionPasswordPlain)
+	if includePrivatePassword {
 		event.PrivatePassword = stringValue(record.PrivatePasswordPlain)
 	}
 
 	countQuery := service.db.WithContext(ctx).Model(&appdb.Photo{}).Where("event_id = ?", record.ID)
-	if !includeSubmissionPassword {
+	if !includePrivatePassword {
 		countQuery = countQuery.Where("visibility = ?", "public")
 	}
 	if err := countQuery.Count(&event.PhotoCount).Error; err != nil {

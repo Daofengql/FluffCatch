@@ -5,15 +5,22 @@ import {
   Box,
   Button,
   CircularProgress,
+  Collapse,
+  FormControl,
   Grid,
+  InputLabel,
+  MenuItem,
   Paper,
+  Select,
   Stack,
   TextField,
   Typography
 } from '@mui/material';
+import type { SelectChangeEvent } from '@mui/material/Select';
 import { useColorScheme } from '@mui/material/styles';
 import { useEffect, useMemo, useState } from 'react';
-import { getEvents, getSiteSettings, type EventCard as EventCardData, type SiteSettings } from '../../api/client';
+import { useLocation } from 'react-router-dom';
+import { getEventPage, getSiteSettings, type EventCard as EventCardData, type EventListFilters, type SiteSettings } from '../../api/client';
 import { CityCascader, type CityValue } from '../../components/common/CityCascader';
 import { EventCard } from '../../components/EventCard';
 
@@ -27,77 +34,96 @@ const fallbackSite: SiteSettings = {
   themePrimaryColor: '#2563eb',
   publicBackgroundDesktopUrl: '',
   publicBackgroundMobileUrl: '',
-  footerText: `© ${new Date().getFullYear()} FluffCatch. All rights reserved.`,
-  icpNumber: '',
-  policeRecordNumber: '',
-  policeRecordUrl: '',
-  contactText: '',
-  contactEmail: '',
-  contactUrl: ''
+  contactWidgetEnabled: false,
+  contactWidgetTitle: '联系我',
+  contactWidgetHtml: '',
+  footerSections: [
+    {
+      title: '关于站点',
+      html: `<p>兽聚返图收集与画廊</p><p>© ${new Date().getFullYear()} FluffCatch. All rights reserved.</p>`
+    },
+    {
+      title: '快速入口',
+      html: '<ul><li><a href="/">首页</a></li><li><a href="/submit">返图入口</a></li></ul>'
+    },
+    {
+      title: '站点信息',
+      html: '<p>公开画廊、限时投稿和活动返图都会在这里汇总。</p>'
+    }
+  ]
 };
 
 export function HomePage() {
   const { colorScheme } = useColorScheme();
+  const location = useLocation();
   const [events, setEvents] = useState<EventCardData[]>([]);
+  const [eventPage, setEventPage] = useState({ page: 1, pageSize: 12, total: 0, totalPages: 0 });
   const [site, setSite] = useState<SiteSettings>(fallbackSite);
-  const [query, setQuery] = useState('');
-  const [regionFilter, setRegionFilter] = useState<CityValue>({ cityCode: '', cityName: '', provinceCode: '', provinceName: '' });
-  const [startDate, setStartDate] = useState('');
-  const [endDate, setEndDate] = useState('');
+  const urlQuery = useMemo(() => new URLSearchParams(location.search).get('q') ?? '', [location.search]);
+  const [filters, setFilters] = useState<EventListFilters>({ page: 1, pageSize: 12, sort: 'start_desc' });
+  const [filterDraft, setFilterDraft] = useState({
+    endDate: '',
+    region: { cityCode: '', cityName: '', provinceCode: '', provinceName: '' } as CityValue,
+    sort: 'start_desc' as NonNullable<EventListFilters['sort']>,
+    startDate: ''
+  });
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(true);
+  const [filtersOpen, setFiltersOpen] = useState(false);
 
-  function loadEvents() {
+  function loadEvents(nextFilters: EventListFilters) {
     setLoading(true);
     setError('');
-    getEvents()
-      .then((items) => setEvents(Array.isArray(items) ? items : []))
+    getEventPage(nextFilters)
+      .then((payload) => {
+        setEvents(payload.events);
+        setEventPage({ page: payload.page, pageSize: payload.pageSize, total: payload.total, totalPages: payload.totalPages });
+      })
       .catch((err: unknown) => setError(err instanceof Error ? err.message : '加载失败'))
       .finally(() => setLoading(false));
   }
 
   useEffect(() => {
-    loadEvents();
     getSiteSettings()
       .then((payload) => setSite({ ...fallbackSite, ...payload }))
       .catch(() => setSite(fallbackSite));
   }, []);
 
-  const filteredEvents = useMemo(() => {
-    const keyword = query.trim().toLowerCase();
-    const filterStart = startDate ? new Date(`${startDate}T00:00:00`) : null;
-    const filterEnd = endDate ? new Date(`${endDate}T23:59:59`) : null;
+  useEffect(() => {
+    setFilters((prev) => ({ ...prev, page: 1, query: urlQuery.trim() }));
+  }, [urlQuery]);
 
-    return events.filter((event) => {
-      if (keyword && !event.title.toLowerCase().includes(keyword)) {
-        return false;
-      }
-      if (regionFilter.cityCode && event.cityCode !== regionFilter.cityCode) {
-        return false;
-      }
-      if (!regionFilter.cityCode && regionFilter.provinceCode && event.provinceCode !== regionFilter.provinceCode) {
-        return false;
-      }
-      if (!filterStart && !filterEnd) {
-        return true;
-      }
+  useEffect(() => {
+    loadEvents(filters);
+  }, [filters]);
 
-      const eventStart = event.startTime ? new Date(event.startTime) : null;
-      const eventEnd = event.endTime ? new Date(event.endTime) : eventStart;
-      if (!eventStart && !eventEnd) {
-        return false;
-      }
-      const rangeStart = eventStart ?? eventEnd;
-      const rangeEnd = eventEnd ?? eventStart;
-      if (filterStart && rangeEnd && rangeEnd < filterStart) {
-        return false;
-      }
-      if (filterEnd && rangeStart && rangeStart > filterEnd) {
-        return false;
-      }
-      return true;
-    });
-  }, [endDate, events, query, regionFilter.cityCode, regionFilter.provinceCode, startDate]);
+  function applyFilters() {
+    setFilters((prev) => ({
+      ...prev,
+      cityCode: filterDraft.region.cityCode || undefined,
+      endDate: filterDraft.endDate || undefined,
+      page: 1,
+      provinceCode: filterDraft.region.provinceCode || undefined,
+      sort: filterDraft.sort,
+      startDate: filterDraft.startDate || undefined
+    }));
+  }
+
+  function clearFilters() {
+    const emptyRegion = { cityCode: '', cityName: '', provinceCode: '', provinceName: '' };
+    setFilterDraft({ endDate: '', region: emptyRegion, sort: 'start_desc', startDate: '' });
+    setFilters((prev) => ({ page: 1, pageSize: prev.pageSize, query: prev.query, sort: 'start_desc' }));
+  }
+
+  function changeSort(event: SelectChangeEvent) {
+    setFilterDraft((prev) => ({ ...prev, sort: event.target.value as NonNullable<EventListFilters['sort']> }));
+  }
+
+  function changePage(nextPage: number) {
+    setFilters((prev) => ({ ...prev, page: nextPage }));
+  }
+
+  const hasSubmittedFilters = Boolean(filters.provinceCode || filters.cityCode || filters.startDate || filters.endDate || (filters.sort && filters.sort !== 'start_desc'));
   const markdownColorMode = colorScheme === 'dark' ? 'dark' : 'light';
 
   return (
@@ -136,25 +162,47 @@ export function HomePage() {
         </Paper>
       )}
       <Paper sx={{ borderRadius: 3, p: 2.5 }}>
-        <Grid container spacing={2}>
-          <Grid size={{ xs: 12, md: 4 }}>
-            <TextField fullWidth label="按名称搜索" onChange={(event) => setQuery(event.target.value)} placeholder="输入兽聚名称关键词" value={query} />
+        <Stack direction={{ xs: 'column', md: 'row' }} sx={{ alignItems: { xs: 'stretch', md: 'center' }, justifyContent: 'space-between', gap: 2 }}>
+          <Box>
+            <Typography sx={{ fontWeight: 800 }}>兽聚筛选</Typography>
+            <Typography color="text.secondary" variant="body2">按地区、时间找到想看的兽聚。</Typography>
+          </Box>
+          <Button onClick={() => setFiltersOpen((prev) => !prev)} sx={{ minHeight: 40, whiteSpace: 'nowrap' }} variant="outlined">
+            {filtersOpen ? '收起筛选' : '展开筛选'}
+          </Button>
+        </Stack>
+        <Collapse in={filtersOpen}>
+          <Grid container spacing={2} sx={{ mt: 2 }}>
+            <Grid size={{ xs: 12, md: 4 }}>
+              <CityCascader onChange={(value) => setFilterDraft((prev) => ({ ...prev, region: value }))} value={filterDraft.region} />
+            </Grid>
+            <Grid size={{ xs: 12, sm: 6, md: 2 }}>
+              <TextField fullWidth label="开始日期" onChange={(event) => setFilterDraft((prev) => ({ ...prev, startDate: event.target.value }))} slotProps={{ inputLabel: { shrink: true } }} type="date" value={filterDraft.startDate} />
+            </Grid>
+            <Grid size={{ xs: 12, sm: 6, md: 2 }}>
+              <TextField fullWidth label="结束日期" onChange={(event) => setFilterDraft((prev) => ({ ...prev, endDate: event.target.value }))} slotProps={{ inputLabel: { shrink: true } }} type="date" value={filterDraft.endDate} />
+            </Grid>
+            <Grid size={{ xs: 12, sm: 6, md: 2 }}>
+              <FormControl fullWidth>
+                <InputLabel>时间排序</InputLabel>
+                <Select label="时间排序" onChange={changeSort} value={filterDraft.sort}>
+                  <MenuItem value="start_desc">时间倒序</MenuItem>
+                  <MenuItem value="start_asc">时间正序</MenuItem>
+                </Select>
+              </FormControl>
+            </Grid>
+            <Grid size={{ xs: 12, sm: 6, md: 1 }}>
+              <Button fullWidth onClick={applyFilters} sx={{ height: '100%' }} variant="contained">
+                应用
+              </Button>
+            </Grid>
+            <Grid size={{ xs: 12, sm: 6, md: 1 }}>
+              <Button fullWidth onClick={clearFilters} sx={{ height: '100%' }}>
+                清空
+              </Button>
+            </Grid>
           </Grid>
-          <Grid size={{ xs: 12, md: 3 }}>
-            <CityCascader helperText="可只选省份，也可继续选到城市。" onChange={setRegionFilter} value={regionFilter} />
-          </Grid>
-          <Grid size={{ xs: 12, sm: 6, md: 2 }}>
-            <TextField fullWidth label="开始日期" onChange={(event) => setStartDate(event.target.value)} slotProps={{ inputLabel: { shrink: true } }} type="date" value={startDate} />
-          </Grid>
-          <Grid size={{ xs: 12, sm: 6, md: 2 }}>
-            <TextField fullWidth label="结束日期" onChange={(event) => setEndDate(event.target.value)} slotProps={{ inputLabel: { shrink: true } }} type="date" value={endDate} />
-          </Grid>
-          <Grid size={{ xs: 12, sm: 6, md: 1 }}>
-            <Button fullWidth onClick={() => { setQuery(''); setRegionFilter({ cityCode: '', cityName: '', provinceCode: '', provinceName: '' }); setStartDate(''); setEndDate(''); }} sx={{ height: '100%' }}>
-              清空
-            </Button>
-          </Grid>
-        </Grid>
+        </Collapse>
       </Paper>
       {loading && (
         <Box sx={{ display: 'flex', justifyContent: 'center', py: 8 }}>
@@ -164,7 +212,7 @@ export function HomePage() {
       {error && (
         <Alert
           action={
-            <Button color="inherit" onClick={loadEvents} size="small">
+            <Button color="inherit" onClick={() => loadEvents(filters)} size="small">
               重试
             </Button>
           }
@@ -174,25 +222,47 @@ export function HomePage() {
         </Alert>
       )}
       {!loading && !error && (
-        <Grid container spacing={3}>
-          {filteredEvents.map((event) => (
-            <Grid key={event.id} size={{ xs: 12, md: 6, lg: 4 }}>
-              <EventCard event={event} />
-            </Grid>
-          ))}
-          {!filteredEvents.length && (
-            <Grid size={{ xs: 12 }}>
-              <Paper sx={{ p: 4, textAlign: 'center' }}>
-                <Typography sx={{ fontWeight: 800 }} variant="h6">
-                  {events.length ? '没有匹配的兽聚' : '还没有公开兽聚'}
-                </Typography>
-                <Typography color="text.secondary" sx={{ mt: 1 }}>
-                  {events.length ? '可以调整搜索词、地区或时间范围再试一次。' : '管理员创建公开兽聚后，这里会显示卡片式入口。'}
-                </Typography>
-              </Paper>
-            </Grid>
+        <Stack sx={{ gap: 2.5 }}>
+          <Stack direction={{ xs: 'column', sm: 'row' }} sx={{ alignItems: { xs: 'flex-start', sm: 'center' }, gap: 1, justifyContent: 'space-between' }}>
+            <Typography color="text.secondary" variant="body2">
+              共 {eventPage.total} 个公开兽聚{hasSubmittedFilters || urlQuery.trim() ? '符合当前条件' : ''}
+            </Typography>
+            {eventPage.totalPages > 1 && (
+              <Typography color="text.secondary" variant="body2">
+                第 {eventPage.page} / {eventPage.totalPages} 页
+              </Typography>
+            )}
+          </Stack>
+          <Grid container spacing={3}>
+            {events.map((event) => (
+              <Grid key={event.id} size={{ xs: 12, md: 6, lg: 4 }}>
+                <EventCard event={event} />
+              </Grid>
+            ))}
+            {!events.length && (
+              <Grid size={{ xs: 12 }}>
+                <Paper sx={{ p: 4, textAlign: 'center' }}>
+                  <Typography sx={{ fontWeight: 800 }} variant="h6">
+                    {urlQuery.trim() || hasSubmittedFilters ? '没有匹配的兽聚' : '还没有公开兽聚'}
+                  </Typography>
+                  <Typography color="text.secondary" sx={{ mt: 1 }}>
+                    {urlQuery.trim() || hasSubmittedFilters ? '可以调整名称、地区、时间或排序后再试一次。' : '管理员创建公开兽聚后，这里会显示卡片式入口。'}
+                  </Typography>
+                </Paper>
+              </Grid>
+            )}
+          </Grid>
+          {eventPage.totalPages > 1 && (
+            <Stack direction="row" sx={{ alignItems: 'center', gap: 1, justifyContent: 'center' }}>
+              <Button disabled={eventPage.page <= 1 || loading} onClick={() => changePage(eventPage.page - 1)} variant="outlined">
+                上一页
+              </Button>
+              <Button disabled={eventPage.page >= eventPage.totalPages || loading} onClick={() => changePage(eventPage.page + 1)} variant="outlined">
+                下一页
+              </Button>
+            </Stack>
           )}
-        </Grid>
+        </Stack>
       )}
     </Stack>
   );

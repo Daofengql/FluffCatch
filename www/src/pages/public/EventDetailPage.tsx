@@ -1,4 +1,4 @@
-import { CalendarMonth, CameraAlt, CheckCircle, CloudDownload, CloudUpload, ContentCopy, Delete, Edit, Favorite, FavoriteBorder, LocalOffer, LocationOn, PhotoLibrary, PlayCircle, QrCode2, Storage } from '@mui/icons-material';
+import { CalendarMonth, CameraAlt, CheckCircle, CloudDownload, CloudUpload, Delete, Edit, Favorite, FavoriteBorder, Link as LinkIcon, LocalOffer, LocationOn, PhotoLibrary, PlayCircle, Storage } from '@mui/icons-material';
 import {
   Alert,
   Box,
@@ -17,6 +17,7 @@ import {
   DialogTitle,
   FormControl,
   Grid,
+  IconButton,
   InputLabel,
   MenuItem,
   Pagination,
@@ -27,16 +28,16 @@ import {
   Typography
 } from '@mui/material';
 import type { SelectChangeEvent } from '@mui/material/Select';
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { useParams } from 'react-router-dom';
-import { QRCodeSVG } from 'qrcode.react';
-import { batchDeletePhotos, batchUpdatePhotos, deletePhoto, getEvent, getPhotos, likePhoto, unlockEventPrivatePhotos, updatePhoto, type EventCard, type Photo } from '../../api/client';
+import { batchDeletePhotos, batchUpdatePhotos, deletePhoto, getEvent, getPhotos, likePhoto, setEventCoverFromPhoto, unlockEventPrivatePhotos, updatePhoto, type EventCard, type GalleryFilters, type Photo } from '../../api/client';
 import { getCachedMe, refreshMe, subscribeAuthState } from '../../api/authState';
 import { BatchDownloadDialog } from '../../components/BatchDownloadDialog';
 import { ConfirmDialog } from '../../components/ConfirmDialog';
 import { ImagePreviewDialog } from '../../components/ImagePreviewDialog';
 import { EventEditorDialog } from '../../components/EventEditorDialog';
 import { SubmissionDialog } from '../../components/SubmissionDialog';
+import { SubmissionLinkDialog } from '../../components/SubmissionLinkDialog';
 import { SubmissionReviewDialog } from '../../components/SubmissionReviewDialog';
 import { formatEventLocation } from '../../utils/eventLocation';
 import { downloadPhoto } from '../../utils/download';
@@ -72,14 +73,15 @@ export function EventDetailPage() {
   const [privateLoading, setPrivateLoading] = useState(false);
   const [authenticated, setAuthenticated] = useState(() => getCachedMe().authenticated);
   const [likeError, setLikeError] = useState('');
-  const [shareOpen, setShareOpen] = useState(false);
   const [reviewOpen, setReviewOpen] = useState(false);
+  const [linkDialogOpen, setLinkDialogOpen] = useState(false);
   const [editorOpen, setEditorOpen] = useState(false);
   const [manageMode, setManageMode] = useState(false);
   const [selectedIds, setSelectedIds] = useState<number[]>([]);
   const [editingPhoto, setEditingPhoto] = useState<Photo | null>(null);
-  const [photoForm, setPhotoForm] = useState({ photographerName: '', tags: '', visibility: 'public' as Photo['visibility'] });
-  const [copyMessage, setCopyMessage] = useState('');
+  const [photoForm, setPhotoForm] = useState({ photographerName: '', tags: '', takenAt: '', visibility: 'public' as Photo['visibility'] });
+  const [galleryFilters, setGalleryFilters] = useState<GalleryFilters>({ mediaType: 'all', sort: 'latest' });
+  const [filtersOpen, setFiltersOpen] = useState(false);
   const [deleteConfirm, setDeleteConfirm] = useState<{ type: 'batch' } | { type: 'single'; photo: Photo } | null>(null);
   const [downloadId, setDownloadId] = useState<number | null>(null);
   const [batchDownloadOpen, setBatchDownloadOpen] = useState(false);
@@ -93,6 +95,8 @@ export function EventDetailPage() {
   const [passwordError, setPasswordError] = useState('');
   const [unlockingPassword, setUnlockingPassword] = useState(false);
   const [pendingProtectedPhoto, setPendingProtectedPhoto] = useState<Photo | null>(null);
+  const didApplyInitialFiltersRef = useRef(false);
+  const didInitialLoadRef = useRef(false);
 
   const photos = useMemo(() => [...publicPhotos, ...privatePhotos], [publicPhotos, privatePhotos]);
 
@@ -106,8 +110,8 @@ export function EventDetailPage() {
     const eventPromise = options.refreshEvent === false && event ? Promise.resolve(event) : getEvent(eventId);
     return Promise.all([
       eventPromise,
-      getPhotos(eventId, authenticated, targetPublicPage, targetPublicPageSize, 'public'),
-      getPhotos(eventId, authenticated, targetPrivatePage, targetPrivatePageSize, 'private')
+      getPhotos(eventId, authenticated, targetPublicPage, targetPublicPageSize, 'public', galleryFilters),
+      getPhotos(eventId, authenticated, targetPrivatePage, targetPrivatePageSize, 'private', galleryFilters)
     ])
       .then(([eventData, publicData, privateData]) => {
         setEvent(eventData);
@@ -153,7 +157,7 @@ export function EventDetailPage() {
     const targetPageSize = (options.pageSize ?? publicPageSize) || undefined;
     setPublicLoading(true);
     setError('');
-    return getPhotos(eventId, authenticated, targetPage, targetPageSize, 'public')
+    return getPhotos(eventId, authenticated, targetPage, targetPageSize, 'public', galleryFilters)
       .then(applyPublicPhotoPage)
       .catch((err: unknown) => {
         setError(err instanceof Error ? err.message : '公开返图加载失败');
@@ -167,7 +171,7 @@ export function EventDetailPage() {
     const targetPageSize = (options.pageSize ?? privatePageSize) || undefined;
     setPrivateLoading(true);
     setError('');
-    return getPhotos(eventId, authenticated, targetPage, targetPageSize, 'private')
+    return getPhotos(eventId, authenticated, targetPage, targetPageSize, 'private', galleryFilters)
       .then(applyPrivatePhotoPage)
       .catch((err: unknown) => {
         setError(err instanceof Error ? err.message : '非公开返图加载失败');
@@ -179,6 +183,12 @@ export function EventDetailPage() {
   function refreshPhotoSections() {
     setError('');
     return Promise.all([loadPublicPhotos(), loadPrivatePhotos()]).then(([nextPublic, nextPrivate]) => [...nextPublic, ...nextPrivate]);
+  }
+
+  function refreshEventOnly() {
+    return getEvent(eventId)
+      .then(setEvent)
+      .catch((err: unknown) => setError(err instanceof Error ? err.message : '兽聚信息刷新失败'));
   }
 
   function handlePublicPageChange(_: React.ChangeEvent<unknown>, value: number) {
@@ -218,8 +228,24 @@ export function EventDetailPage() {
   useEffect(() => {
     setPublicPage(1);
     setPrivatePage(1);
-    void load({ publicPage: 1, privatePage: 1 });
+    if (!didInitialLoadRef.current || !event) {
+      didInitialLoadRef.current = true;
+      void load({ publicPage: 1, privatePage: 1 });
+      return;
+    }
+    void Promise.all([refreshEventOnly(), loadPublicPhotos({ page: 1 }), loadPrivatePhotos({ page: 1 })]);
   }, [eventId, authenticated]);
+
+  useEffect(() => {
+    if (!didApplyInitialFiltersRef.current) {
+      didApplyInitialFiltersRef.current = true;
+      return;
+    }
+    setPublicPage(1);
+    setPrivatePage(1);
+    setSelectedIds([]);
+    void Promise.all([loadPublicPhotos({ page: 1 }), loadPrivatePhotos({ page: 1 })]);
+  }, [galleryFilters.tag, galleryFilters.photographer, galleryFilters.mediaType, galleryFilters.sort]);
 
   useEffect(() => {
     if (typeof window === 'undefined' || !eventId) return;
@@ -246,6 +272,9 @@ export function EventDetailPage() {
     () =>
       photos.map((photo) => ({
         contentType: photo.contentType,
+        downloadFilename: downloadFilename(event?.title ?? 'fluffcatch', photo),
+        downloadUrl: photoURL(photo),
+        previewSrc: isVideoPhoto(photo) ? undefined : photoURL(photo, 'thumbnail'),
         src: photoURL(photo),
         subtitle: [
           photo.photographerName ? `摄影师：${photo.photographerName}` : '匿名投稿',
@@ -307,30 +336,10 @@ export function EventDetailPage() {
     setPreviewIndex(index);
   }
 
-  const shareUrl = useMemo(() => {
-    if (!event || typeof window === 'undefined') return '';
-    const url = new URL('/submit', window.location.origin);
-    url.searchParams.set('eventId', String(event.id));
-    if (event.submissionPassword) {
-      url.searchParams.set('password', event.submissionPassword);
-    }
-    return url.toString();
-  }, [event]);
-
-  async function copyShareUrl() {
-    if (!shareUrl) return;
-    try {
-      await navigator.clipboard.writeText(shareUrl);
-      setCopyMessage('分享链接已复制');
-    } catch {
-      setCopyMessage('复制失败，请手动复制链接');
-    }
-  }
-
   function handleEventSaved() {
     setEditorOpen(false);
     setMessage('兽聚已更新。');
-    load();
+    void Promise.all([refreshEventOnly(), refreshPhotoSections()]);
   }
 
   function togglePhotoSelection(photoId: number) {
@@ -402,6 +411,7 @@ export function EventDetailPage() {
     setPhotoForm({
       photographerName: photo.photographerName || '',
       tags: (photo.tags ?? []).map((tag) => tag.name).join(' '),
+      takenAt: toDatetimeLocal(photo.takenAt || ''),
       visibility: photo.visibility
     });
   }
@@ -435,6 +445,7 @@ export function EventDetailPage() {
       const result = await updatePhoto(editingPhoto.id, {
         photographerName: photoForm.photographerName,
         tags: photoForm.tags.split(/[\s,，]+/).filter(Boolean),
+        takenAt: photoForm.takenAt,
         visibility: photoForm.visibility
       });
       setEditingPhoto(null);
@@ -449,8 +460,8 @@ export function EventDetailPage() {
     const locked = restricted && photo.visibility === 'private' && !authenticated && !photo.accessGranted;
     const video = isVideoPhoto(photo);
     return (
-      <Grid key={photo.id} size={{ xs: 12, sm: 6, md: 4, lg: 3 }}>
-        <Card sx={{ borderRadius: 3, height: '100%', overflow: 'hidden', position: 'relative', border: manageMode && selectedIds.includes(photo.id) ? '2px solid' : undefined, borderColor: manageMode && selectedIds.includes(photo.id) ? 'primary.main' : undefined }}>
+      <Grid key={photo.id} size={{ xs: 6, sm: 6, md: 4, lg: 3 }}>
+        <Card sx={{ borderRadius: { xs: 1.5, sm: 3 }, height: '100%', overflow: 'hidden', position: 'relative', border: manageMode && selectedIds.includes(photo.id) ? '2px solid' : undefined, borderColor: manageMode && selectedIds.includes(photo.id) ? 'primary.main' : undefined }}>
           {manageMode && authenticated && (
             <Checkbox
               checked={selectedIds.includes(photo.id)}
@@ -523,12 +534,33 @@ export function EventDetailPage() {
                   </Typography>
                 </Box>
               )}
+              {!manageMode && !locked && (
+                <IconButton
+                  aria-label="下载原文件"
+                  disabled={downloadId === photo.id}
+                  onClick={(clickEvent) => { clickEvent.preventDefault(); clickEvent.stopPropagation(); void handleSingleDownload(photo); }}
+                  size="small"
+                  sx={{
+                    bgcolor: 'rgba(15,23,42,0.72)',
+                    bottom: 8,
+                    color: 'white',
+                    display: { xs: 'inline-flex', sm: 'none' },
+                    position: 'absolute',
+                    right: 8,
+                    zIndex: 3,
+                    '&:hover': { bgcolor: 'rgba(15,23,42,0.86)' },
+                    '&.Mui-disabled': { bgcolor: 'rgba(15,23,42,0.48)', color: 'rgba(255,255,255,0.7)' }
+                  }}
+                >
+                  {downloadId === photo.id ? <CircularProgress color="inherit" size={18} /> : <CloudDownload fontSize="small" />}
+                </IconButton>
+              )}
             </Box>
           </CardActionArea>
-          <CardContent sx={{ p: 1.75 }}>
-            <Stack sx={{ gap: 1.25 }}>
+          <CardContent sx={{ p: { xs: 1, sm: 1.75 } }}>
+            <Stack sx={{ gap: { xs: 0.75, sm: 1.25 } }}>
               <Stack direction="row" sx={{ alignItems: 'center', gap: 1, minWidth: 0 }}>
-                <CameraAlt color="primary" fontSize="small" />
+                <CameraAlt color="primary" fontSize="small" sx={{ display: { xs: 'none', sm: 'inline-flex' } }} />
                 <Typography noWrap sx={{ flex: 1, fontWeight: 700 }}>
                   {photo.photographerName || '匿名投稿'}
                 </Typography>
@@ -538,7 +570,7 @@ export function EventDetailPage() {
                     onClick={() => void handleLike(photo)}
                     size="small"
                     startIcon={photo.liked ? <Favorite /> : <FavoriteBorder />}
-                    sx={{ minWidth: 0 }}
+                    sx={{ minWidth: 0, px: { xs: 0.75, sm: 1 } }}
                   >
                     {photo.likeCount || 0}
                   </Button>
@@ -546,10 +578,14 @@ export function EventDetailPage() {
               </Stack>
               {!manageMode && !locked && (
                 <Button
+                  aria-label="下载原文件"
                   disabled={downloadId === photo.id}
                   onClick={(clickEvent) => { clickEvent.stopPropagation(); void handleSingleDownload(photo); }}
                   size="small"
                   startIcon={downloadId === photo.id ? <CircularProgress size={16} /> : <CloudDownload />}
+                  sx={{
+                    display: { xs: 'none', sm: 'inline-flex' }
+                  }}
                   variant="outlined"
                 >
                   下载原文件
@@ -561,21 +597,38 @@ export function EventDetailPage() {
                 </Button>
               )}
               {manageMode && authenticated && (
-                <Stack direction="row" sx={{ gap: 1 }}>
-                  <Button onClick={() => startEditPhoto(photo)} size="small" startIcon={<Edit />}>属性</Button>
-                  <Button color="error" onClick={() => requestDeletePhoto(photo)} size="small" startIcon={<Delete />}>删除</Button>
+                <Stack direction={{ xs: 'column', sm: 'row' }} sx={{ gap: 0.5 }}>
+                  <Button onClick={() => startEditPhoto(photo)} size="small" startIcon={<Edit />} sx={{ justifyContent: 'flex-start' }}>属性</Button>
+                  <Button color="error" onClick={() => requestDeletePhoto(photo)} size="small" startIcon={<Delete />} sx={{ justifyContent: 'flex-start' }}>删除</Button>
                 </Stack>
               )}
-              <Stack sx={{ color: 'text.secondary', gap: 0.75 }}>
+              <Stack sx={{ color: 'text.secondary', gap: { xs: 0.35, sm: 0.75 } }}>
                 <PhotoMeta icon={<Storage fontSize="inherit" />} text={`${formatContentType(photo.contentType)} · ${formatBytes(photo.sizeBytes)}`} />
                 <PhotoMeta icon={<CalendarMonth fontSize="inherit" />} text={formatPhotoTime(photo.takenAt || photo.createdAt)} />
               </Stack>
               {!!(photo.tags ?? []).length && (
-                <Stack direction="row" sx={{ flexWrap: 'wrap', gap: 0.75 }}>
-                  {(photo.tags ?? []).slice(0, 3).map((tag) => (
-                    <Chip icon={<LocalOffer />} key={tag.id} label={tag.name} size="small" sx={{ maxWidth: '100%' }} />
+                <Stack direction="row" sx={{ flexWrap: 'wrap', gap: { xs: 0.4, sm: 0.75 } }}>
+                  {(photo.tags ?? []).slice(0, 2).map((tag) => (
+                    <Chip
+                      icon={<LocalOffer sx={{ display: { xs: 'none', sm: 'inline-flex' } }} />}
+                      key={tag.id}
+                      label={tag.name}
+                      size="small"
+                      sx={{
+                        '& .MuiChip-label': { px: { xs: 0.75, sm: 1 } },
+                        fontSize: { xs: 11, sm: 13 },
+                        height: { xs: 22, sm: 24 },
+                        maxWidth: '100%'
+                      }}
+                    />
                   ))}
-                  {(photo.tags ?? []).length > 3 && <Chip label={`+${photo.tags.length - 3}`} size="small" />}
+                  {(photo.tags ?? []).length > 2 && (
+                    <Chip
+                      label={`+${photo.tags.length - 2}`}
+                      size="small"
+                      sx={{ '& .MuiChip-label': { px: { xs: 0.75, sm: 1 } }, fontSize: { xs: 11, sm: 13 }, height: { xs: 22, sm: 24 } }}
+                    />
+                  )}
                 </Stack>
               )}
             </Stack>
@@ -662,8 +715,8 @@ export function EventDetailPage() {
               )}
               {authenticated && (
                 <>
-                  <Button onClick={() => setShareOpen((prev) => !prev)} startIcon={<QrCode2 />} sx={{ width: 'fit-content' }} variant="outlined">
-                    分享返图入口
+                  <Button onClick={() => setLinkDialogOpen(true)} startIcon={<LinkIcon />} sx={{ width: 'fit-content' }} variant="outlined">
+                    限时投稿链接
                   </Button>
                   <Button onClick={() => setEditorOpen(true)} startIcon={<Edit />} sx={{ width: 'fit-content' }} variant="outlined">
                     编辑兽聚
@@ -680,49 +733,6 @@ export function EventDetailPage() {
           </Stack>
         </Stack>
       </Paper>
-
-      <Collapse in={authenticated && shareOpen && Boolean(shareUrl)}>
-        <Paper sx={{ borderRadius: 3, p: { xs: 2, sm: 2.5 } }} variant="outlined">
-          <Stack direction={{ xs: 'column', md: 'row' }} sx={{ alignItems: { xs: 'stretch', md: 'center' }, gap: 2 }}>
-            <Box sx={{ bgcolor: '#ffffff', border: '1px solid', borderColor: 'divider', borderRadius: 2, display: 'inline-flex', p: 1.5, width: 'fit-content' }}>
-              <QRCodeSVG size={132} value={shareUrl} />
-            </Box>
-            <Stack sx={{ flex: 1, gap: 1, minWidth: 0 }}>
-              <Typography sx={{ fontWeight: 800 }}>返图分享链接</Typography>
-              <Typography color="text.secondary" variant="body2">
-                访客扫描或打开后会进入独立返图页，并自动选择当前兽聚；如果设置了投稿口令，也会自动填入。
-              </Typography>
-              {!event.submissionPassword && (
-                <Alert severity="warning" sx={{ py: 0.5 }}>
-                  当前链接没有携带投稿口令。若这是迁移前已有兽聚，请到后台编辑兽聚并重新保存一次投稿口令。
-                </Alert>
-              )}
-              <Typography
-                sx={{
-                  bgcolor: 'action.hover',
-                  border: '1px solid',
-                  borderColor: 'divider',
-                  borderRadius: 1.5,
-                  overflowWrap: 'anywhere',
-                  px: 1.5,
-                  py: 1
-                }}
-                variant="body2"
-              >
-                {shareUrl}
-              </Typography>
-              {copyMessage && (
-                <Typography color="success.main" variant="caption">
-                  {copyMessage}
-                </Typography>
-              )}
-            </Stack>
-            <Button onClick={copyShareUrl} startIcon={<ContentCopy />} variant="contained">
-              复制链接
-            </Button>
-          </Stack>
-        </Paper>
-      </Collapse>
 
       {likeError && <Alert severity="warning">{likeError}</Alert>}
 
@@ -758,6 +768,20 @@ export function EventDetailPage() {
               已选 {selectedIds.length} 张
             </Typography>
             <Box sx={{ flex: 1 }} />
+            <Button
+              disabled={!selectedIds.length}
+              onClick={() => {
+                const first = selectedIds[0];
+                if (!event || !first) return;
+                setEventCoverFromPhoto(event.id, first)
+                  .then(() => { setMessage('已使用选中返图设置封面。'); void refreshEventOnly(); })
+                  .catch((err: unknown) => setError(err instanceof Error ? err.message : '设置封面失败'));
+              }}
+              size="small"
+              variant="outlined"
+            >
+              设为封面
+            </Button>
             <Button
               disabled={!selectedIds.length}
               onClick={() => {
@@ -807,10 +831,59 @@ export function EventDetailPage() {
         </Paper>
       )}
 
+      <Paper sx={{ borderRadius: 3, p: { xs: 1.5, sm: 2 } }} variant="outlined">
+        <Stack direction="row" sx={{ alignItems: 'center', justifyContent: 'space-between', gap: 1 }}>
+          <Box>
+            <Typography sx={{ fontWeight: 800 }}>画廊筛选</Typography>
+            <Typography color="text.secondary" variant="body2">筛选只刷新返图区域。</Typography>
+          </Box>
+          <Button onClick={() => setFiltersOpen((prev) => !prev)} variant="outlined">
+            {filtersOpen ? '收起' : '展开'}
+          </Button>
+        </Stack>
+        <Collapse in={filtersOpen}>
+          <Grid container spacing={1.5} sx={{ mt: 1.5 }}>
+            <Grid size={{ xs: 12, sm: 6, md: 3 }}>
+              <TextField fullWidth label="标签筛选" onChange={(e) => setGalleryFilters((prev) => ({ ...prev, tag: e.target.value }))} placeholder="#舞台" size="small" value={galleryFilters.tag || ''} />
+            </Grid>
+            <Grid size={{ xs: 12, sm: 6, md: 3 }}>
+              <TextField fullWidth label="摄影师筛选" onChange={(e) => setGalleryFilters((prev) => ({ ...prev, photographer: e.target.value }))} size="small" value={galleryFilters.photographer || ''} />
+            </Grid>
+            <Grid size={{ xs: 12, sm: 6, md: 2 }}>
+              <FormControl fullWidth size="small">
+                <InputLabel>媒体类型</InputLabel>
+                <Select label="媒体类型" onChange={(e: SelectChangeEvent) => setGalleryFilters((prev) => ({ ...prev, mediaType: e.target.value as GalleryFilters['mediaType'] }))} value={galleryFilters.mediaType || 'all'}>
+                  <MenuItem value="all">全部</MenuItem>
+                  <MenuItem value="image">图片</MenuItem>
+                  <MenuItem value="video">视频</MenuItem>
+                </Select>
+              </FormControl>
+            </Grid>
+            <Grid size={{ xs: 12, sm: 6, md: 2 }}>
+              <FormControl fullWidth size="small">
+                <InputLabel>排序</InputLabel>
+                <Select label="排序" onChange={(e: SelectChangeEvent) => setGalleryFilters((prev) => ({ ...prev, sort: e.target.value as GalleryFilters['sort'] }))} value={galleryFilters.sort || 'latest'}>
+                  <MenuItem value="latest">最新入库</MenuItem>
+                  <MenuItem value="oldest">最早入库</MenuItem>
+                  <MenuItem value="taken_desc">拍摄时间新</MenuItem>
+                  <MenuItem value="taken_asc">拍摄时间旧</MenuItem>
+                  <MenuItem value="likes">最多喜欢</MenuItem>
+                </Select>
+              </FormControl>
+            </Grid>
+            <Grid size={{ xs: 12, md: 2 }}>
+              <Button fullWidth onClick={() => setGalleryFilters({ mediaType: 'all', sort: 'latest' })} sx={{ height: '100%' }}>
+                清空筛选
+              </Button>
+            </Grid>
+          </Grid>
+        </Collapse>
+      </Paper>
+
       <PhotoSection title="公开返图" subtitle={`${publicTotal} 个公开媒体文件`}>
         <PhotoSectionBody loading={publicLoading}>
           {publicPhotos.length ? (
-            <Grid container spacing={2}>
+            <Grid container spacing={{ xs: 1, sm: 2 }}>
               {publicPhotos.map((photo) => renderPhotoCard(photo, photos.findIndex((item) => item.id === photo.id), false))}
             </Grid>
           ) : (
@@ -823,7 +896,7 @@ export function EventDetailPage() {
       {(authenticated || privateTotal > 0) && (
         <PhotoSection title="非公开返图" subtitle={authenticated ? `${privateTotal} 个私密媒体，管理员可直接查看` : privateAccessUnlocked ? `${privateTotal} 个私密媒体，已在当前浏览器会话中解锁` : `${privateTotal} 个私密媒体，需要输入这个兽聚的私密口令后查看`}>
           <PhotoSectionBody loading={privateLoading}>
-            <Grid container spacing={2}>
+            <Grid container spacing={{ xs: 1, sm: 2 }}>
               {restrictedPhotos.map((photo) => renderPhotoCard(photo, photos.findIndex((item) => item.id === photo.id), true))}
             </Grid>
             {!restrictedPhotos.length && <Alert severity="info">这里暂时还没有非公开返图。</Alert>}
@@ -839,8 +912,9 @@ export function EventDetailPage() {
         onIndexChange={setPreviewIndex}
         open={previewIndex >= 0}
       />
-      <SubmissionDialog event={event} onClose={() => setSubmitOpen(false)} onSubmitted={() => load({ publicPage: 1, privatePage: 1 })} open={submitOpen} />
+      <SubmissionDialog event={event} onClose={() => setSubmitOpen(false)} open={submitOpen} />
       <SubmissionReviewDialog event={event} onChanged={refreshPhotoSections} onClose={() => setReviewOpen(false)} open={reviewOpen} />
+      <SubmissionLinkDialog event={event} onClose={() => setLinkDialogOpen(false)} open={linkDialogOpen} />
       <EventEditorDialog event={event} mode="edit" onClose={() => setEditorOpen(false)} onSaved={handleEventSaved} open={editorOpen} />
 
       <Dialog fullWidth maxWidth="xs" onClose={() => setPasswordDialogOpen(false)} open={passwordDialogOpen}>
@@ -901,6 +975,22 @@ export function EventDetailPage() {
               onChange={(e) => setPhotoForm((prev) => ({ ...prev, tags: e.target.value }))}
               value={photoForm.tags}
             />
+            <TextField
+              fullWidth
+              label="拍摄时间"
+              onChange={(e) => setPhotoForm((prev) => ({ ...prev, takenAt: e.target.value }))}
+              slotProps={{ inputLabel: { shrink: true } }}
+              type="datetime-local"
+              value={photoForm.takenAt}
+            />
+            {editingPhoto?.exif && Object.keys(editingPhoto.exif).length > 0 && (
+              <Paper sx={{ p: 1.5 }} variant="outlined">
+                <Typography sx={{ fontWeight: 800, mb: 0.75 }} variant="body2">EXIF</Typography>
+                {Object.entries(editingPhoto.exif).map(([key, value]) => (
+                  value ? <Typography color="text.secondary" key={key} variant="caption" sx={{ display: 'block' }}>{key}: {String(value)}</Typography> : null
+                ))}
+              </Paper>
+            )}
           </Stack>
         </DialogContent>
         <DialogActions>
@@ -1118,4 +1208,12 @@ function formatDateRange(start?: string, end?: string) {
   const startText = formatter.format(new Date(start));
   if (!end) return startText;
   return `${startText} - ${formatter.format(new Date(end))}`;
+}
+
+function toDatetimeLocal(value?: string) {
+  if (!value) return '';
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return '';
+  const offsetDate = new Date(date.getTime() - date.getTimezoneOffset() * 60000);
+  return offsetDate.toISOString().slice(0, 16);
 }

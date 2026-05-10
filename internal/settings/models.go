@@ -2,6 +2,7 @@ package settings
 
 import (
 	"fmt"
+	"html"
 	"time"
 
 	"fluffcatch/internal/config"
@@ -92,22 +93,24 @@ func (o OIDCSettings) Sanitize() OIDCSettings {
 }
 
 type SiteSettings struct {
-	Name                       string `json:"name"`
-	Subtitle                   string `json:"subtitle"`
-	LogoURL                    string `json:"logoUrl"`
-	HomeMarkdown               string `json:"homeMarkdown"`
-	ThemeMode                  string `json:"themeMode"`
-	ThemePreset                string `json:"themePreset"`
-	ThemePrimaryColor          string `json:"themePrimaryColor"`
-	PublicBackgroundDesktopURL string `json:"publicBackgroundDesktopUrl"`
-	PublicBackgroundMobileURL  string `json:"publicBackgroundMobileUrl"`
-	FooterText                 string `json:"footerText"`
-	ICPNumber                  string `json:"icpNumber"`
-	PoliceRecordNumber         string `json:"policeRecordNumber"`
-	PoliceRecordURL            string `json:"policeRecordUrl"`
-	ContactText                string `json:"contactText"`
-	ContactEmail               string `json:"contactEmail"`
-	ContactURL                 string `json:"contactUrl"`
+	Name                       string          `json:"name"`
+	Subtitle                   string          `json:"subtitle"`
+	LogoURL                    string          `json:"logoUrl"`
+	HomeMarkdown               string          `json:"homeMarkdown"`
+	ThemeMode                  string          `json:"themeMode"`
+	ThemePreset                string          `json:"themePreset"`
+	ThemePrimaryColor          string          `json:"themePrimaryColor"`
+	PublicBackgroundDesktopURL string          `json:"publicBackgroundDesktopUrl"`
+	PublicBackgroundMobileURL  string          `json:"publicBackgroundMobileUrl"`
+	FooterSections             []FooterSection `json:"footerSections"`
+	ContactWidgetEnabled       bool            `json:"contactWidgetEnabled"`
+	ContactWidgetTitle         string          `json:"contactWidgetTitle"`
+	ContactWidgetHTML          string          `json:"contactWidgetHtml"`
+}
+
+type FooterSection struct {
+	Title string `json:"title"`
+	HTML  string `json:"html"`
 }
 
 type UploadSettings struct {
@@ -152,13 +155,14 @@ func FromConfig(cfg config.Config) RuntimeSettings {
 			RedirectURL:  cfg.OIDC.RedirectURL,
 		},
 		Site: SiteSettings{
-			Name:              cfg.App.Name,
-			Subtitle:          "兽聚返图收集与画廊",
-			HomeMarkdown:      DefaultHomeMarkdown,
-			ThemeMode:         "system",
-			ThemePreset:       "blue",
-			ThemePrimaryColor: "#2563eb",
-			FooterText:        fmt.Sprintf("© %d %s. All rights reserved.", time.Now().Year(), cfg.App.Name),
+			Name:               cfg.App.Name,
+			Subtitle:           "兽聚返图收集与画廊",
+			HomeMarkdown:       DefaultHomeMarkdown,
+			ThemeMode:          "system",
+			ThemePreset:        "blue",
+			ThemePrimaryColor:  "#2563eb",
+			FooterSections:     defaultFooterSections(cfg.App.Name, "兽聚返图收集与画廊"),
+			ContactWidgetTitle: "联系我",
 		},
 		Upload: UploadSettings{
 			MaxFileSizeMB:        cfg.Upload.MaxSizeMB,
@@ -166,6 +170,30 @@ func FromConfig(cfg config.Config) RuntimeSettings {
 			MaxFilesPerUpload:    cfg.Upload.MaxFilesPerUpload,
 			DefaultPageSize:      cfg.Upload.DefaultPageSize,
 			MaxConcurrentUploads: cfg.Upload.MaxConcurrentUploads,
+		},
+	}
+}
+
+func defaultFooterSections(siteName string, subtitle string) []FooterSection {
+	if siteName == "" {
+		siteName = "FluffCatch"
+	}
+	if subtitle == "" {
+		subtitle = "兽聚返图收集与画廊"
+	}
+
+	return []FooterSection{
+		{
+			Title: "关于站点",
+			HTML:  fmt.Sprintf("<p>%s</p><p>© %d %s. All rights reserved.</p>", html.EscapeString(subtitle), time.Now().Year(), html.EscapeString(siteName)),
+		},
+		{
+			Title: "快速入口",
+			HTML:  `<ul><li><a href="/">首页</a></li><li><a href="/submit">返图入口</a></li></ul>`,
+		},
+		{
+			Title: "站点信息",
+			HTML:  "<p>公开画廊、限时投稿和活动返图都会在这里汇总。</p>",
 		},
 	}
 }

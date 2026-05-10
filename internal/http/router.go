@@ -18,20 +18,21 @@ import (
 )
 
 type Server struct {
-	cfg             config.Config
-	db              *gorm.DB
-	storageManager  *storage.Manager
-	settingsService *settings.Service
-	authService     *auth.Service
-	captchaStore    *auth.CaptchaStore
-	eventService    *events.Service
-	uploadService   *uploads.Service
-	galleryService  *gallery.Service
-	loginLimiter    *rateLimiter
-	captchaLimiter  *rateLimiter
-	uploadLimiter   chan struct{}
-	oidcStates      *oidcStateStore
-	blurCache       *blurPreviewCache
+	cfg              config.Config
+	db               *gorm.DB
+	storageManager   *storage.Manager
+	settingsService  *settings.Service
+	authService      *auth.Service
+	captchaStore     *auth.CaptchaStore
+	eventService     *events.Service
+	uploadService    *uploads.Service
+	galleryService   *gallery.Service
+	loginLimiter     *rateLimiter
+	captchaLimiter   *rateLimiter
+	eventListLimiter *rateLimiter
+	uploadLimiter    chan struct{}
+	oidcStates       *oidcStateStore
+	blurCache        *blurPreviewCache
 }
 
 type blurPreviewCache struct {
@@ -96,20 +97,21 @@ func (cache *blurPreviewCache) Set(key string, content []byte, contentType strin
 
 func NewServer(cfg config.Config, dbConn *gorm.DB, storageManager *storage.Manager, settingsService *settings.Service) *Server {
 	return &Server{
-		cfg:             cfg,
-		db:              dbConn,
-		storageManager:  storageManager,
-		settingsService: settingsService,
-		authService:     auth.NewService(dbConn, cfg.Auth.AdminUsername),
-		captchaStore:    auth.NewCaptchaStore(),
-		eventService:    events.NewService(dbConn, storageManager),
-		uploadService:   uploads.NewServiceWithLimits(dbConn, storageManager, cfg.Upload.MaxSizeMB, cfg.Upload.MaxVideoSizeMB),
-		galleryService:  gallery.NewService(dbConn, storageManager),
-		loginLimiter:    newRateLimiter(1, 5),
-		captchaLimiter:  newRateLimiter(2, 10),
-		uploadLimiter:   make(chan struct{}, hardMaxConcurrentUploads),
-		oidcStates:      newOIDCStateStore(),
-		blurCache:       newBlurPreviewCache(),
+		cfg:              cfg,
+		db:               dbConn,
+		storageManager:   storageManager,
+		settingsService:  settingsService,
+		authService:      auth.NewService(dbConn, cfg.Auth.AdminUsername),
+		captchaStore:     auth.NewCaptchaStore(),
+		eventService:     events.NewService(dbConn, storageManager),
+		uploadService:    uploads.NewServiceWithLimits(dbConn, storageManager, cfg.Upload.MaxSizeMB, cfg.Upload.MaxVideoSizeMB),
+		galleryService:   gallery.NewService(dbConn, storageManager),
+		loginLimiter:     newRateLimiter(1, 5),
+		captchaLimiter:   newRateLimiter(2, 10),
+		eventListLimiter: newRateLimiter(6, 12),
+		uploadLimiter:    make(chan struct{}, hardMaxConcurrentUploads),
+		oidcStates:       newOIDCStateStore(),
+		blurCache:        newBlurPreviewCache(),
 	}
 }
 
@@ -151,6 +153,7 @@ func (server *Server) mountAPIRoutes(r *gin.Engine) {
 	api.GET("/events/:id", server.ginHandler(server.getPublicEvent))
 	api.GET("/events/:id/photos", server.ginHandler(server.listPublicPhotos))
 	api.POST("/events/:id/private-access", server.ginHandler(server.unlockEventPrivatePhotos))
+	api.GET("/events/:id/submission-token", server.ginHandler(server.resolveSubmissionToken))
 	api.POST("/events/:id/submissions", server.ginHandler(server.createSubmission))
 	api.POST("/photos/:id/like", server.ginHandler(server.likePhoto))
 
@@ -162,8 +165,13 @@ func (server *Server) mountAPIRoutes(r *gin.Engine) {
 	admin.PUT("/events/:id", server.ginHandler(server.updateAdminEvent))
 	admin.DELETE("/events/:id", server.ginHandler(server.deleteAdminEvent))
 	admin.POST("/events/:id/cover", server.ginHandler(server.uploadEventCover))
+	admin.POST("/events/:id/cover-from-photo", server.ginHandler(server.setEventCoverFromPhoto))
 	admin.GET("/events/:id/photos", server.ginHandler(server.listAdminPhotos))
 	admin.GET("/events/:id/submissions", server.ginHandler(server.listEventPendingSubmissions))
+	admin.GET("/events/:id/submission-links", server.ginHandler(server.listSubmissionLinks))
+	admin.POST("/events/:id/submission-links", server.ginHandler(server.createSubmissionLink))
+	admin.DELETE("/events/:id/submission-links/:linkID", server.ginHandler(server.revokeSubmissionLink))
+	admin.DELETE("/events/:id/submission-links/:linkID/record", server.ginHandler(server.deleteRevokedSubmissionLink))
 	admin.GET("/submissions", server.ginHandler(server.listPendingSubmissions))
 	admin.POST("/submissions/batch-approve", server.ginHandler(server.approveSubmissions))
 	admin.POST("/submissions/batch-delete", server.ginHandler(server.deleteSubmissions))
@@ -185,4 +193,6 @@ func (server *Server) mountAPIRoutes(r *gin.Engine) {
 	admin.POST("/settings/site/background/:variant", server.ginHandler(server.uploadSiteBackground))
 	admin.DELETE("/settings/site/background/:variant", server.ginHandler(server.clearSiteBackground))
 	admin.PUT("/settings/upload", server.ginHandler(server.updateUploadSettings))
+	admin.GET("/maintenance/storage/orphans", server.ginHandler(server.scanOrphanStorageObjects))
+	admin.GET("/maintenance/storage/missing-thumbnails", server.ginHandler(server.scanMissingThumbnails))
 }

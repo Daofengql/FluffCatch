@@ -14,7 +14,6 @@ export type EventCard = {
   coverUrl?: string;
   isPublic: boolean;
   submissionEnabled: boolean;
-  submissionPassword?: string;
   privatePassword?: string;
   photoCount: number;
 };
@@ -35,6 +34,7 @@ export type Photo = {
   photographerName?: string;
   visibility: 'public' | 'private';
   tags: { id: number; name: string }[];
+  exif?: Record<string, unknown>;
   takenAt?: string;
   createdAt: string;
   updatedAt: string;
@@ -53,11 +53,42 @@ export type Submission = {
   photographerName?: string;
   tags: string[];
   status: string;
+  exif?: Record<string, unknown>;
+  takenAt?: string;
   createdAt: string;
+};
+
+export type GalleryFilters = {
+  tag?: string;
+  photographer?: string;
+  mediaType?: 'all' | 'image' | 'video';
+  sort?: 'latest' | 'oldest' | 'taken_desc' | 'taken_asc' | 'likes';
+};
+
+export type SubmissionLink = {
+  id: number;
+  eventId: number;
+  label: string;
+  photographerName?: string;
+  token?: string;
+  expiresAt?: string;
+  maxUses: number;
+  useCount: number;
+  revokedAt?: string;
+  createdAt: string;
+  updatedAt: string;
 };
 
 export type PhotoPage = {
   photos: Photo[];
+  total: number;
+  page: number;
+  pageSize: number;
+  totalPages: number;
+};
+
+export type EventPage = {
+  events: EventCard[];
   total: number;
   page: number;
   pageSize: number;
@@ -92,6 +123,11 @@ export type StoragePolicy = {
   s3?: S3Settings;
 };
 
+export type FooterSection = {
+  title: string;
+  html: string;
+};
+
 export type SiteSettings = {
   name: string;
   subtitle: string;
@@ -102,13 +138,10 @@ export type SiteSettings = {
   themePrimaryColor: string;
   publicBackgroundDesktopUrl: string;
   publicBackgroundMobileUrl: string;
-  footerText: string;
-  icpNumber: string;
-  policeRecordNumber: string;
-  policeRecordUrl: string;
-  contactText: string;
-  contactEmail: string;
-  contactUrl: string;
+  footerSections: FooterSection[];
+  contactWidgetEnabled: boolean;
+  contactWidgetTitle: string;
+  contactWidgetHtml: string;
 };
 
 export type UploadSettings = {
@@ -314,8 +347,50 @@ export async function getOIDCLoginURL() {
   return request<{ url: string }>('/api/v1/auth/oidc/login');
 }
 
-export async function getEvents(admin = false): Promise<EventCard[]> {
-  const payload = await request<{ events?: EventCard[] } | null>(admin ? '/api/v1/admin/events' : '/api/v1/events', undefined, {
+export type EventListFilters = {
+  cityCode?: string;
+  endDate?: string;
+  page?: number;
+  pageSize?: number;
+  provinceCode?: string;
+  query?: string;
+  sort?: 'start_desc' | 'start_asc';
+  startDate?: string;
+};
+
+export async function getEventPage(filters: EventListFilters = {}): Promise<EventPage> {
+  const params = new URLSearchParams();
+  if (filters.query?.trim()) {
+    params.set('q', filters.query.trim());
+  }
+  if (filters.provinceCode?.trim()) params.set('provinceCode', filters.provinceCode.trim());
+  if (filters.cityCode?.trim()) params.set('cityCode', filters.cityCode.trim());
+  if (filters.startDate?.trim()) params.set('startDate', filters.startDate.trim());
+  if (filters.endDate?.trim()) params.set('endDate', filters.endDate.trim());
+  if (filters.sort && filters.sort !== 'start_desc') params.set('sort', filters.sort);
+  if (filters.page && filters.page > 1) params.set('page', String(filters.page));
+  if (filters.pageSize && filters.pageSize > 0) params.set('pageSize', String(filters.pageSize));
+  const query = params.toString();
+  const payload = await request<EventPage | null>(`/api/v1/events${query ? `?${query}` : ''}`, undefined, {
+    dedupe: true,
+    tags: [EVENTS_CACHE_TAG],
+    ttlMs: 3_000
+  });
+  return {
+    events: Array.isArray(payload?.events) ? payload.events : [],
+    total: payload?.total ?? 0,
+    page: payload?.page ?? filters.page ?? 1,
+    pageSize: payload?.pageSize ?? filters.pageSize ?? 24,
+    totalPages: payload?.totalPages ?? 0
+  };
+}
+
+export async function getEvents(admin = false, filters: { query?: string } = {}): Promise<EventCard[]> {
+  if (!admin) {
+    const page = await getEventPage({ query: filters.query });
+    return page.events;
+  }
+  const payload = await request<{ events?: EventCard[] } | null>('/api/v1/admin/events', undefined, {
     dedupe: true,
     tags: [EVENTS_CACHE_TAG],
     ttlMs: 3_000
@@ -328,7 +403,7 @@ export async function getEvent(id: number): Promise<EventCard> {
   return payload.event;
 }
 
-export async function getPhotos(eventId: number, admin = false, page = 1, pageSize?: number, visibility: 'all' | Photo['visibility'] = 'all'): Promise<PhotoPage> {
+export async function getPhotos(eventId: number, admin = false, page = 1, pageSize?: number, visibility: 'all' | Photo['visibility'] = 'all', filters: GalleryFilters = {}): Promise<PhotoPage> {
   const query = new URLSearchParams({ page: String(page) });
   if (pageSize && pageSize > 0) {
     query.set('pageSize', String(pageSize));
@@ -336,6 +411,10 @@ export async function getPhotos(eventId: number, admin = false, page = 1, pageSi
   if (visibility !== 'all') {
     query.set('visibility', visibility);
   }
+  if (filters.tag?.trim()) query.set('tag', filters.tag.trim());
+  if (filters.photographer?.trim()) query.set('photographer', filters.photographer.trim());
+  if (filters.mediaType && filters.mediaType !== 'all') query.set('mediaType', filters.mediaType);
+  if (filters.sort && filters.sort !== 'latest') query.set('sort', filters.sort);
   const payload = await request<PhotoPage>(admin ? `/api/v1/admin/events/${eventId}/photos?${query}` : `/api/v1/events/${eventId}/photos?${query}`);
   return {
     photos: payload.photos ?? [],
@@ -358,7 +437,7 @@ export async function getPhotoList(eventId: number, admin = false): Promise<Phot
   return payload.photos ?? [];
 }
 
-export async function saveEvent(event: Partial<EventCard> & { privatePassword?: string; submissionPassword?: string }) {
+export async function saveEvent(event: Partial<EventCard> & { privatePassword?: string }) {
   const body = JSON.stringify({
     title: event.title,
     description: event.description,
@@ -374,7 +453,6 @@ export async function saveEvent(event: Partial<EventCard> & { privatePassword?: 
     removeCover: false,
     isPublic: Boolean(event.isPublic),
     submissionEnabled: event.submissionEnabled ?? true,
-    submissionPassword: event.submissionPassword || '',
     privatePassword: event.privatePassword || ''
   });
   if (event.id) {
@@ -398,6 +476,15 @@ export async function uploadEventCover(eventId: number, file: File) {
   return result;
 }
 
+export async function setEventCoverFromPhoto(eventId: number, photoId: number) {
+  const result = await request<{ policyId: string; objectKey: string; url: string }>(`/api/v1/admin/events/${eventId}/cover-from-photo`, {
+    method: 'POST',
+    body: JSON.stringify({ photoId })
+  });
+  invalidateCacheTags(EVENTS_CACHE_TAG);
+  return result;
+}
+
 export async function deleteEvent(eventId: number, headers?: Record<string, string>) {
   const result = await request<{ message: string; deletedObjects: number }>(`/api/v1/admin/events/${eventId}`, {
     method: 'DELETE',
@@ -407,7 +494,7 @@ export async function deleteEvent(eventId: number, headers?: Record<string, stri
   return result;
 }
 
-export async function updatePhoto(photoId: number, payload: { photographerName?: string; visibility: Photo['visibility']; tags?: string[] }) {
+export async function updatePhoto(photoId: number, payload: { photographerName?: string; visibility: Photo['visibility']; tags?: string[]; takenAt?: string }) {
   const result = await request<{ photo: Photo }>(`/api/v1/admin/photos/${photoId}`, {
     method: 'PUT',
     body: JSON.stringify(payload)
@@ -435,10 +522,10 @@ export async function batchDeletePhotos(photoIds: number[], headers?: Record<str
   return result;
 }
 
-export async function batchUpdatePhotos(photoIds: number[], visibility: Photo['visibility']) {
+export async function batchUpdatePhotos(photoIds: number[], visibility?: Photo['visibility'], payload: { photographerName?: string; tags?: string[]; replaceTags?: boolean } = {}) {
   const result = await request<{ affected: number; message: string }>('/api/v1/admin/photos/batch-update', {
     method: 'POST',
-    body: JSON.stringify({ photoIds, visibility })
+    body: JSON.stringify({ photoIds, visibility, photographerName: payload.photographerName, tags: payload.tags, replaceTags: payload.replaceTags })
   });
   invalidateCacheTags(EVENTS_CACHE_TAG);
   return result;
@@ -464,17 +551,29 @@ export async function submitPhotos(eventId: number, form: FormData) {
   return result;
 }
 
-export function submitPhotoWithProgress(eventId: number, form: FormData, onProgress: (progress: number) => void) {
+export async function resolveSubmissionToken(eventId: number, token: string) {
+  const query = new URLSearchParams({ token });
+  return request<{ valid: boolean; link?: SubmissionLink }>(`/api/v1/events/${eventId}/submission-token?${query}`);
+}
+
+export function submitPhotoWithProgress(eventId: number, form: FormData, onProgress: (progress: number) => void, signal?: AbortSignal) {
   return new Promise<SubmissionUploadResult>((resolve, reject) => {
     const xhr = new XMLHttpRequest();
+    const handleAbort = () => xhr.abort();
+    if (signal?.aborted) {
+      reject(new DOMException('上传已取消', 'AbortError'));
+      return;
+    }
     xhr.open('POST', `/api/v1/events/${eventId}/submissions`);
     xhr.withCredentials = true;
+    signal?.addEventListener('abort', handleAbort, { once: true });
     xhr.upload.onprogress = (event) => {
       if (event.lengthComputable && event.total > 0) {
         onProgress(Math.max(1, Math.min(99, Math.round((event.loaded / event.total) * 100))));
       }
     };
     xhr.onload = () => {
+      signal?.removeEventListener('abort', handleAbort);
       const payload = JSON.parse(xhr.responseText || '{}');
       if (xhr.status >= 200 && xhr.status < 300) {
         onProgress(100);
@@ -484,7 +583,14 @@ export function submitPhotoWithProgress(eventId: number, form: FormData, onProgr
       }
       reject(new Error(payload.error || xhr.statusText || '上传失败'));
     };
-    xhr.onerror = () => reject(new Error('网络错误，上传失败'));
+    xhr.onerror = () => {
+      signal?.removeEventListener('abort', handleAbort);
+      reject(new Error('网络错误，上传失败'));
+    };
+    xhr.onabort = () => {
+      signal?.removeEventListener('abort', handleAbort);
+      reject(new DOMException('上传已取消', 'AbortError'));
+    };
     xhr.send(form);
   });
 }
@@ -497,6 +603,27 @@ export async function getPendingSubmissions(): Promise<Submission[]> {
 export async function getEventPendingSubmissions(eventId: number): Promise<Submission[]> {
   const payload = await request<{ submissions?: Submission[] } | null>(`/api/v1/admin/events/${eventId}/submissions`);
   return Array.isArray(payload?.submissions) ? payload.submissions : [];
+}
+
+export async function getSubmissionLinks(eventId: number): Promise<SubmissionLink[]> {
+  const payload = await request<{ links?: SubmissionLink[] } | null>(`/api/v1/admin/events/${eventId}/submission-links`);
+  return Array.isArray(payload?.links) ? payload.links : [];
+}
+
+export async function createSubmissionLink(eventId: number, payload: { label?: string; photographerName?: string; expiresInHours?: number; maxUses?: number }) {
+  const result = await request<{ link: SubmissionLink }>(`/api/v1/admin/events/${eventId}/submission-links`, {
+    method: 'POST',
+    body: JSON.stringify(payload)
+  });
+  return result.link;
+}
+
+export async function revokeSubmissionLink(eventId: number, linkId: number) {
+  return request<{ message: string }>(`/api/v1/admin/events/${eventId}/submission-links/${linkId}`, { method: 'DELETE' });
+}
+
+export async function deleteRevokedSubmissionLink(eventId: number, linkId: number) {
+  return request<{ message: string }>(`/api/v1/admin/events/${eventId}/submission-links/${linkId}/record`, { method: 'DELETE' });
 }
 
 export async function approveSubmissions(submissionIds: number[], visibility?: Photo['visibility']) {
@@ -625,6 +752,14 @@ export async function testStorageConnection(policy: StoragePolicy) {
     method: 'POST',
     body: JSON.stringify(policy)
   });
+}
+
+export async function scanOrphanStorageObjects() {
+  return request<{ items: { policyId: string; key: string; size?: number }[]; total: number; totalSizeBytes: number; scannedPolicies: number; skippedPolicies: number; truncated: boolean }>('/api/v1/admin/maintenance/storage/orphans');
+}
+
+export async function scanMissingThumbnails() {
+  return request<{ items: { id: number; eventId: number; kind: string; storagePolicyId: string; objectKey: string; contentType: string }[]; total: number; truncated: boolean }>('/api/v1/admin/maintenance/storage/missing-thumbnails');
 }
 
 export async function changePassword(currentPassword: string, newPassword: string) {
