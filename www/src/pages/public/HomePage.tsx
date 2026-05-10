@@ -90,6 +90,7 @@ export function HomePage() {
   }, []);
 
   useEffect(() => {
+    if (urlQuery.trim() === (filters.query || '')) return;
     setFilters((prev) => ({ ...prev, page: 1, query: urlQuery.trim() }));
   }, [urlQuery]);
 

@@ -35,12 +35,12 @@ type Service struct {
 }
 
 type FileUpload struct {
-	File               multipart.File
-	Header             *multipart.FileHeader
-	SubmissionToken    string
-	PhotographerName   string
-	Tags               []string
-	Visibility         string
+	File             multipart.File
+	Header           *multipart.FileHeader
+	SubmissionToken  string
+	PhotographerName string
+	Tags             []string
+	Visibility       string
 }
 
 type storedUpload struct {
@@ -741,7 +741,7 @@ func bufferUploadToTemp(source io.Reader, maxSizeBytes int64) (bufferedUpload, e
 		return bufferedUpload{}, fmt.Errorf("prepare upload buffer: %w", err)
 	}
 
-	contentType := http.DetectContentType(head)
+	contentType := detectUploadContentType(head)
 	return bufferedUpload{
 		File:        tempFile,
 		SizeBytes:   written,
@@ -749,6 +749,62 @@ func bufferUploadToTemp(source io.Reader, maxSizeBytes int64) (bufferedUpload, e
 		ContentType: contentType,
 		IsImage:     isAllowedImageContentType(contentType),
 	}, nil
+}
+
+func detectUploadContentType(head []byte) string {
+	if contentType := detectISOImageContentType(head); contentType != "" {
+		return contentType
+	}
+	return http.DetectContentType(head)
+}
+
+func detectISOImageContentType(head []byte) string {
+	if len(head) < 16 || string(head[4:8]) != "ftyp" {
+		return ""
+	}
+	size := int(binaryBigEndianUint32(head[0:4]))
+	if size < 16 || size > len(head) {
+		size = min(len(head), 64)
+	}
+	major := string(head[8:12])
+	if isBrandIn(major, "avif", "avis") {
+		return "image/avif"
+	}
+	if isBrandIn(major, "heic", "heix", "hevc", "hevx", "heim", "heis", "hevm", "hevs") {
+		return "image/heic"
+	}
+	if isBrandIn(major, "heif", "mif1", "msf1") {
+		return "image/heif"
+	}
+	for offset := 16; offset+4 <= size; offset += 4 {
+		brand := string(head[offset : offset+4])
+		if isBrandIn(brand, "avif", "avis") {
+			return "image/avif"
+		}
+		if isBrandIn(brand, "heic", "heix", "hevc", "hevx", "heim", "heis", "hevm", "hevs") {
+			return "image/heic"
+		}
+		if isBrandIn(brand, "heif", "mif1", "msf1") {
+			return "image/heif"
+		}
+	}
+	return ""
+}
+
+func binaryBigEndianUint32(data []byte) uint32 {
+	if len(data) < 4 {
+		return 0
+	}
+	return uint32(data[0])<<24 | uint32(data[1])<<16 | uint32(data[2])<<8 | uint32(data[3])
+}
+
+func isBrandIn(value string, brands ...string) bool {
+	for _, brand := range brands {
+		if value == brand {
+			return true
+		}
+	}
+	return false
 }
 
 func copyWithHead(dst io.Writer, hasher hash.Hash, src io.Reader, head *[]byte, headLimit int) (int64, error) {
@@ -796,7 +852,7 @@ func thumbnailObjectKey(eventID int64, contentHash string) string {
 
 func isAllowedImageContentType(contentType string) bool {
 	switch strings.ToLower(strings.TrimSpace(contentType)) {
-	case "image/jpeg", "image/png", "image/gif", "image/webp":
+	case "image/jpeg", "image/png", "image/gif", "image/webp", "image/heic", "image/heif", "image/avif":
 		return true
 	default:
 		return false
@@ -840,6 +896,12 @@ func extensionForContentType(contentType string) string {
 		return ".gif"
 	case "image/webp":
 		return ".webp"
+	case "image/heic":
+		return ".heic"
+	case "image/heif":
+		return ".heif"
+	case "image/avif":
+		return ".avif"
 	case "video/mp4":
 		return ".mp4"
 	case "video/webm":

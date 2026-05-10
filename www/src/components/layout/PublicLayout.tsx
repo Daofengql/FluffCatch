@@ -150,6 +150,7 @@ export function PublicLayoutHeader({ authenticated, hideAdminEntry = false, site
   const [suggestions, setSuggestions] = useState<EventCard[]>([]);
   const [suggestionsLoading, setSuggestionsLoading] = useState(false);
   const [suggestionsOpen, setSuggestionsOpen] = useState(false);
+  const [submittedSuggestionQuery, setSubmittedSuggestionQuery] = useState('');
   const navItems = [
     { label: '首页', path: '/', icon: <Home /> },
     { label: '返图', path: '/submit', icon: <CloudUpload /> }
@@ -169,38 +170,9 @@ export function PublicLayoutHeader({ authenticated, hideAdminEntry = false, site
     if (!showHomeSearch) {
       setSuggestions([]);
       setSuggestionsOpen(false);
-      return;
+      setSubmittedSuggestionQuery('');
     }
-    const keyword = homeSearch.trim();
-    if (!keyword) {
-      setSuggestions([]);
-      setSuggestionsOpen(false);
-      return;
-    }
-
-    let cancelled = false;
-    const handle = window.setTimeout(() => {
-      setSuggestionsLoading(true);
-      getEvents(false, { query: keyword })
-        .then((items) => {
-          if (cancelled) return;
-          setSuggestions(rankEventSuggestions(items, keyword).slice(0, 5));
-          setSuggestionsOpen(true);
-        })
-        .catch(() => {
-          if (cancelled) return;
-          setSuggestions([]);
-        })
-        .finally(() => {
-          if (!cancelled) setSuggestionsLoading(false);
-        });
-    }, 180);
-
-    return () => {
-      cancelled = true;
-      window.clearTimeout(handle);
-    };
-  }, [homeSearch, showHomeSearch]);
+  }, [showHomeSearch]);
 
   function go(path: string) {
     navigate(path);
@@ -209,6 +181,11 @@ export function PublicLayoutHeader({ authenticated, hideAdminEntry = false, site
 
   function updateHomeSearch(value: string) {
     setHomeSearch(value);
+    if (!value.trim()) {
+      setSuggestions([]);
+      setSuggestionsOpen(false);
+      setSubmittedSuggestionQuery('');
+    }
   }
 
   function submitHomeSearch(value = homeSearch) {
@@ -222,6 +199,27 @@ export function PublicLayoutHeader({ authenticated, hideAdminEntry = false, site
     const search = params.toString();
     navigate({ pathname: '/', search: search ? `?${search}` : '' }, { replace: true });
     setSuggestionsOpen(false);
+  }
+
+  function loadHomeSuggestions(value = homeSearch) {
+    const keyword = value.trim();
+    if (!showHomeSearch || !keyword) {
+      setSuggestions([]);
+      setSuggestionsOpen(false);
+      return;
+    }
+    setSubmittedSuggestionQuery(keyword);
+    setSuggestionsLoading(true);
+    getEvents(false, { query: keyword })
+      .then((items) => {
+        setSuggestions(rankEventSuggestions(items, keyword).slice(0, 5));
+        setSuggestionsOpen(true);
+      })
+      .catch(() => {
+        setSuggestions([]);
+        setSuggestionsOpen(true);
+      })
+      .finally(() => setSuggestionsLoading(false));
   }
 
   function closeSuggestions(event: FocusEvent<HTMLDivElement>) {
@@ -298,17 +296,29 @@ export function PublicLayoutHeader({ authenticated, hideAdminEntry = false, site
             </Button>
           ))}
         </Box>
-        <Box sx={{ flex: 1 }} />
+        <Box sx={{ flex: 1, minWidth: { xs: 4, sm: 16 } }} />
         {showHomeSearch && (
-          <Box onBlur={closeSuggestions} sx={{ display: { xs: 'none', md: 'block' }, flexShrink: 0, maxWidth: 320, minWidth: 220, position: 'relative', width: '22vw' }}>
+          <Box
+            onBlur={closeSuggestions}
+            sx={{
+              display: 'block',
+              flex: { xs: '0 1 170px', sm: '0 1 260px', md: '0 0 auto' },
+              flexShrink: 1,
+              maxWidth: { xs: 190, sm: 280, md: 320 },
+              minWidth: { xs: 118, sm: 180, md: 220 },
+              position: 'relative',
+              width: { xs: '34vw', sm: '28vw', md: '22vw' }
+            }}
+          >
             <TextField
               aria-label="按名称搜索兽聚"
               fullWidth
               onChange={(event) => updateHomeSearch(event.target.value)}
-              onFocus={() => { if (homeSearch.trim()) setSuggestionsOpen(true); }}
+              onFocus={() => { if (suggestions.length || submittedSuggestionQuery === homeSearch.trim()) setSuggestionsOpen(Boolean(homeSearch.trim())); }}
               onKeyDown={(event) => {
                 if (event.key === 'Enter') {
                   event.preventDefault();
+                  loadHomeSuggestions();
                   submitHomeSearch();
                 }
               }}
@@ -321,17 +331,34 @@ export function PublicLayoutHeader({ authenticated, hideAdminEntry = false, site
                       <Search fontSize="small" />
                     </InputAdornment>
                   ),
-                  endAdornment: suggestionsLoading ? (
+                  endAdornment: (
                     <InputAdornment position="end">
-                      <CircularProgress size={16} />
+                      {suggestionsLoading ? (
+                        <CircularProgress size={16} />
+                      ) : (
+                        <IconButton
+                          aria-label="搜索兽聚"
+                          edge="end"
+                          onClick={() => {
+                            loadHomeSuggestions();
+                            submitHomeSearch();
+                          }}
+                          size="small"
+                        >
+                          <Search fontSize="small" />
+                        </IconButton>
+                      )}
                     </InputAdornment>
-                  ) : undefined
+                  )
                 }
               }}
-              sx={{ '& .MuiOutlinedInput-root': { bgcolor: 'action.hover' } }}
+              sx={{
+                '& .MuiInputBase-input': { px: { xs: 0.25, sm: 0.5 } },
+                '& .MuiOutlinedInput-root': { bgcolor: 'action.hover', pr: { xs: 0.5, sm: 1 } }
+              }}
               value={homeSearch}
             />
-            {suggestionsOpen && homeSearch.trim() && (
+            {suggestionsOpen && homeSearch.trim() && submittedSuggestionQuery === homeSearch.trim() && (
               <Paper
                 elevation={8}
                 sx={{
@@ -465,6 +492,11 @@ function FloatingContactWidget({ site }: { site: SiteSettings }) {
     let frame = 0;
     const updateOverlap = () => {
       frame = 0;
+      const isCompactViewport = window.matchMedia('(max-width: 599.95px)').matches;
+      if (isCompactViewport) {
+        setFooterOverlap((prev) => (prev === 0 ? prev : 0));
+        return;
+      }
       const rect = footer.getBoundingClientRect();
       const maxOverlap = Math.max(0, window.innerHeight - 96);
       const nextOverlap = Math.ceil(Math.min(Math.max(0, window.innerHeight - rect.top), maxOverlap));

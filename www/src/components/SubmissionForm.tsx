@@ -21,11 +21,12 @@ type SubmissionFormProps = {
   initialPhotographerName?: string;
   initialSubmissionToken?: string;
   lockPhotographerName?: boolean;
+  onUploaded?: () => void;
   onRequestClose?: () => void;
   showCloseButton?: boolean;
 };
 
-export function SubmissionForm({ event, footer, initialPhotographerName = '', initialSubmissionToken = '', lockPhotographerName = false, onRequestClose, showCloseButton = false }: SubmissionFormProps) {
+export function SubmissionForm({ event, footer, initialPhotographerName = '', initialSubmissionToken = '', lockPhotographerName = false, onRequestClose, onUploaded, showCloseButton = false }: SubmissionFormProps) {
   const [message, setMessage] = useState('');
   const [error, setError] = useState('');
   const [submitting, setSubmitting] = useState(false);
@@ -245,6 +246,9 @@ export function SubmissionForm({ event, footer, initialPhotographerName = '', in
 
       await Promise.all(Array.from({ length: concurrency }, () => worker()));
 
+      if (successCount > 0) {
+        onUploaded?.();
+      }
       if (cancelRequestedRef.current || canceledCount > 0) {
         setMessage(successCount > 0 ? `已取消剩余上传，已完成 ${successCount} 个媒体文件。` : '已取消未完成的上传。');
       } else if (successCount > 0 && failureCount === 0) {

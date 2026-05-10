@@ -142,9 +142,6 @@ func (server *Server) batchUpdatePhotos(w stdhttp.ResponseWriter, r *stdhttp.Req
 }
 
 func (server *Server) deletePhoto(w stdhttp.ResponseWriter, r *stdhttp.Request) {
-	if !server.verifyCaptchaHeader(w, r) {
-		return
-	}
 	id, ok := parseIDParam(w, r, "id")
 	if !ok {
 		return

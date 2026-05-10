@@ -1,4 +1,4 @@
-import { CalendarMonth, CameraAlt, CheckCircle, CloudDownload, CloudUpload, Delete, Edit, Favorite, FavoriteBorder, Link as LinkIcon, LocalOffer, LocationOn, PhotoLibrary, PlayCircle, Storage } from '@mui/icons-material';
+import { CalendarMonth, CameraAlt, CloudDownload, CloudUpload, Delete, Edit, Favorite, FavoriteBorder, InfoOutlined, Link as LinkIcon, LocalOffer, LocationOn, PhotoLibrary, PlayCircle, Settings as SettingsIcon, Storage } from '@mui/icons-material';
 import {
   Alert,
   Box,
@@ -15,6 +15,7 @@ import {
   DialogActions,
   DialogContent,
   DialogTitle,
+  Divider,
   FormControl,
   Grid,
   IconButton,
@@ -41,7 +42,6 @@ import { SubmissionLinkDialog } from '../../components/SubmissionLinkDialog';
 import { SubmissionReviewDialog } from '../../components/SubmissionReviewDialog';
 import { formatEventLocation } from '../../utils/eventLocation';
 import { downloadPhoto } from '../../utils/download';
-import { VisibilityOff, Visibility as VisibilityIcon } from '@mui/icons-material';
 
 export function EventDetailPage() {
   const eventId = Number(useParams().eventId);
@@ -79,10 +79,17 @@ export function EventDetailPage() {
   const [manageMode, setManageMode] = useState(false);
   const [selectedIds, setSelectedIds] = useState<number[]>([]);
   const [editingPhoto, setEditingPhoto] = useState<Photo | null>(null);
-  const [photoForm, setPhotoForm] = useState({ photographerName: '', tags: '', takenAt: '', visibility: 'public' as Photo['visibility'] });
+  const [photoForm, setPhotoForm] = useState({ photographerName: '', takenAt: '', visibility: 'public' as Photo['visibility'] });
   const [galleryFilters, setGalleryFilters] = useState<GalleryFilters>({ mediaType: 'all', sort: 'latest' });
+  const [galleryFilterDraft, setGalleryFilterDraft] = useState<GalleryFilters>({ mediaType: 'all', sort: 'latest' });
   const [filtersOpen, setFiltersOpen] = useState(false);
   const [deleteConfirm, setDeleteConfirm] = useState<{ type: 'batch' } | { type: 'single'; photo: Photo } | null>(null);
+  const [cardMenu, setCardMenu] = useState<{ mouseX: number; mouseY: number; photo: Photo } | null>(null);
+  const [propertyPhoto, setPropertyPhoto] = useState<Photo | null>(null);
+  const [quickTagPhoto, setQuickTagPhoto] = useState<Photo | null>(null);
+  const [quickTags, setQuickTags] = useState<string[]>([]);
+  const [quickTagInput, setQuickTagInput] = useState('');
+  const [quickTagSaving, setQuickTagSaving] = useState(false);
   const [downloadId, setDownloadId] = useState<number | null>(null);
   const [batchDownloadOpen, setBatchDownloadOpen] = useState(false);
   const [privateAccessPassword, setPrivateAccessPassword] = useState('');
@@ -97,6 +104,10 @@ export function EventDetailPage() {
   const [pendingProtectedPhoto, setPendingProtectedPhoto] = useState<Photo | null>(null);
   const didApplyInitialFiltersRef = useRef(false);
   const didInitialLoadRef = useRef(false);
+  const longPressTimerRef = useRef<number | null>(null);
+  const longPressPointRef = useRef<{ x: number; y: number } | null>(null);
+  const suppressNextCardClickRef = useRef(false);
+  const submissionChangedRef = useRef(false);
 
   const photos = useMemo(() => [...publicPhotos, ...privatePhotos], [publicPhotos, privatePhotos]);
 
@@ -191,6 +202,20 @@ export function EventDetailPage() {
       .catch((err: unknown) => setError(err instanceof Error ? err.message : '兽聚信息刷新失败'));
   }
 
+  function handleSubmissionUploaded() {
+    submissionChangedRef.current = true;
+  }
+
+  function closeSubmissionDialog() {
+    setSubmitOpen(false);
+    if (!submissionChangedRef.current) return;
+    submissionChangedRef.current = false;
+    setPublicPage(1);
+    setPrivatePage(1);
+    setSelectedIds([]);
+    void Promise.all([refreshEventOnly(), loadPublicPhotos({ page: 1 }), loadPrivatePhotos({ page: 1 })]);
+  }
+
   function handlePublicPageChange(_: React.ChangeEvent<unknown>, value: number) {
     setPublicPage(value);
     setSelectedIds([]);
@@ -267,6 +292,26 @@ export function EventDetailPage() {
     refreshMe().catch(() => undefined);
     return unsubscribe;
   }, []);
+
+  useEffect(() => () => {
+    clearLongPressTimer();
+  }, []);
+
+  useEffect(() => {
+    if (!cardMenu) return undefined;
+    const close = () => closeCardMenu();
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') closeCardMenu();
+    };
+    window.addEventListener('click', close);
+    window.addEventListener('scroll', close, { passive: true });
+    window.addEventListener('keydown', closeOnEscape);
+    return () => {
+      window.removeEventListener('click', close);
+      window.removeEventListener('scroll', close);
+      window.removeEventListener('keydown', closeOnEscape);
+    };
+  }, [cardMenu]);
 
   const previewItems = useMemo(
     () =>
@@ -392,6 +437,160 @@ export function EventDetailPage() {
     setDeleteConfirm({ type: 'single', photo });
   }
 
+  function openCardMenu(photo: Photo, point: { x: number; y: number }) {
+    if (!authenticated) return;
+    setCardMenu({
+      mouseX: point.x + 2,
+      mouseY: point.y - 6,
+      photo
+    });
+  }
+
+  function closeCardMenu() {
+    setCardMenu(null);
+  }
+
+  function handleCardContextMenu(event: React.MouseEvent, photo: Photo) {
+    if (!authenticated) return;
+    event.preventDefault();
+    event.stopPropagation();
+    openCardMenu(photo, { x: event.clientX, y: event.clientY });
+  }
+
+  function handleCardPointerDown(event: React.PointerEvent, photo: Photo) {
+    if (!authenticated || event.pointerType !== 'touch') return;
+    clearLongPressTimer();
+    longPressPointRef.current = { x: event.clientX, y: event.clientY };
+    longPressTimerRef.current = window.setTimeout(() => {
+      suppressNextCardClickRef.current = true;
+      openCardMenu(photo, longPressPointRef.current || { x: event.clientX, y: event.clientY });
+    }, 520);
+  }
+
+  function handleCardPointerMove(event: React.PointerEvent) {
+    if (!longPressPointRef.current) return;
+    const distance = Math.hypot(event.clientX - longPressPointRef.current.x, event.clientY - longPressPointRef.current.y);
+    if (distance > 12) {
+      clearLongPressTimer();
+    }
+  }
+
+  function handleCardPointerEnd() {
+    clearLongPressTimer();
+  }
+
+  function clearLongPressTimer() {
+    if (longPressTimerRef.current !== null) {
+      window.clearTimeout(longPressTimerRef.current);
+      longPressTimerRef.current = null;
+    }
+    longPressPointRef.current = null;
+  }
+
+  function handleCardActionClick(event: React.MouseEvent, photo: Photo, index: number) {
+    if (suppressNextCardClickRef.current) {
+      suppressNextCardClickRef.current = false;
+      event.preventDefault();
+      event.stopPropagation();
+      return;
+    }
+    if (manageMode && authenticated) {
+      togglePhotoSelection(photo.id);
+      return;
+    }
+    openPhoto(photo, index);
+  }
+
+  function handleCardMenuDownload() {
+    const photo = cardMenu?.photo;
+    closeCardMenu();
+    if (photo) void handleSingleDownload(photo);
+  }
+
+  function handleCardMenuSettings() {
+    const photo = cardMenu?.photo;
+    closeCardMenu();
+    if (photo) startEditPhoto(photo);
+  }
+
+  function handleCardMenuDelete() {
+    const photo = cardMenu?.photo;
+    closeCardMenu();
+    if (photo) requestDeletePhoto(photo);
+  }
+
+  function handleCardMenuProperties() {
+    const photo = cardMenu?.photo;
+    closeCardMenu();
+    if (photo) setPropertyPhoto(photo);
+  }
+
+  function handleCardMenuQuickTags() {
+    const photo = cardMenu?.photo;
+    closeCardMenu();
+    if (!photo) return;
+    setQuickTagPhoto(photo);
+    setQuickTags((photo.tags ?? []).map((tag) => tag.name));
+    setQuickTagInput('');
+  }
+
+  function applyTagFilter(tagName: string) {
+    setFiltersOpen(true);
+    const nextFilters = { ...galleryFilters, tag: tagName };
+    setGalleryFilterDraft(nextFilters);
+    setGalleryFilters(nextFilters);
+  }
+
+  function applyGalleryFilters() {
+    setPublicPage(1);
+    setPrivatePage(1);
+    setSelectedIds([]);
+    setGalleryFilters({
+      tag: galleryFilterDraft.tag?.trim() || undefined,
+      photographer: galleryFilterDraft.photographer?.trim() || undefined,
+      mediaType: galleryFilterDraft.mediaType || 'all',
+      sort: galleryFilterDraft.sort || 'latest'
+    });
+  }
+
+  function clearGalleryFilters() {
+    const nextFilters: GalleryFilters = { mediaType: 'all', sort: 'latest' };
+    setGalleryFilterDraft(nextFilters);
+    setGalleryFilters(nextFilters);
+  }
+
+  function addQuickTag(value = quickTagInput) {
+    const normalized = normalizeTagInput(value);
+    if (!normalized) return;
+    setQuickTags((prev) => (prev.includes(normalized) ? prev : [...prev, normalized]));
+    setQuickTagInput('');
+  }
+
+  function removeQuickTag(tagName: string) {
+    setQuickTags((prev) => prev.filter((tag) => tag !== tagName));
+  }
+
+  async function saveQuickTags() {
+    if (!quickTagPhoto) return;
+    setQuickTagSaving(true);
+    setError('');
+    try {
+      const result = await updatePhoto(quickTagPhoto.id, {
+        photographerName: quickTagPhoto.photographerName || '',
+        tags: quickTags,
+        takenAt: toDatetimeLocal(quickTagPhoto.takenAt || ''),
+        visibility: quickTagPhoto.visibility
+      });
+      setQuickTagPhoto(null);
+      setMessage('标签已更新。');
+      applyUpdatedPhoto(result.photo);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : '保存标签失败');
+    } finally {
+      setQuickTagSaving(false);
+    }
+  }
+
   async function confirmDeletePhoto(headers: Record<string, string>) {
     if (deleteConfirm?.type !== 'single') return;
     const { photo } = deleteConfirm;
@@ -410,7 +609,6 @@ export function EventDetailPage() {
     setEditingPhoto(photo);
     setPhotoForm({
       photographerName: photo.photographerName || '',
-      tags: (photo.tags ?? []).map((tag) => tag.name).join(' '),
       takenAt: toDatetimeLocal(photo.takenAt || ''),
       visibility: photo.visibility
     });
@@ -444,7 +642,7 @@ export function EventDetailPage() {
     try {
       const result = await updatePhoto(editingPhoto.id, {
         photographerName: photoForm.photographerName,
-        tags: photoForm.tags.split(/[\s,，]+/).filter(Boolean),
+        tags: (editingPhoto.tags ?? []).map((tag) => tag.name),
         takenAt: photoForm.takenAt,
         visibility: photoForm.visibility
       });
@@ -461,7 +659,15 @@ export function EventDetailPage() {
     const video = isVideoPhoto(photo);
     return (
       <Grid key={photo.id} size={{ xs: 6, sm: 6, md: 4, lg: 3 }}>
-        <Card sx={{ borderRadius: { xs: 1.5, sm: 3 }, height: '100%', overflow: 'hidden', position: 'relative', border: manageMode && selectedIds.includes(photo.id) ? '2px solid' : undefined, borderColor: manageMode && selectedIds.includes(photo.id) ? 'primary.main' : undefined }}>
+        <Card
+          onContextMenu={(contextEvent) => handleCardContextMenu(contextEvent, photo)}
+          onPointerCancel={handleCardPointerEnd}
+          onPointerDown={(pointerEvent) => handleCardPointerDown(pointerEvent, photo)}
+          onPointerLeave={handleCardPointerEnd}
+          onPointerMove={handleCardPointerMove}
+          onPointerUp={handleCardPointerEnd}
+          sx={{ borderRadius: { xs: 1.5, sm: 3 }, height: '100%', overflow: 'hidden', position: 'relative', border: manageMode && selectedIds.includes(photo.id) ? '2px solid' : undefined, borderColor: manageMode && selectedIds.includes(photo.id) ? 'primary.main' : undefined }}
+        >
           {manageMode && authenticated && (
             <Checkbox
               checked={selectedIds.includes(photo.id)}
@@ -477,7 +683,7 @@ export function EventDetailPage() {
               }}
             />
           )}
-          <CardActionArea onClick={() => manageMode && authenticated ? togglePhotoSelection(photo.id) : openPhoto(photo, index)} sx={{ display: 'block' }}>
+          <CardActionArea onClick={(clickEvent) => handleCardActionClick(clickEvent, photo, index)} sx={{ display: 'block' }}>
             <Box sx={{ position: 'relative' }}>
               {video && !locked ? (
                 <Box
@@ -610,9 +816,15 @@ export function EventDetailPage() {
                 <Stack direction="row" sx={{ flexWrap: 'wrap', gap: { xs: 0.4, sm: 0.75 } }}>
                   {(photo.tags ?? []).slice(0, 2).map((tag) => (
                     <Chip
+                      clickable
                       icon={<LocalOffer sx={{ display: { xs: 'none', sm: 'inline-flex' } }} />}
                       key={tag.id}
                       label={tag.name}
+                      onClick={(chipEvent) => {
+                        chipEvent.preventDefault();
+                        chipEvent.stopPropagation();
+                        applyTagFilter(tag.name);
+                      }}
                       size="small"
                       sx={{
                         '& .MuiChip-label': { px: { xs: 0.75, sm: 1 } },
@@ -844,15 +1056,40 @@ export function EventDetailPage() {
         <Collapse in={filtersOpen}>
           <Grid container spacing={1.5} sx={{ mt: 1.5 }}>
             <Grid size={{ xs: 12, sm: 6, md: 3 }}>
-              <TextField fullWidth label="标签筛选" onChange={(e) => setGalleryFilters((prev) => ({ ...prev, tag: e.target.value }))} placeholder="#舞台" size="small" value={galleryFilters.tag || ''} />
+              <TextField
+                fullWidth
+                label="标签筛选"
+                onChange={(e) => setGalleryFilterDraft((prev) => ({ ...prev, tag: e.target.value }))}
+                onKeyDown={(keyEvent) => {
+                  if (keyEvent.key === 'Enter') {
+                    keyEvent.preventDefault();
+                    applyGalleryFilters();
+                  }
+                }}
+                placeholder="#舞台"
+                size="small"
+                value={galleryFilterDraft.tag || ''}
+              />
             </Grid>
             <Grid size={{ xs: 12, sm: 6, md: 3 }}>
-              <TextField fullWidth label="摄影师筛选" onChange={(e) => setGalleryFilters((prev) => ({ ...prev, photographer: e.target.value }))} size="small" value={galleryFilters.photographer || ''} />
+              <TextField
+                fullWidth
+                label="摄影师筛选"
+                onChange={(e) => setGalleryFilterDraft((prev) => ({ ...prev, photographer: e.target.value }))}
+                onKeyDown={(keyEvent) => {
+                  if (keyEvent.key === 'Enter') {
+                    keyEvent.preventDefault();
+                    applyGalleryFilters();
+                  }
+                }}
+                size="small"
+                value={galleryFilterDraft.photographer || ''}
+              />
             </Grid>
             <Grid size={{ xs: 12, sm: 6, md: 2 }}>
               <FormControl fullWidth size="small">
                 <InputLabel>媒体类型</InputLabel>
-                <Select label="媒体类型" onChange={(e: SelectChangeEvent) => setGalleryFilters((prev) => ({ ...prev, mediaType: e.target.value as GalleryFilters['mediaType'] }))} value={galleryFilters.mediaType || 'all'}>
+                <Select label="媒体类型" onChange={(e: SelectChangeEvent) => setGalleryFilterDraft((prev) => ({ ...prev, mediaType: e.target.value as GalleryFilters['mediaType'] }))} value={galleryFilterDraft.mediaType || 'all'}>
                   <MenuItem value="all">全部</MenuItem>
                   <MenuItem value="image">图片</MenuItem>
                   <MenuItem value="video">视频</MenuItem>
@@ -862,7 +1099,7 @@ export function EventDetailPage() {
             <Grid size={{ xs: 12, sm: 6, md: 2 }}>
               <FormControl fullWidth size="small">
                 <InputLabel>排序</InputLabel>
-                <Select label="排序" onChange={(e: SelectChangeEvent) => setGalleryFilters((prev) => ({ ...prev, sort: e.target.value as GalleryFilters['sort'] }))} value={galleryFilters.sort || 'latest'}>
+                <Select label="排序" onChange={(e: SelectChangeEvent) => setGalleryFilterDraft((prev) => ({ ...prev, sort: e.target.value as GalleryFilters['sort'] }))} value={galleryFilterDraft.sort || 'latest'}>
                   <MenuItem value="latest">最新入库</MenuItem>
                   <MenuItem value="oldest">最早入库</MenuItem>
                   <MenuItem value="taken_desc">拍摄时间新</MenuItem>
@@ -871,8 +1108,13 @@ export function EventDetailPage() {
                 </Select>
               </FormControl>
             </Grid>
-            <Grid size={{ xs: 12, md: 2 }}>
-              <Button fullWidth onClick={() => setGalleryFilters({ mediaType: 'all', sort: 'latest' })} sx={{ height: '100%' }}>
+            <Grid size={{ xs: 6, md: 1 }}>
+              <Button fullWidth onClick={applyGalleryFilters} sx={{ height: '100%' }} variant="contained">
+                应用
+              </Button>
+            </Grid>
+            <Grid size={{ xs: 6, md: 1 }}>
+              <Button fullWidth onClick={clearGalleryFilters} sx={{ height: '100%' }}>
                 清空筛选
               </Button>
             </Grid>
@@ -912,10 +1154,36 @@ export function EventDetailPage() {
         onIndexChange={setPreviewIndex}
         open={previewIndex >= 0}
       />
-      <SubmissionDialog event={event} onClose={() => setSubmitOpen(false)} open={submitOpen} />
+      <SubmissionDialog event={event} onClose={closeSubmissionDialog} onUploaded={handleSubmissionUploaded} open={submitOpen} />
       <SubmissionReviewDialog event={event} onChanged={refreshPhotoSections} onClose={() => setReviewOpen(false)} open={reviewOpen} />
       <SubmissionLinkDialog event={event} onClose={() => setLinkDialogOpen(false)} open={linkDialogOpen} />
       <EventEditorDialog event={event} mode="edit" onClose={() => setEditorOpen(false)} onSaved={handleEventSaved} open={editorOpen} />
+
+      {cardMenu && (
+        <Paper
+          elevation={8}
+          onClick={(clickEvent) => clickEvent.stopPropagation()}
+          onContextMenu={(contextEvent) => contextEvent.preventDefault()}
+          sx={{
+            border: '1px solid',
+            borderColor: 'divider',
+            left: Math.min(cardMenu.mouseX, Math.max(8, window.innerWidth - 228)),
+            overflow: 'hidden',
+            position: 'fixed',
+            py: 0.5,
+            top: Math.min(cardMenu.mouseY, Math.max(8, window.innerHeight - 252)),
+            width: 220,
+            zIndex: (theme) => theme.zIndex.modal
+          }}
+        >
+          <ContextMenuButton disabled={downloadId === cardMenu.photo.id} icon={downloadId === cardMenu.photo.id ? <CircularProgress size={18} /> : <CloudDownload fontSize="small" />} label="下载" onClick={handleCardMenuDownload} />
+          <ContextMenuButton icon={<SettingsIcon fontSize="small" />} label="设置" onClick={handleCardMenuSettings} />
+          <ContextMenuButton icon={<LocalOffer fontSize="small" />} label="快速标签修改" onClick={handleCardMenuQuickTags} />
+          <ContextMenuButton icon={<InfoOutlined fontSize="small" />} label="属性" onClick={handleCardMenuProperties} />
+          <Divider />
+          <ContextMenuButton color="error.main" icon={<Delete fontSize="small" />} label="删除" onClick={handleCardMenuDelete} />
+        </Paper>
+      )}
 
       <Dialog fullWidth maxWidth="xs" onClose={() => setPasswordDialogOpen(false)} open={passwordDialogOpen}>
         <DialogTitle>输入访问口令</DialogTitle>
@@ -970,32 +1238,145 @@ export function EventDetailPage() {
             </FormControl>
             <TextField
               fullWidth
-              helperText="空格或逗号分隔，例如 #合照 #舞台"
-              label="标签"
-              onChange={(e) => setPhotoForm((prev) => ({ ...prev, tags: e.target.value }))}
-              value={photoForm.tags}
-            />
-            <TextField
-              fullWidth
               label="拍摄时间"
               onChange={(e) => setPhotoForm((prev) => ({ ...prev, takenAt: e.target.value }))}
               slotProps={{ inputLabel: { shrink: true } }}
               type="datetime-local"
               value={photoForm.takenAt}
             />
-            {editingPhoto?.exif && Object.keys(editingPhoto.exif).length > 0 && (
-              <Paper sx={{ p: 1.5 }} variant="outlined">
-                <Typography sx={{ fontWeight: 800, mb: 0.75 }} variant="body2">EXIF</Typography>
-                {Object.entries(editingPhoto.exif).map(([key, value]) => (
-                  value ? <Typography color="text.secondary" key={key} variant="caption" sx={{ display: 'block' }}>{key}: {String(value)}</Typography> : null
-                ))}
-              </Paper>
-            )}
+              {editingPhoto?.exif && formatExifRows(editingPhoto.exif).length > 0 && (
+                <Paper sx={{ p: 1.5 }} variant="outlined">
+                  <Typography sx={{ fontWeight: 800, mb: 0.75 }} variant="body2">EXIF</Typography>
+                  <Stack sx={{ gap: 0.75 }}>
+                    {formatExifRows(editingPhoto.exif).map((row) => (
+                      <PropertyRow key={row.label} label={row.label} value={row.value} wrap />
+                    ))}
+                  </Stack>
+                </Paper>
+              )}
           </Stack>
         </DialogContent>
         <DialogActions>
           <Button onClick={() => setEditingPhoto(null)}>取消</Button>
           <Button form="photo-property-form" type="submit" variant="contained">保存</Button>
+        </DialogActions>
+      </Dialog>
+
+      <Dialog fullWidth maxWidth="sm" onClose={() => setPropertyPhoto(null)} open={Boolean(propertyPhoto)}>
+        <DialogTitle>媒体属性 #{propertyPhoto?.id}</DialogTitle>
+        <DialogContent dividers>
+          {propertyPhoto && (
+            <Stack sx={{ gap: 2 }}>
+              <Box
+                sx={{
+                  aspectRatio: '16 / 9',
+                  bgcolor: 'action.hover',
+                  borderRadius: 2,
+                  overflow: 'hidden',
+                  position: 'relative'
+                }}
+              >
+                {isVideoPhoto(propertyPhoto) ? (
+                  <Box
+                    component="video"
+                    controls
+                    preload="metadata"
+                    src={photoURL(propertyPhoto)}
+                    sx={{ bgcolor: 'common.black', display: 'block', height: '100%', objectFit: 'contain', width: '100%' }}
+                  />
+                ) : (
+                  <Box
+                    alt={`媒体 #${propertyPhoto.id}`}
+                    component="img"
+                    src={photoURL(propertyPhoto, 'thumbnail')}
+                    sx={{ display: 'block', height: '100%', objectFit: 'contain', width: '100%' }}
+                  />
+                )}
+              </Box>
+              <Paper sx={{ p: 1.5 }} variant="outlined">
+                <Stack sx={{ gap: 1 }}>
+                  <PropertyRow label="摄影师" value={propertyPhoto.photographerName || '匿名投稿'} />
+                  <PropertyRow label="可见性" value={propertyPhoto.visibility === 'public' ? '公开' : '私密'} />
+                  <PropertyRow label="媒体类型" value={formatContentType(propertyPhoto.contentType)} />
+                  <PropertyRow label="文件大小" value={formatBytes(propertyPhoto.sizeBytes)} />
+                  <PropertyRow label="拍摄时间" value={formatDateTime(propertyPhoto.takenAt)} />
+                  <PropertyRow label="入库时间" value={formatDateTime(propertyPhoto.createdAt)} />
+                  <PropertyRow label="更新时间" value={formatDateTime(propertyPhoto.updatedAt)} />
+                  <PropertyRow label="喜欢数" value={`${propertyPhoto.likeCount || 0}`} />
+                  <PropertyRow label="存储策略" value={propertyPhoto.storagePolicyId || '未知'} />
+                  <PropertyRow label="对象键" value={propertyPhoto.objectKey || '未知'} wrap />
+                  <PropertyRow label="内容哈希" value={propertyPhoto.contentHash || '未知'} wrap />
+                </Stack>
+              </Paper>
+              {propertyPhoto.exif && formatExifRows(propertyPhoto.exif).length > 0 && (
+                <Paper sx={{ p: 1.5 }} variant="outlined">
+                  <Typography sx={{ fontWeight: 800, mb: 1 }} variant="body2">EXIF</Typography>
+                  <Stack sx={{ gap: 0.75 }}>
+                    {formatExifRows(propertyPhoto.exif).map((row) => (
+                      <PropertyRow key={row.label} label={row.label} value={row.value} wrap />
+                    ))}
+                  </Stack>
+                </Paper>
+              )}
+            </Stack>
+          )}
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setPropertyPhoto(null)}>关闭</Button>
+          {propertyPhoto && (
+            <Button
+              onClick={() => {
+                startEditPhoto(propertyPhoto);
+                setPropertyPhoto(null);
+              }}
+              startIcon={<SettingsIcon />}
+              variant="contained"
+            >
+              设置
+            </Button>
+          )}
+        </DialogActions>
+      </Dialog>
+
+      <Dialog fullWidth maxWidth="xs" onClose={() => setQuickTagPhoto(null)} open={Boolean(quickTagPhoto)}>
+        <DialogTitle>快速标签修改</DialogTitle>
+        <DialogContent dividers>
+          <Stack sx={{ gap: 2, pt: 0.5 }}>
+            <Typography color="text.secondary" variant="body2">
+              输入标签后按回车添加，点击标签旁边的 x 可以删除。
+            </Typography>
+            <Stack direction="row" sx={{ flexWrap: 'wrap', gap: 0.75 }}>
+              {quickTags.map((tagName) => (
+                <Chip key={tagName} label={tagName} onDelete={() => removeQuickTag(tagName)} />
+              ))}
+              {!quickTags.length && (
+                <Typography color="text.secondary" variant="body2">还没有标签。</Typography>
+              )}
+            </Stack>
+            <TextField
+              autoFocus
+              fullWidth
+              label="添加标签"
+              onChange={(inputEvent) => setQuickTagInput(inputEvent.target.value)}
+              onKeyDown={(keyEvent) => {
+                if (keyEvent.key === 'Enter' || keyEvent.key === ',' || keyEvent.key === '，') {
+                  keyEvent.preventDefault();
+                  addQuickTag();
+                }
+                if (keyEvent.key === 'Backspace' && !quickTagInput && quickTags.length) {
+                  removeQuickTag(quickTags[quickTags.length - 1]);
+                }
+              }}
+              placeholder="例如 #舞台"
+              value={quickTagInput}
+            />
+          </Stack>
+        </DialogContent>
+        <DialogActions>
+          <Button disabled={quickTagSaving} onClick={() => setQuickTagPhoto(null)}>取消</Button>
+          <Button disabled={quickTagSaving} onClick={() => void saveQuickTags()} variant="contained">
+            {quickTagSaving ? '保存中...' : '保存标签'}
+          </Button>
         </DialogActions>
       </Dialog>
 
@@ -1010,6 +1391,7 @@ export function EventDetailPage() {
         onCancel={() => setDeleteConfirm(null)}
         onConfirm={deleteConfirm?.type === 'batch' ? confirmBatchDelete : confirmDeletePhoto}
         open={Boolean(deleteConfirm)}
+        requireCaptcha={deleteConfirm?.type !== 'single'}
         subtitle={
           deleteConfirm?.type === 'batch'
             ? `确定批量删除选中的 ${selectedIds.length} 个媒体文件吗？`
@@ -1029,6 +1411,50 @@ function PhotoMeta({ icon, text }: { icon: React.ReactNode; text: string }) {
       <Box sx={{ alignItems: 'center', display: 'inline-flex', flexShrink: 0 }}>{icon}</Box>
       <Typography color="text.secondary" noWrap variant="caption">
         {text}
+      </Typography>
+    </Stack>
+  );
+}
+
+function ContextMenuButton({ color, disabled = false, icon, label, onClick }: { color?: string; disabled?: boolean; icon: React.ReactNode; label: string; onClick: () => void }) {
+  return (
+    <Button
+      disabled={disabled}
+      onClick={onClick}
+      sx={{
+        borderRadius: 0,
+        color,
+        justifyContent: 'flex-start',
+        px: 1.5,
+        py: 0.9,
+        textAlign: 'left',
+        width: '100%',
+        '& .MuiButton-startIcon': { color }
+      }}
+      startIcon={icon}
+    >
+      {label}
+    </Button>
+  );
+}
+
+function PropertyRow({ label, value, wrap = false }: { label: string; value: string; wrap?: boolean }) {
+  return (
+    <Stack direction={{ xs: 'column', sm: 'row' }} sx={{ gap: { xs: 0.25, sm: 1.5 }, minWidth: 0 }}>
+      <Typography color="text.secondary" sx={{ flexShrink: 0, width: { sm: 88 } }} variant="body2">
+        {label}
+      </Typography>
+      <Typography
+        sx={{
+          flex: 1,
+          fontFamily: wrap ? 'ui-monospace, SFMono-Regular, Menlo, Consolas, monospace' : undefined,
+          minWidth: 0,
+          overflowWrap: wrap ? 'anywhere' : undefined,
+          wordBreak: wrap ? 'break-word' : undefined
+        }}
+        variant="body2"
+      >
+        {value}
       </Typography>
     </Stack>
   );
@@ -1157,6 +1583,51 @@ function formatPhotoTime(value?: string) {
   return new Intl.DateTimeFormat('zh-CN', { dateStyle: 'medium' }).format(date);
 }
 
+function formatDateTime(value?: string) {
+  if (!value) return '时间未知';
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return '时间未知';
+  return new Intl.DateTimeFormat('zh-CN', { dateStyle: 'medium', timeStyle: 'short' }).format(date);
+}
+
+function formatExifRows(exif?: Record<string, unknown>) {
+  if (!exif) return [];
+  const rows: { label: string; value: string }[] = [];
+  const width = numberExifValue(exif.width);
+  const height = numberExifValue(exif.height);
+  if (width || height) rows.push({ label: '尺寸', value: width && height ? `${width} x ${height}` : `${width || height}` });
+  const device = [stringExifValue(exif.cameraMake), stringExifValue(exif.cameraModel)].filter(Boolean).join(' ');
+  if (device) rows.push({ label: '拍摄设备', value: device });
+  const lens = [stringExifValue(exif.lensMake), stringExifValue(exif.lensModel)].filter(Boolean).join(' ');
+  if (lens) rows.push({ label: '镜头', value: lens });
+  const takenAt = stringExifValue(exif.takenAt);
+  if (takenAt) rows.push({ label: '拍摄时间', value: formatDateTime(takenAt) });
+  const exposureTime = stringExifValue(exif.exposureTime);
+  if (exposureTime) rows.push({ label: '快门', value: exposureTime });
+  const fNumber = stringExifValue(exif.fNumber);
+  if (fNumber) rows.push({ label: '光圈', value: fNumber });
+  const iso = numberExifValue(exif.iso);
+  if (iso) rows.push({ label: 'ISO', value: `${iso}` });
+  const exposureBias = stringExifValue(exif.exposureBias);
+  if (exposureBias) rows.push({ label: '曝光补偿', value: exposureBias });
+  const focalLength = stringExifValue(exif.focalLength);
+  if (focalLength) rows.push({ label: '焦距', value: focalLength });
+  return rows;
+}
+
+function stringExifValue(value: unknown) {
+  return typeof value === 'string' ? value.trim() : '';
+}
+
+function numberExifValue(value: unknown) {
+  if (typeof value === 'number' && Number.isFinite(value)) return value;
+  if (typeof value === 'string') {
+    const parsed = Number(value);
+    if (Number.isFinite(parsed)) return parsed;
+  }
+  return 0;
+}
+
 function downloadFilename(eventTitle: string, photo: Photo) {
   const extension = extensionFromContentType(photo.contentType) || extensionFromURL(photo.url) || 'jpg';
   const safeTitle = eventTitle.trim().replace(/[\\/:*?"<>|]+/g, '_') || 'fluffcatch';
@@ -1175,6 +1646,10 @@ function extensionFromContentType(contentType?: string) {
       return 'webp';
     case 'image/avif':
       return 'avif';
+    case 'image/heic':
+      return 'heic';
+    case 'image/heif':
+      return 'heif';
     case 'video/mp4':
       return 'mp4';
     case 'video/webm':
@@ -1196,6 +1671,10 @@ function extensionFromURL(url: string) {
   } catch {
     return '';
   }
+}
+
+function normalizeTagInput(value: string) {
+  return value.trim().replace(/^[#＃]+/, '').trim();
 }
 
 function privateAccessCacheKey(eventID: number) {

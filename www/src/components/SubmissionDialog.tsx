@@ -9,9 +9,10 @@ type SubmissionDialogProps = {
   event: EventCard | null;
   open: boolean;
   onClose: () => void;
+  onUploaded?: () => void;
 };
 
-export function SubmissionDialog({ event, onClose, open }: SubmissionDialogProps) {
+export function SubmissionDialog({ event, onClose, onUploaded, open }: SubmissionDialogProps) {
   const [authenticated, setAuthenticated] = useState(() => getCachedMe().authenticated);
   const [submissionToken, setSubmissionToken] = useState('');
   const [photographerName, setPhotographerName] = useState('');
@@ -106,6 +107,7 @@ export function SubmissionDialog({ event, onClose, open }: SubmissionDialogProps
             initialSubmissionToken={submissionToken}
             lockPhotographerName={Boolean(photographerName)}
             onRequestClose={onClose}
+            onUploaded={onUploaded}
             showCloseButton
           />
         ) : (

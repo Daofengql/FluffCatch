@@ -29,6 +29,13 @@ type Point = {
   y: number;
 };
 
+type PinchState = {
+  center: Point;
+  distance: number;
+  offset: Point;
+  zoom: number;
+};
+
 export function ImagePreviewDialog({ images, index = 0, onClose, onIndexChange, open, src, subtitle, title }: ImagePreviewDialogProps) {
   const [zoom, setZoom] = useState(1);
   const [rotation, setRotation] = useState(0);
@@ -51,6 +58,9 @@ export function ImagePreviewDialog({ images, index = 0, onClose, onIndexChange, 
   const stageWidthRef = useRef(0);
   const lastTapRef = useRef(0);
   const [activeIndex, setActiveIndex] = useState(index);
+  const pinchRef = useRef<PinchState | null>(null);
+  const offsetRef = useRef<Point>({ x: 0, y: 0 });
+  const zoomRef = useRef(1);
   const slides = useMemo<ImagePreviewItem[]>(() => images?.length ? images : [{ src: src || '', title, subtitle }], [images, src, subtitle, title]);
   const requestedIndex = Math.min(Math.max(index, 0), Math.max(slides.length - 1, 0));
   const currentIndex = Math.min(Math.max(activeIndex, 0), Math.max(slides.length - 1, 0));
@@ -129,6 +139,9 @@ export function ImagePreviewDialog({ images, index = 0, onClose, onIndexChange, 
   }, [currentIndex, open, slides.length]);
 
   function resetView() {
+    zoomRef.current = 1;
+    offsetRef.current = { x: 0, y: 0 };
+    pinchRef.current = null;
     setZoom(1);
     setRotation(0);
     setOffset({ x: 0, y: 0 });
@@ -168,27 +181,30 @@ export function ImagePreviewDialog({ images, index = 0, onClose, onIndexChange, 
   }
 
   function updateZoom(nextZoom: number, origin?: Point) {
-    setZoom((currentZoom) => {
-      const clamped = clampZoom(nextZoom);
-      if (origin && currentZoom !== clamped) {
-        const ratio = clamped / currentZoom;
-        setOffset((currentOffset) => ({
-          x: origin.x - (origin.x - currentOffset.x) * ratio,
-          y: origin.y - (origin.y - currentOffset.y) * ratio
-        }));
-      }
-      if (clamped === 1) {
-        setOffset({ x: 0, y: 0 });
-      }
-      return clamped;
-    });
+    const currentZoom = zoomRef.current;
+    const clamped = clampZoom(nextZoom);
+    let nextOffset = offsetRef.current;
+    if (origin && currentZoom !== clamped) {
+      const ratio = clamped / currentZoom;
+      nextOffset = {
+        x: origin.x - (origin.x - offsetRef.current.x) * ratio,
+        y: origin.y - (origin.y - offsetRef.current.y) * ratio
+      };
+    }
+    if (clamped === 1) {
+      nextOffset = { x: 0, y: 0 };
+    }
+    zoomRef.current = clamped;
+    offsetRef.current = nextOffset;
+    setZoom(clamped);
+    setOffset(nextOffset);
   }
 
   function handleWheel(event: WheelEvent<HTMLDivElement>) {
     if (isVideo) return;
     event.preventDefault();
     const rect = event.currentTarget.getBoundingClientRect();
-    updateZoom(zoom + (event.deltaY < 0 ? 0.18 : -0.18), {
+    updateZoom(zoomRef.current + (event.deltaY < 0 ? 0.18 : -0.18), {
       x: event.clientX - rect.left - rect.width / 2,
       y: event.clientY - rect.top - rect.height / 2
     });
@@ -202,7 +218,7 @@ export function ImagePreviewDialog({ images, index = 0, onClose, onIndexChange, 
 
     const now = Date.now();
     if (event.pointerType === 'touch' && now - lastTapRef.current < 260 && pointersRef.current.size === 1) {
-      updateZoom(zoom > 1 ? 1 : 2);
+      updateZoom(zoomRef.current > 1 ? 1 : 2, pointerCenter(event.currentTarget));
       swipeStartRef.current = null;
       swipeLockRef.current = null;
       lastTapRef.current = 0;
@@ -211,33 +227,53 @@ export function ImagePreviewDialog({ images, index = 0, onClose, onIndexChange, 
     lastTapRef.current = now;
 
     if (pointersRef.current.size === 2) {
-      setPinchDistance(pointerDistance());
+      const distance = pointerDistance();
+      pinchRef.current = {
+        center: pointerCenter(event.currentTarget),
+        distance,
+        offset: offsetRef.current,
+        zoom: zoomRef.current
+      };
+      setPinchDistance(distance);
       swipeStartRef.current = null;
       swipeLockRef.current = null;
+      dragStartRef.current = null;
+      setDragging(false);
       setTrackOffset(0);
       return;
     }
-    if (event.pointerType === 'touch' && hasMany && zoom <= 1.05) {
+    if (event.pointerType === 'touch' && hasMany && zoomRef.current <= 1.05) {
       swipeStartRef.current = { x: event.clientX, y: event.clientY };
       swipeLockRef.current = null;
     }
-    if (zoom > 1) {
+    if (zoomRef.current > 1) {
       setDragging(true);
-      dragStartRef.current = { x: event.clientX - offset.x, y: event.clientY - offset.y };
+      dragStartRef.current = { x: event.clientX - offsetRef.current.x, y: event.clientY - offsetRef.current.y };
     }
   }
 
   function handlePointerMove(event: ReactPointerEvent<HTMLDivElement>) {
     if (isVideo || trackAnimating || !pointersRef.current.has(event.pointerId)) return;
     pointersRef.current.set(event.pointerId, { x: event.clientX, y: event.clientY });
-    if (pointersRef.current.size === 2 && pinchDistance > 0) {
+    if (pointersRef.current.size === 2 && pinchRef.current) {
       const nextDistance = pointerDistance();
-      updateZoom(zoom * (nextDistance / pinchDistance));
+      if (nextDistance <= 0 || pinchRef.current.distance <= 0) return;
+      const nextZoom = clampZoom(pinchRef.current.zoom * (nextDistance / pinchRef.current.distance));
+      const ratio = nextZoom / pinchRef.current.zoom;
+      const center = pointerCenter(event.currentTarget);
+      const nextOffset = nextZoom === 1 ? { x: 0, y: 0 } : {
+        x: center.x - (pinchRef.current.center.x - pinchRef.current.offset.x) * ratio,
+        y: center.y - (pinchRef.current.center.y - pinchRef.current.offset.y) * ratio
+      };
+      zoomRef.current = nextZoom;
+      offsetRef.current = nextOffset;
+      setZoom(nextZoom);
+      setOffset(nextOffset);
       setPinchDistance(nextDistance);
       setTrackOffset(0);
       return;
     }
-    if (event.pointerType === 'touch' && hasMany && zoom <= 1.05 && swipeStartRef.current) {
+    if (event.pointerType === 'touch' && hasMany && zoomRef.current <= 1.05 && swipeStartRef.current) {
       const deltaX = event.clientX - swipeStartRef.current.x;
       const deltaY = event.clientY - swipeStartRef.current.y;
       const distance = Math.hypot(deltaX, deltaY);
@@ -251,13 +287,15 @@ export function ImagePreviewDialog({ images, index = 0, onClose, onIndexChange, 
       }
     }
     if (dragging && dragStartRef.current) {
-      setOffset({ x: event.clientX - dragStartRef.current.x, y: event.clientY - dragStartRef.current.y });
+      const nextOffset = { x: event.clientX - dragStartRef.current.x, y: event.clientY - dragStartRef.current.y };
+      offsetRef.current = nextOffset;
+      setOffset(nextOffset);
     }
   }
 
   function handlePointerUp(event: ReactPointerEvent<HTMLDivElement>) {
-    const wasHorizontalSwipe = event.pointerType === 'touch' && hasMany && zoom <= 1.05 && swipeStartRef.current && swipeLockRef.current === 'horizontal' && pointersRef.current.size <= 1;
-    if (event.pointerType === 'touch' && hasMany && zoom <= 1.05 && swipeStartRef.current && swipeLockRef.current === 'horizontal' && pointersRef.current.size <= 1) {
+    const wasHorizontalSwipe = event.pointerType === 'touch' && hasMany && zoomRef.current <= 1.05 && swipeStartRef.current && swipeLockRef.current === 'horizontal' && pointersRef.current.size <= 1;
+    if (event.pointerType === 'touch' && hasMany && zoomRef.current <= 1.05 && swipeStartRef.current && swipeLockRef.current === 'horizontal' && pointersRef.current.size <= 1) {
       const deltaX = event.clientX - swipeStartRef.current.x;
       const deltaY = event.clientY - swipeStartRef.current.y;
       const width = currentStageWidth();
@@ -275,9 +313,14 @@ export function ImagePreviewDialog({ images, index = 0, onClose, onIndexChange, 
     swipeLockRef.current = null;
     pointersRef.current.delete(event.pointerId);
     if (pointersRef.current.size < 2) {
+      pinchRef.current = null;
       setPinchDistance(0);
     }
-    if (!pointersRef.current.size) {
+    if (pointersRef.current.size === 1 && zoomRef.current > 1) {
+      const remaining = Array.from(pointersRef.current.values())[0];
+      setDragging(true);
+      dragStartRef.current = { x: remaining.x - offsetRef.current.x, y: remaining.y - offsetRef.current.y };
+    } else if (!pointersRef.current.size) {
       setDragging(false);
       dragStartRef.current = null;
     }
@@ -287,6 +330,19 @@ export function ImagePreviewDialog({ images, index = 0, onClose, onIndexChange, 
     const points = Array.from(pointersRef.current.values());
     if (points.length < 2) return 0;
     return Math.hypot(points[0].x - points[1].x, points[0].y - points[1].y);
+  }
+
+  function pointerCenter(target?: HTMLDivElement | null) {
+    const points = Array.from(pointersRef.current.values());
+    const center = points.reduce(
+      (sum, point) => ({ x: sum.x + point.x / points.length, y: sum.y + point.y / points.length }),
+      { x: 0, y: 0 }
+    );
+    const rect = target?.getBoundingClientRect() || stageRef.current?.getBoundingClientRect();
+    if (!rect) {
+      return { x: center.x - window.innerWidth / 2, y: center.y - window.innerHeight / 2 };
+    }
+    return { x: center.x - rect.left - rect.width / 2, y: center.y - rect.top - rect.height / 2 };
   }
 
   function currentStageWidth() {
@@ -379,6 +435,7 @@ export function ImagePreviewDialog({ images, index = 0, onClose, onIndexChange, 
     const itemIsVideo = item.contentType?.toLowerCase().startsWith('video/') || false;
     const itemSrc = displaySourceFor(item, active);
     const isLoadedOriginal = itemIsVideo || loadedOriginals.has(item.src) || (active && loadedOriginalSrc === item.src);
+    const loadingOriginal = active && !itemIsVideo && Boolean(item.previewSrc && item.previewSrc !== item.src) && !isLoadedOriginal;
     if (!itemSrc) return null;
     return (
       <Box
@@ -416,13 +473,17 @@ export function ImagePreviewDialog({ images, index = 0, onClose, onIndexChange, 
         ) : (
           <Box
             sx={{
-              display: 'block',
-              maxHeight: { xs: '100%', sm: 'calc(100% - 24px)' },
-              maxWidth: { xs: '100%', sm: 'calc(100% - 24px)' },
+              alignItems: 'center',
+              display: 'flex',
+              height: '100%',
+              justifyContent: 'center',
+              maxHeight: '100%',
+              maxWidth: '100%',
               position: 'relative',
               transform: active ? `translate3d(${offset.x}px, ${offset.y}px, 0) scale(${zoom}) rotate(${rotation}deg)` : 'none',
               transformOrigin: 'center center',
               transition: active && !dragging && !pinchDistance && !trackAnimating ? 'transform 100ms ease, opacity 100ms ease' : 'none',
+              width: '100%',
               willChange: 'transform'
             }}
           >
@@ -436,13 +497,13 @@ export function ImagePreviewDialog({ images, index = 0, onClose, onIndexChange, 
                   sx={{
                     display: 'block',
                     filter: isLoadedOriginal ? undefined : 'blur(1.5px)',
-                    height: 'auto',
-                    maxHeight: { xs: '100%', sm: 'calc(100% - 24px)' },
-                    maxWidth: { xs: '100%', sm: 'calc(100% - 24px)' },
+                    height: '100%',
+                    maxHeight: '100%',
+                    maxWidth: '100%',
                     objectFit: 'contain',
                     opacity: isLoadedOriginal ? 0 : 1,
                     transition: 'opacity 180ms ease, filter 180ms ease',
-                    width: 'auto'
+                    width: '100%'
                   }}
                 />
                 <Box
@@ -464,6 +525,30 @@ export function ImagePreviewDialog({ images, index = 0, onClose, onIndexChange, 
                     width: '100%'
                   }}
                 />
+                {loadingOriginal && (
+                  <Stack
+                    direction="row"
+                    sx={{
+                      alignItems: 'center',
+                      bgcolor: 'rgba(15,23,42,0.72)',
+                      border: '1px solid rgba(255,255,255,0.14)',
+                      borderRadius: 999,
+                      color: 'white',
+                      gap: 1,
+                      left: '50%',
+                      px: 1.25,
+                      py: 0.75,
+                      pointerEvents: 'none',
+                      position: 'absolute',
+                      top: { xs: 14, sm: 18 },
+                      transform: 'translateX(-50%)',
+                      zIndex: 2
+                    }}
+                  >
+                    <CircularProgress color="inherit" size={16} />
+                    <Typography sx={{ fontWeight: 700 }} variant="caption">加载原图</Typography>
+                  </Stack>
+                )}
               </>
             ) : (
               <Box
@@ -474,9 +559,11 @@ export function ImagePreviewDialog({ images, index = 0, onClose, onIndexChange, 
                 src={itemSrc}
                 sx={{
                   display: 'block',
-                  maxHeight: { xs: '100%', sm: 'calc(100% - 24px)' },
-                  maxWidth: { xs: '100%', sm: 'calc(100% - 24px)' },
-                  objectFit: 'contain'
+                  height: '100%',
+                  maxHeight: '100%',
+                  maxWidth: '100%',
+                  objectFit: 'contain',
+                  width: '100%'
                 }}
               />
             )}
