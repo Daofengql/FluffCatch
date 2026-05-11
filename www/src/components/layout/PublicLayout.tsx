@@ -1,12 +1,13 @@
 import { AdminPanelSettings, ChatBubbleOutlined, Close, CloudUpload, Home, Login, Menu as MenuIcon, Search } from '@mui/icons-material';
 import { AppBar, Box, Button, CircularProgress, Container, Fab, IconButton, InputAdornment, Menu, MenuItem, Paper, Stack, TextField, Toolbar, Tooltip, Typography } from '@mui/material';
-import type { FocusEvent, MouseEvent } from 'react';
-import { useEffect, useMemo, useState } from 'react';
+import type { FocusEvent, MouseEvent, ReactNode } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { Outlet, useLocation, useNavigate } from 'react-router-dom';
 import { getEvents, getSiteSettings, type EventCard, type SiteSettings } from '../../api/client';
 import { getCachedMe, refreshMe, subscribeAuthState } from '../../api/authState';
 import { useThemePreference } from '../../theme/ThemePreferenceProvider';
+import { documentTitleForPath, documentTitleFromPageName } from '../../utils/documentTitle';
 import { sanitizeFooterHtml } from '../../utils/html';
 
 const defaultSite: SiteSettings = {
@@ -41,7 +42,19 @@ const defaultSite: SiteSettings = {
 type PublicLayoutHeaderProps = {
   authenticated: boolean;
   hideAdminEntry?: boolean;
+  hideNavOnDesktop?: boolean;
+  mobileMenuItems?: HeaderNavItem[];
+  navItems?: HeaderNavItem[];
   site: SiteSettings;
+};
+
+type HeaderNavItem = {
+  active?: boolean;
+  color?: string;
+  icon: ReactNode;
+  label: string;
+  onClick?: () => void;
+  path?: string;
 };
 
 export function PublicLayout() {
@@ -49,6 +62,7 @@ export function PublicLayout() {
   const { applySiteSettings } = useThemePreference();
   const [site, setSite] = useState<SiteSettings>(defaultSite);
   const [authenticated, setAuthenticated] = useState(() => getCachedMe().authenticated);
+  const [pageTitleOverride, setPageTitleOverride] = useState('');
 
   useEffect(() => {
     getSiteSettings()
@@ -67,8 +81,16 @@ export function PublicLayout() {
   }, []);
 
   useEffect(() => {
-    document.title = site.name || defaultSite.name;
-  }, [site.name]);
+    if (pageTitleOverride && location.pathname.startsWith('/events/')) {
+      document.title = documentTitleFromPageName(pageTitleOverride, site.name || defaultSite.name);
+      return;
+    }
+    document.title = documentTitleForPath(location.pathname, site.name || defaultSite.name);
+  }, [location.pathname, pageTitleOverride, site.name]);
+
+  useEffect(() => {
+    setPageTitleOverride('');
+  }, [location.pathname]);
 
   const centered = useMemo(() => location.pathname === '/login', [location.pathname]);
 
@@ -88,7 +110,7 @@ export function PublicLayout() {
         })}
       >
         <Container maxWidth={centered ? 'sm' : 'xl'} sx={{ py: { xs: 2, md: 4 }, width: '100%' }}>
-          <Outlet />
+          <Outlet context={{ setPageTitleOverride, site }} />
         </Container>
       </Box>
       <FloatingContactWidget site={site} />
@@ -142,7 +164,7 @@ function cssBackgroundURL(value: string) {
   return `url("${trimmed.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}")`;
 }
 
-export function PublicLayoutHeader({ authenticated, hideAdminEntry = false, site }: PublicLayoutHeaderProps) {
+export function PublicLayoutHeader({ authenticated, hideAdminEntry = false, hideNavOnDesktop = false, mobileMenuItems, navItems: navItemsProp, site }: PublicLayoutHeaderProps) {
   const location = useLocation();
   const navigate = useNavigate();
   const [menuAnchor, setMenuAnchor] = useState<null | HTMLElement>(null);
@@ -151,10 +173,13 @@ export function PublicLayoutHeader({ authenticated, hideAdminEntry = false, site
   const [suggestionsLoading, setSuggestionsLoading] = useState(false);
   const [suggestionsOpen, setSuggestionsOpen] = useState(false);
   const [submittedSuggestionQuery, setSubmittedSuggestionQuery] = useState('');
-  const navItems = [
+  const suggestionRequestRef = useRef(0);
+  const defaultNavItems: HeaderNavItem[] = [
     { label: '首页', path: '/', icon: <Home /> },
     { label: '返图', path: '/submit', icon: <CloudUpload /> }
   ];
+  const navItems = navItemsProp ?? defaultNavItems;
+  const compactMenuItems = mobileMenuItems ?? navItems;
   const adminTarget = authenticated ? '/admin/events' : '/login';
   const showHomeSearch = location.pathname === '/';
 
@@ -171,17 +196,39 @@ export function PublicLayoutHeader({ authenticated, hideAdminEntry = false, site
       setSuggestions([]);
       setSuggestionsOpen(false);
       setSubmittedSuggestionQuery('');
+      suggestionRequestRef.current += 1;
     }
   }, [showHomeSearch]);
+
+  useEffect(() => {
+    const keyword = homeSearch.trim();
+    if (!showHomeSearch || !keyword || submittedSuggestionQuery === keyword) {
+      return undefined;
+    }
+    const timer = window.setTimeout(() => loadHomeSuggestions(keyword), 1500);
+    return () => window.clearTimeout(timer);
+  }, [homeSearch, showHomeSearch, submittedSuggestionQuery]);
 
   function go(path: string) {
     navigate(path);
     setMenuAnchor(null);
   }
 
+  function handleMenuItemClick(item: HeaderNavItem) {
+    setMenuAnchor(null);
+    if (item.onClick) {
+      item.onClick();
+      return;
+    }
+    if (item.path) {
+      navigate(item.path);
+    }
+  }
+
   function updateHomeSearch(value: string) {
     setHomeSearch(value);
     if (!value.trim()) {
+      suggestionRequestRef.current += 1;
       setSuggestions([]);
       setSuggestionsOpen(false);
       setSubmittedSuggestionQuery('');
@@ -204,22 +251,31 @@ export function PublicLayoutHeader({ authenticated, hideAdminEntry = false, site
   function loadHomeSuggestions(value = homeSearch) {
     const keyword = value.trim();
     if (!showHomeSearch || !keyword) {
+      suggestionRequestRef.current += 1;
       setSuggestions([]);
       setSuggestionsOpen(false);
       return;
     }
+    const requestID = suggestionRequestRef.current + 1;
+    suggestionRequestRef.current = requestID;
     setSubmittedSuggestionQuery(keyword);
     setSuggestionsLoading(true);
     getEvents(false, { query: keyword })
       .then((items) => {
+        if (suggestionRequestRef.current !== requestID) return;
         setSuggestions(rankEventSuggestions(items, keyword).slice(0, 5));
         setSuggestionsOpen(true);
       })
       .catch(() => {
+        if (suggestionRequestRef.current !== requestID) return;
         setSuggestions([]);
         setSuggestionsOpen(true);
       })
-      .finally(() => setSuggestionsLoading(false));
+      .finally(() => {
+        if (suggestionRequestRef.current === requestID) {
+          setSuggestionsLoading(false);
+        }
+      });
   }
 
   function closeSuggestions(event: FocusEvent<HTMLDivElement>) {
@@ -278,15 +334,21 @@ export function PublicLayoutHeader({ authenticated, hideAdminEntry = false, site
             </Typography>
           )}
         </Stack>
-        <Box sx={{ display: { xs: 'none', sm: 'flex' }, gap: 1, ml: { sm: 2.5, md: 4 } }}>
+        <Box sx={{ display: { xs: 'none', sm: 'flex', md: hideNavOnDesktop ? 'none' : 'flex' }, gap: 1, ml: { sm: 2.5, md: 4 } }}>
           {navItems.map((item) => (
             <Button
-              key={item.path + item.label}
-              onClick={() => go(item.path)}
+              key={(item.path || item.label) + item.label}
+              onClick={() => {
+                if (item.onClick) {
+                  item.onClick();
+                  return;
+                }
+                if (item.path) go(item.path);
+              }}
               startIcon={item.icon}
               sx={{
-                bgcolor: location.pathname === item.path ? 'action.selected' : 'transparent',
-                color: location.pathname === item.path ? 'primary.main' : 'text.secondary',
+                bgcolor: (item.active ?? location.pathname === item.path) ? 'action.selected' : 'transparent',
+                color: item.color || ((item.active ?? location.pathname === item.path) ? 'primary.main' : 'text.secondary'),
                 minWidth: 88,
                 px: 2,
                 '&:hover': { bgcolor: 'action.hover', color: 'primary.main' }
@@ -411,8 +473,13 @@ export function PublicLayoutHeader({ authenticated, hideAdminEntry = false, site
         </IconButton>
       </Toolbar>
       <Menu anchorEl={menuAnchor} onClose={() => setMenuAnchor(null)} open={Boolean(menuAnchor)} sx={{ display: { xs: 'block', sm: 'none' } }}>
-        {navItems.map((item) => (
-          <MenuItem key={item.path + item.label} onClick={() => go(item.path)} selected={location.pathname === item.path} sx={{ gap: 1.5 }}>
+        {compactMenuItems.map((item) => (
+          <MenuItem
+            key={(item.path || item.label) + item.label}
+            onClick={() => handleMenuItemClick(item)}
+            selected={item.active ?? location.pathname === item.path}
+            sx={{ color: item.color, gap: 1.5 }}
+          >
             {item.icon}
             {item.label}
           </MenuItem>

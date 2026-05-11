@@ -17,6 +17,7 @@ import (
 	apphttp "fluffcatch/internal/http"
 	"fluffcatch/internal/settings"
 	"fluffcatch/internal/storage"
+	"fluffcatch/internal/tasks"
 
 	"gorm.io/gorm"
 )
@@ -24,6 +25,7 @@ import (
 type cliOptions struct {
 	migrateOnly        bool
 	resetAdminPassword bool
+	backfillEXIF       bool
 	adminPassword      string
 	frontendMode       string
 	configFile         string
@@ -55,6 +57,11 @@ func main() {
 
 	if options.resetAdminPassword {
 		resetAdminPasswordAndExit(ctx, cfg, options.adminPassword)
+		return
+	}
+
+	if options.backfillEXIF {
+		backfillEXIFAndExit(ctx, cfg)
 		return
 	}
 
@@ -118,6 +125,7 @@ func parseFlags() cliOptions {
 	var options cliOptions
 	flag.BoolVar(&options.migrateOnly, "migrate", false, "run database migrations and exit")
 	flag.BoolVar(&options.resetAdminPassword, "reset-admin-password", false, "reset admin password and exit")
+	flag.BoolVar(&options.backfillEXIF, "backfill-exif", false, "backfill EXIF metadata for existing uploaded images and exit")
 	flag.StringVar(&options.adminPassword, "admin-password", "", "admin password to set with --reset-admin-password; generated when omitted")
 	flag.StringVar(&options.configFile, "config", "config.yaml", "YAML config file to load")
 	flag.StringVar(&options.frontendMode, "frontend-mode", "", "frontend serving mode: auto, embedded, disk, external, disabled")
@@ -192,6 +200,65 @@ func resetAdminPasswordAndExit(ctx context.Context, cfg config.Config, password 
 
 	slog.Info("admin password reset completed", "username", cfg.Auth.AdminUsername, "password", password)
 	slog.Info("please restart FluffCatch without --reset-admin-password to enter the main system")
+}
+
+func backfillEXIFAndExit(ctx context.Context, cfg config.Config) {
+	gormDB := mustOpenDatabase(ctx, cfg)
+	if gormDB == nil {
+		slog.Error("database connection is required for EXIF backfill")
+		os.Exit(1)
+	}
+	sqlDB, err := gormDB.DB()
+	if err != nil {
+		slog.Error("failed to access mysql handle", "error", err)
+		os.Exit(1)
+	}
+	defer sqlDB.Close()
+
+	settingsService := settings.NewServiceWithReferences(
+		settings.NewStore(gormDB, settings.FromConfig(cfg)),
+		settings.NewGORMPolicyReferenceChecker(gormDB),
+	)
+	runtimeSettings, err := settingsService.Load(ctx)
+	if err != nil {
+		slog.Error("failed to load runtime settings", "error", err)
+		os.Exit(1)
+	}
+	storageManager, err := storage.NewManager(
+		runtimeSettings.StoragePolicies.ActivePolicyID,
+		storageConfigsFromPolicies(runtimeSettings.StoragePolicies.Policies),
+	)
+	if err != nil {
+		slog.Error("failed to initialize storage", "error", err)
+		os.Exit(1)
+	}
+
+	result, err := tasks.BackfillEXIF(ctx, gormDB, storageManager)
+	if err != nil {
+		if tasks.IsContextCanceled(err) {
+			slog.Warn("EXIF backfill interrupted", "scanned", result.Scanned, "updated", result.Updated, "failed", result.Failed)
+		} else {
+			slog.Error("EXIF backfill failed", "error", err)
+		}
+		os.Exit(1)
+	}
+	if tasks.IsNoBackfillWork(result) {
+		slog.Info("EXIF backfill completed; no candidate media found")
+		return
+	}
+	slog.Info(
+		"EXIF backfill completed",
+		"scanned", result.Scanned,
+		"updated", result.Updated,
+		"skipped", result.Skipped,
+		"failed", result.Failed,
+		"photoRows", result.PhotoRows,
+		"submissionRows", result.SubmissionRows,
+		"bytesRead", result.BytesRead,
+	)
+	if result.Failed > 0 {
+		os.Exit(1)
+	}
 }
 
 func storageConfigsFromPolicies(policies []settings.StoragePolicy) []storage.Config {

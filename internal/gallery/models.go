@@ -10,26 +10,26 @@ const (
 )
 
 type Photo struct {
-	ID               int64      `json:"id"`
-	EventID          int64      `json:"eventId"`
-	StoragePolicyID  string     `json:"storagePolicyId"`
-	ObjectKey        string     `json:"objectKey"`
-	URL              string     `json:"url"`
-	ThumbnailKey     string     `json:"thumbnailKey,omitempty"`
-	ThumbnailURL     string     `json:"thumbnailUrl,omitempty"`
-	AccessGranted    bool       `json:"accessGranted"`
-	ContentHash      string     `json:"contentHash"`
-	ContentType      string     `json:"contentType"`
-	SizeBytes        int64      `json:"sizeBytes"`
-	LikeCount        int64      `json:"likeCount"`
-	Liked            bool       `json:"liked"`
-	PhotographerName string     `json:"photographerName,omitempty"`
-	Visibility       Visibility `json:"visibility"`
-	Tags             []Tag      `json:"tags"`
+	ID               int64          `json:"id"`
+	EventID          int64          `json:"eventId"`
+	StoragePolicyID  string         `json:"storagePolicyId"`
+	ObjectKey        string         `json:"objectKey"`
+	URL              string         `json:"url"`
+	ThumbnailKey     string         `json:"thumbnailKey,omitempty"`
+	ThumbnailURL     string         `json:"thumbnailUrl,omitempty"`
+	AccessGranted    bool           `json:"accessGranted"`
+	ContentHash      string         `json:"contentHash"`
+	ContentType      string         `json:"contentType"`
+	SizeBytes        int64          `json:"sizeBytes"`
+	LikeCount        int64          `json:"likeCount"`
+	Liked            bool           `json:"liked"`
+	PhotographerName string         `json:"photographerName,omitempty"`
+	Visibility       Visibility     `json:"visibility"`
+	Tags             []Tag          `json:"tags"`
 	Exif             map[string]any `json:"exif,omitempty"`
-	TakenAt          *time.Time `json:"takenAt,omitempty"`
-	CreatedAt        time.Time  `json:"createdAt"`
-	UpdatedAt        time.Time  `json:"updatedAt"`
+	TakenAt          *time.Time     `json:"takenAt,omitempty"`
+	CreatedAt        time.Time      `json:"createdAt"`
+	UpdatedAt        time.Time      `json:"updatedAt"`
 }
 
 type Tag struct {
@@ -62,16 +62,16 @@ type ListOptions struct {
 type UpdatePhotoRequest struct {
 	PhotographerName string     `json:"photographerName"`
 	Visibility       Visibility `json:"visibility"`
-	Tags             []string   `json:"tags"`
+	Tags             *[]string  `json:"tags"`
 	TakenAt          string     `json:"takenAt"`
 }
 
 type BatchUpdatePhotosRequest struct {
-	PhotoIDs          []int64    `json:"photoIds"`
-	Visibility        Visibility `json:"visibility"`
-	PhotographerName  *string    `json:"photographerName"`
-	Tags              []string   `json:"tags"`
-	ReplaceTags       bool       `json:"replaceTags"`
+	PhotoIDs         []int64    `json:"photoIds"`
+	Visibility       Visibility `json:"visibility"`
+	PhotographerName *string    `json:"photographerName"`
+	Tags             []string   `json:"tags"`
+	ReplaceTags      bool       `json:"replaceTags"`
 }
 
 type LikeResult struct {

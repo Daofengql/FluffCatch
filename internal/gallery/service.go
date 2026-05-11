@@ -206,11 +206,13 @@ func (service *Service) UpdatePhoto(ctx context.Context, photoID int64, req Upda
 			return fmt.Errorf("update photo: %w", err)
 		}
 
-		if err := tx.Where("photo_id = ?", photoID).Delete(&appdb.PhotoTag{}).Error; err != nil {
-			return fmt.Errorf("clear photo tags: %w", err)
-		}
-		if err := upsertPhotoTags(ctx, tx, photoID, req.Tags); err != nil {
-			return err
+		if req.Tags != nil {
+			if err := tx.Where("photo_id = ?", photoID).Delete(&appdb.PhotoTag{}).Error; err != nil {
+				return fmt.Errorf("clear photo tags: %w", err)
+			}
+			if err := upsertPhotoTags(ctx, tx, photoID, *req.Tags); err != nil {
+				return err
+			}
 		}
 		return nil
 	})

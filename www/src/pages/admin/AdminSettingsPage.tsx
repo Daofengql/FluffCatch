@@ -463,17 +463,35 @@ export function AdminSettingsPage() {
       {error && <Alert onClose={() => setError('')} severity="error">{error}</Alert>}
 
       <Stack direction={{ xs: 'column', md: 'row' }} sx={{ alignItems: 'flex-start', gap: 2.5 }}>
-        <Paper sx={{ flexShrink: 0, p: 1, width: { xs: '100%', md: 220 } }} variant="outlined">
-          <List disablePadding>
+        <Paper
+          sx={{
+            flexShrink: 0,
+            maxWidth: '100%',
+            overflowX: { xs: 'auto', md: 'visible' },
+            p: 1,
+            position: { xs: 'sticky', md: 'static' },
+            top: { xs: 72, md: 'auto' },
+            width: { xs: '100%', md: 220 },
+            zIndex: 2
+          }}
+          variant="outlined"
+        >
+          <List disablePadding sx={{ display: { xs: 'flex', md: 'block' }, gap: { xs: 0.75, md: 0 }, minWidth: { xs: 'max-content', md: 'auto' } }}>
             {settingsSections.map((item) => (
               <ListItemButton
                 key={item.key}
                 onClick={() => navigate(`/admin/settings/${item.key}`)}
                 selected={activeSection === item.key}
-                sx={{ borderRadius: 1.5, mb: 0.25 }}
+                sx={{
+                  borderRadius: 1.5,
+                  flexShrink: 0,
+                  mb: { xs: 0, md: 0.25 },
+                  minHeight: 42,
+                  px: { xs: 1.25, md: 2 }
+                }}
               >
-                <ListItemIcon sx={{ minWidth: 38 }}>{item.icon}</ListItemIcon>
-                <ListItemText primary={item.label} />
+                <ListItemIcon sx={{ minWidth: { xs: 28, md: 38 } }}>{item.icon}</ListItemIcon>
+                <ListItemText primary={item.label} slotProps={{ primary: { noWrap: true } }} />
               </ListItemButton>
             ))}
           </List>

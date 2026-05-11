@@ -30,7 +30,7 @@ import {
 } from '@mui/material';
 import type { SelectChangeEvent } from '@mui/material/Select';
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { useParams } from 'react-router-dom';
+import { useOutletContext, useParams } from 'react-router-dom';
 import { batchDeletePhotos, batchUpdatePhotos, deletePhoto, getEvent, getPhotos, likePhoto, setEventCoverFromPhoto, unlockEventPrivatePhotos, updatePhoto, type EventCard, type GalleryFilters, type Photo } from '../../api/client';
 import { getCachedMe, refreshMe, subscribeAuthState } from '../../api/authState';
 import { BatchDownloadDialog } from '../../components/BatchDownloadDialog';
@@ -45,6 +45,7 @@ import { downloadPhoto } from '../../utils/download';
 
 export function EventDetailPage() {
   const eventId = Number(useParams().eventId);
+  const { setPageTitleOverride } = useOutletContext<{ setPageTitleOverride?: (value: string) => void }>();
   const [event, setEvent] = useState<EventCard | null>(null);
   const [publicPhotos, setPublicPhotos] = useState<Photo[]>([]);
   const [privatePhotos, setPrivatePhotos] = useState<Photo[]>([]);
@@ -110,6 +111,11 @@ export function EventDetailPage() {
   const submissionChangedRef = useRef(false);
 
   const photos = useMemo(() => [...publicPhotos, ...privatePhotos], [publicPhotos, privatePhotos]);
+
+  useEffect(() => {
+    setPageTitleOverride?.(event?.title || '');
+    return () => setPageTitleOverride?.('');
+  }, [event?.title, setPageTitleOverride]);
 
   function load(options: { publicPage?: number; privatePage?: number; publicPageSize?: number; privatePageSize?: number; refreshEvent?: boolean } = {}) {
     const targetPublicPage = options.publicPage ?? publicPage;
@@ -642,7 +648,6 @@ export function EventDetailPage() {
     try {
       const result = await updatePhoto(editingPhoto.id, {
         photographerName: photoForm.photographerName,
-        tags: (editingPhoto.tags ?? []).map((tag) => tag.name),
         takenAt: photoForm.takenAt,
         visibility: photoForm.visibility
       });
@@ -1178,7 +1183,7 @@ export function EventDetailPage() {
         >
           <ContextMenuButton disabled={downloadId === cardMenu.photo.id} icon={downloadId === cardMenu.photo.id ? <CircularProgress size={18} /> : <CloudDownload fontSize="small" />} label="下载" onClick={handleCardMenuDownload} />
           <ContextMenuButton icon={<SettingsIcon fontSize="small" />} label="设置" onClick={handleCardMenuSettings} />
-          <ContextMenuButton icon={<LocalOffer fontSize="small" />} label="快速标签修改" onClick={handleCardMenuQuickTags} />
+          <ContextMenuButton icon={<LocalOffer fontSize="small" />} label="修改标签" onClick={handleCardMenuQuickTags} />
           <ContextMenuButton icon={<InfoOutlined fontSize="small" />} label="属性" onClick={handleCardMenuProperties} />
           <Divider />
           <ContextMenuButton color="error.main" icon={<Delete fontSize="small" />} label="删除" onClick={handleCardMenuDelete} />
@@ -1339,7 +1344,7 @@ export function EventDetailPage() {
       </Dialog>
 
       <Dialog fullWidth maxWidth="xs" onClose={() => setQuickTagPhoto(null)} open={Boolean(quickTagPhoto)}>
-        <DialogTitle>快速标签修改</DialogTitle>
+        <DialogTitle>修改标签</DialogTitle>
         <DialogContent dividers>
           <Stack sx={{ gap: 2, pt: 0.5 }}>
             <Typography color="text.secondary" variant="body2">

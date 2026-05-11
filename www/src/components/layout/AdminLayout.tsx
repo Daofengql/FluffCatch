@@ -16,6 +16,7 @@ import { Outlet, useLocation, useNavigate } from 'react-router-dom';
 import { getSiteSettings, type SiteSettings } from '../../api/client';
 import { getCachedMe, logoutAdmin, refreshMe, subscribeAuthState } from '../../api/authState';
 import { useThemePreference } from '../../theme/ThemePreferenceProvider';
+import { documentTitleForPath } from '../../utils/documentTitle';
 import { PublicLayoutHeader } from './PublicLayout';
 
 const drawerWidth = 240;
@@ -71,6 +72,10 @@ export function AdminLayout() {
   }, [applySiteSettings]);
 
   useEffect(() => {
+    document.title = documentTitleForPath(location.pathname, site.name || fallbackSite.name);
+  }, [location.pathname, site.name]);
+
+  useEffect(() => {
     let cancelled = false;
 
     const unsubscribe = subscribeAuthState((payload) => {
@@ -106,6 +111,16 @@ export function AdminLayout() {
     await logoutAdmin().catch(() => undefined);
     navigate('/login', { replace: true });
   }
+
+  const headerNavItems = navItems.map((item) => ({
+    ...item,
+    active: location.pathname === item.path || location.pathname.startsWith(`${item.path}/`)
+  }));
+  const headerMobileMenuItems = [
+    ...headerNavItems,
+    { label: '返回主界面', path: '/', icon: <ArrowBack /> },
+    { label: '退出登录', icon: <ExitToApp />, color: 'error.main', onClick: () => void handleLogout() }
+  ];
 
   const drawer = (
     <Box sx={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
@@ -177,7 +192,14 @@ export function AdminLayout() {
 
   return (
     <Box sx={{ bgcolor: 'background.default', display: 'flex', flexDirection: 'column', minHeight: '100vh' }}>
-      <PublicLayoutHeader authenticated hideAdminEntry site={site} />
+      <PublicLayoutHeader
+        authenticated
+        hideAdminEntry
+        hideNavOnDesktop
+        mobileMenuItems={headerMobileMenuItems}
+        navItems={headerNavItems}
+        site={site}
+      />
       <Box sx={{ display: 'flex', flex: 1, mt: 8 }}>
         <Drawer
           open

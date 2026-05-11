@@ -112,6 +112,49 @@ func TestPublicSiteRouteReturnsFallbackSettings(t *testing.T) {
 	}
 }
 
+func TestPrerenderIndexHTMLInjectsSiteSEO(t *testing.T) {
+	server := testServer(t)
+	_, err := server.settingsService.UpdateSite(t.Context(), settings.SiteSettings{
+		Name:     "毛绒相册",
+		Subtitle: "快乐返图集合",
+		LogoURL:  "/media/default-local/site/logo.png",
+		FooterSections: []settings.FooterSection{
+			{
+				Title: "联系",
+				HTML:  `<p>QQ 群</p><script>alert(1)</script><a href="javascript:alert(1)" onclick="alert(2)">坏链接</a><img src="/media/default-local/qr.png" onerror="alert(3)">`,
+			},
+			{Title: "入口", HTML: `<ul><li><a href="/submit">返图入口</a></li></ul>`},
+			{Title: "", HTML: ""},
+		},
+	})
+	if err != nil {
+		t.Fatalf("update site settings: %v", err)
+	}
+
+	req := httptest.NewRequest(stdhttp.MethodGet, "http://example.test/submit", nil)
+	content := server.prerenderIndexHTML(req, []byte(`<!doctype html><title><!--FLUFFCATCH_TITLE-->FluffCatch<!--/FLUFFCATCH_TITLE--></title><!--FLUFFCATCH_SEO_HEAD--><body><!--FLUFFCATCH_SEO_FOOTER--></body>`))
+	body := string(content)
+
+	if !strings.Contains(body, "<title>返图入口 - 毛绒相册</title>") {
+		t.Fatalf("expected route title in prerendered HTML, got %s", body)
+	}
+	if !strings.Contains(body, `<meta name="description" content="快乐返图集合" />`) {
+		t.Fatalf("expected subtitle description in prerendered HTML, got %s", body)
+	}
+	if !strings.Contains(body, `<link rel="icon" href="http://example.test/media/default-local/site/logo.png" />`) {
+		t.Fatalf("expected absolute favicon URL in prerendered HTML, got %s", body)
+	}
+	if !strings.Contains(body, `<strong>毛绒相册</strong><p>快乐返图集合</p>`) {
+		t.Fatalf("expected site name and subtitle in SEO footer, got %s", body)
+	}
+	if strings.Contains(body, "<script") || strings.Contains(body, "javascript:") || strings.Contains(body, "onclick") || strings.Contains(body, "onerror") {
+		t.Fatalf("expected unsafe footer HTML to be sanitized, got %s", body)
+	}
+	if !strings.Contains(body, `<img src="/media/default-local/qr.png"/>`) && !strings.Contains(body, `<img src="/media/default-local/qr.png" />`) {
+		t.Fatalf("expected safe footer image to remain, got %s", body)
+	}
+}
+
 func TestGetSettingsReturnsRuntimeStoragePolicy(t *testing.T) {
 	cfg := config.Config{
 		App: config.AppConfig{Name: "FluffCatch", Env: "test"},
