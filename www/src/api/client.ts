@@ -152,15 +152,6 @@ export type UploadSettings = {
   maxConcurrentUploads: number;
 };
 
-export type OIDCSettings = {
-  enabled: boolean;
-  provider: string;
-  issuerUrl: string;
-  clientId: string;
-  clientSecret?: string;
-  redirectUrl: string;
-};
-
 export type PublicOIDCSettings = {
   enabled: boolean;
   providerName: string;
@@ -170,9 +161,6 @@ export type OIDCStatus = {
   enabled: boolean;
   bound: boolean;
   subject?: string;
-  username?: string;
-  email?: string;
-  boundAt?: string;
   providerName?: string;
 };
 
@@ -185,7 +173,6 @@ export type AdminSettingsResponse = {
   settings: {
     site: SiteSettings;
     upload: UploadSettings;
-    oidc: OIDCSettings;
     storagePolicies: {
       activePolicyId: string;
       policies: StoragePolicy[];
@@ -668,15 +655,6 @@ export async function updateUploadSettings(upload: UploadSettings) {
     body: JSON.stringify(upload)
   });
   invalidateCacheTags(ADMIN_SETTINGS_CACHE_TAG);
-  return result;
-}
-
-export async function updateOIDCSettings(oidc: OIDCSettings) {
-  const result = await request<{ oidc: OIDCSettings; message: string }>('/api/v1/admin/settings/oidc', {
-    method: 'PUT',
-    body: JSON.stringify(oidc)
-  });
-  invalidateCacheTags(SITE_CACHE_TAG, ADMIN_SETTINGS_CACHE_TAG);
   return result;
 }
 

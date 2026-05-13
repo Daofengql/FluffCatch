@@ -74,7 +74,7 @@ go run ./cmd/fluffcatch --config config.production.yaml --migrate
 
 不指定时默认读取 `config.yaml`。配置优先级为：默认值 < YAML 文件 < 系统环境变量，便于 Docker 或 systemd 注入密码、端口等部署参数。
 
-首次迁移会自动创建管理员账号，并在终端输出一次随机密码：
+首次迁移或首次启动时，如果 `auth.admin_password_hash` 为空，程序会自动生成管理员密码，把哈希写入 `config.yaml`，并在终端输出一次随机密码：
 
 ```text
 username=admin password=...
@@ -96,7 +96,7 @@ go run ./cmd/fluffcatch --reset-admin-password --admin-password "new-password"
 
 重置完成后进程会提示重新启动，然后退出。
 
-`config.yaml` 只保留启动必需项和首次兜底配置。站点名称、站点副标题、Logo、外部对象存储策略、OIDC 配置、上传限制、分页默认值与上传并发数会保存到数据库 `settings` 表，运行时可在后台设置中更新。
+`config.yaml` 保留启动必需项、管理员账号密码哈希和 OIDC 登录配置。后台仍可修改密码和绑定 OIDC 账号，这些账号安全改动会写回配置文件；OIDC 客户端配置只通过配置文件维护。站点名称、站点副标题、Logo、外部对象存储策略、上传限制、分页默认值与上传并发数会保存到数据库 `settings` 表，运行时可在后台设置中更新。
 
 ## 生产构建
 
@@ -160,12 +160,11 @@ npm run dev
 - `PUT /admin/photos/{id}`
 - `GET /admin/settings`
 - `PUT /admin/settings/storage`
-- `PUT /admin/settings/oidc`
 - `PUT /admin/settings/site`
 - `POST /admin/settings/site/logo`
 - `DELETE /admin/settings/site/logo`
 
-管理员登录使用数据库中的 `admin_users`，登录页包含图片验证码；登录后通过 `fluffcatch_session` Cookie 访问后台。开发调试时仍保留 `X-FluffCatch-Admin: true` 占位请求头。
+管理员登录使用 `config.yaml` 中的 `auth.admin_username` 与 `auth.admin_password_hash`，登录页包含图片验证码；登录后通过数据库中的 `sessions` 表和 `fluffcatch_session` Cookie 访问后台。OIDC 配置和绑定身份也保存在配置文件中。
 
 ## 前后台路由
 

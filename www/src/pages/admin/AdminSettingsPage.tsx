@@ -1,7 +1,7 @@
 import MDEditor from '@uiw/react-md-editor/nohighlight';
 import '@uiw/react-md-editor/markdown-editor.css';
 import '@uiw/react-markdown-preview/markdown.css';
-import { Article, ChatBubbleOutlined, ColorLens, Image, Info, Key, Lock, Search, Security, Storage, UploadFile } from '@mui/icons-material';
+import { Article, ChatBubbleOutlined, ColorLens, Image, Info, Key, Search, Security, Storage, UploadFile } from '@mui/icons-material';
 import {
   Alert,
   Avatar,
@@ -40,7 +40,6 @@ import {
   scanOrphanStorageObjects,
   testStorageConnection,
   updateSiteSettings,
-  updateOIDCSettings,
   updateStoragePolicies,
   updateUploadSettings,
   unbindOIDC,
@@ -48,7 +47,6 @@ import {
   uploadSiteLogo,
   type AdminSettingsResponse,
   type FooterSection,
-  type OIDCSettings,
   type OIDCStatus,
   type S3Settings,
   type SiteSettings,
@@ -61,7 +59,7 @@ import { useThemePreference } from '../../theme/ThemePreferenceProvider';
 import { appPalettes, normalizeThemeColor } from '../../theme/theme';
 import { sanitizeFooterHtml } from '../../utils/html';
 
-type SettingsSection = 'site' | 'theme' | 'background' | 'contact' | 'footer' | 'upload' | 'storage' | 'maintenance' | 'oidc' | 'security';
+type SettingsSection = 'site' | 'theme' | 'background' | 'contact' | 'footer' | 'upload' | 'storage' | 'maintenance' | 'security';
 type BackgroundVariant = 'desktop' | 'mobile';
 
 const fallbackFooterSections: FooterSection[] = [
@@ -103,15 +101,6 @@ const fallbackUpload: UploadSettings = {
   maxConcurrentUploads: 2
 };
 
-const fallbackOIDC: OIDCSettings = {
-  enabled: false,
-  provider: 'Keycloak',
-  issuerUrl: '',
-  clientId: '',
-  clientSecret: '',
-  redirectUrl: ''
-};
-
 const emptyS3: S3Settings = { endpoint: '', bucket: '', region: '', accessKey: '', secretKey: '', useSsl: false, accountId: '' };
 
 const driverOptions: { value: StorageDriver; label: string }[] = [
@@ -133,7 +122,6 @@ const settingsSections: { icon: ReactNode; key: SettingsSection; label: string }
   { icon: <UploadFile />, key: 'upload', label: '上传限制' },
   { icon: <Storage />, key: 'storage', label: '存储策略' },
   { icon: <Search />, key: 'maintenance', label: '存储维护' },
-  { icon: <Lock />, key: 'oidc', label: 'OIDC 登录' },
   { icon: <Security />, key: 'security', label: '账号安全' }
 ];
 
@@ -146,7 +134,6 @@ export function AdminSettingsPage() {
   const [settings, setSettings] = useState<AdminSettingsResponse | null>(null);
   const [site, setSite] = useState<SiteSettings>(fallbackSite);
   const [upload, setUpload] = useState<UploadSettings>(fallbackUpload);
-  const [oidc, setOIDC] = useState<OIDCSettings>(fallbackOIDC);
   const [message, setMessage] = useState('');
   const [error, setError] = useState('');
   const [logoUploading, setLogoUploading] = useState(false);
@@ -198,7 +185,6 @@ export function AdminSettingsPage() {
         setSite(nextSite);
         applySiteSettings(nextSite);
         setUpload({ ...fallbackUpload, ...payload.settings.upload });
-        setOIDC({ ...fallbackOIDC, ...payload.settings.oidc, clientSecret: payload.settings.oidc.clientSecret || '' });
         const policies = payload.settings.storagePolicies.policies;
         if (policies.length > 0) {
           const activeId = payload.settings.storagePolicies.activePolicyId;
@@ -317,20 +303,6 @@ export function AdminSettingsPage() {
       refresh();
     } catch (err) {
       setError(err instanceof Error ? err.message : '上传限制保存失败');
-    }
-  }
-
-  async function handleOIDCSubmit(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    setError('');
-    setMessage('');
-    try {
-      const result = await updateOIDCSettings(oidc);
-      setOIDC({ ...fallbackOIDC, ...result.oidc, clientSecret: result.oidc.clientSecret || '' });
-      setMessage('OIDC 登录配置已保存。');
-      refresh();
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'OIDC 配置保存失败');
     }
   }
 
@@ -458,7 +430,7 @@ export function AdminSettingsPage() {
 
   return (
     <Stack sx={{ gap: 3 }}>
-      <PageHeader subtitle="运行时设置保存在数据库中，保存后立即对新访问生效" title="系统设置" />
+      <PageHeader subtitle="站点与上传设置即时生效，账号与 OIDC 设置会写入本地配置文件" title="系统设置" />
       {message && <Alert onClose={() => setMessage('')} severity="success">{message}</Alert>}
       {error && <Alert onClose={() => setError('')} severity="error">{error}</Alert>}
 
@@ -948,59 +920,6 @@ export function AdminSettingsPage() {
             </Stack>
           )}
 
-          {activeSection === 'oidc' && (
-            <Stack component="form" onSubmit={handleOIDCSubmit} sx={{ gap: 2.5 }}>
-              <Typography color="text.secondary">
-                Keycloak 常用 Issuer URL 形如 https://kc.example.com/realms/your-realm；回调地址需要填写到 Keycloak 客户端的 Valid Redirect URIs。
-              </Typography>
-              <Grid container spacing={2}>
-                <Grid size={{ xs: 12, sm: 4 }}>
-                  <FormControl fullWidth>
-                    <InputLabel>启用 OIDC</InputLabel>
-                    <Select label="启用 OIDC" onChange={(event) => setOIDC((prev) => ({ ...prev, enabled: event.target.value === 'true' }))} value={String(oidc.enabled)}>
-                      <MenuItem value="false">关闭</MenuItem>
-                      <MenuItem value="true">启用</MenuItem>
-                    </Select>
-                  </FormControl>
-                </Grid>
-                <Grid size={{ xs: 12, sm: 8 }}>
-                  <TextField fullWidth label="显示名称" onChange={(event) => setOIDC((prev) => ({ ...prev, provider: event.target.value }))} value={oidc.provider} />
-                </Grid>
-                <Grid size={{ xs: 12 }}>
-                  <TextField fullWidth label="Issuer URL" onChange={(event) => setOIDC((prev) => ({ ...prev, issuerUrl: event.target.value }))} placeholder="https://keycloak.example.com/realms/fluffcatch" value={oidc.issuerUrl} />
-                </Grid>
-                <Grid size={{ xs: 12, sm: 6 }}>
-                  <TextField fullWidth label="Client ID" onChange={(event) => setOIDC((prev) => ({ ...prev, clientId: event.target.value }))} value={oidc.clientId} />
-                </Grid>
-                <Grid size={{ xs: 12, sm: 6 }}>
-                  <TextField fullWidth label="Client Secret" onChange={(event) => setOIDC((prev) => ({ ...prev, clientSecret: event.target.value }))} type="password" value={oidc.clientSecret || ''} />
-                </Grid>
-                <Grid size={{ xs: 12 }}>
-                  <Stack direction={{ xs: 'column', sm: 'row' }} sx={{ alignItems: { xs: 'stretch', sm: 'flex-start' }, gap: 1 }}>
-                    <TextField
-                      fullWidth
-                      helperText="复制这个地址到 Keycloak 客户端的 Valid Redirect URIs"
-                      label="回调地址"
-                      slotProps={{ input: { readOnly: true } }}
-                      value={oidc.redirectUrl || '保存或刷新后自动生成'}
-                    />
-                    <Button
-                      disabled={!oidc.redirectUrl}
-                      onClick={() => navigator.clipboard?.writeText(oidc.redirectUrl).then(() => setMessage('回调地址已复制。')).catch(() => setError('复制失败，请手动选择地址复制'))}
-                      sx={{ minHeight: 56, whiteSpace: 'nowrap' }}
-                      variant="outlined"
-                    >
-                      复制
-                    </Button>
-                  </Stack>
-                </Grid>
-              </Grid>
-              <Box>
-                <Button type="submit" variant="contained">保存 OIDC 配置</Button>
-              </Box>
-            </Stack>
-          )}
-
           {activeSection === 'maintenance' && (
             <StorageMaintenancePanel />
           )}
@@ -1249,7 +1168,7 @@ function normalizeSection(section: string | undefined): SettingsSection {
 }
 
 function isSettingsSection(section: string | undefined): section is SettingsSection {
-  return section === 'site' || section === 'theme' || section === 'background' || section === 'contact' || section === 'footer' || section === 'upload' || section === 'storage' || section === 'maintenance' || section === 'oidc' || section === 'security';
+  return section === 'site' || section === 'theme' || section === 'background' || section === 'contact' || section === 'footer' || section === 'upload' || section === 'storage' || section === 'maintenance' || section === 'security';
 }
 
 function AccountSecurityPanel() {
@@ -1327,7 +1246,7 @@ function AccountSecurityPanel() {
                 {oidcStatus?.bound ? '已绑定' : oidcStatus?.enabled ? '未绑定' : 'OIDC 未启用'}
               </Typography>
               <Typography color="text.secondary" variant="body2">
-                {oidcStatus?.bound ? `${oidcStatus.username || oidcStatus.email || oidcStatus.subject}` : `绑定后可使用 ${oidcStatus?.providerName || 'Keycloak'} 登录后台`}
+                {oidcStatus?.bound ? `OIDC ID：${oidcStatus.subject}` : `绑定后可使用 ${oidcStatus?.providerName || 'Keycloak'} 登录后台`}
               </Typography>
             </Box>
             <Stack direction="row" sx={{ gap: 1 }}>

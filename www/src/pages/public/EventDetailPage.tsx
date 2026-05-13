@@ -925,7 +925,7 @@ export function EventDetailPage() {
               </Stack>
             </Stack>
             <Stack direction={{ xs: 'column', sm: 'row' }} sx={{ alignItems: { xs: 'stretch', sm: 'center' }, flexWrap: 'wrap', gap: 1 }}>
-              {event.submissionEnabled && (
+              {(event.submissionEnabled || authenticated) && (
                 <Button onClick={() => setSubmitOpen(true)} startIcon={<CloudUpload />} sx={{ width: 'fit-content' }} variant="contained">
                   上传返图
                 </Button>

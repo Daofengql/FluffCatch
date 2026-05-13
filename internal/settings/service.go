@@ -206,19 +206,6 @@ func removedPolicyIDs(before []StoragePolicy, after []StoragePolicy) []string {
 	return removed
 }
 
-func (service *Service) UpdateOIDC(ctx context.Context, oidc OIDCSettings) (OIDCSettings, error) {
-	current, err := service.store.Load(ctx)
-	if err == nil {
-		oidc = preserveMaskedOIDCSecret(oidc, current.OIDC)
-	}
-	normalized := normalizeOIDC(oidc)
-	if err := service.store.SaveOIDC(ctx, normalized); err != nil {
-		return OIDCSettings{}, err
-	}
-
-	return normalized, nil
-}
-
 func (service *Service) UpdateSite(ctx context.Context, site SiteSettings) (SiteSettings, error) {
 	normalized := normalizeSite(site)
 	if err := service.store.SaveSite(ctx, normalized); err != nil {
@@ -387,18 +374,6 @@ func NormalizeStoragePolicy(policy StoragePolicy) (StoragePolicy, error) {
 	return policy, nil
 }
 
-func normalizeOIDC(oidc OIDCSettings) OIDCSettings {
-	oidc.Provider = strings.TrimSpace(oidc.Provider)
-	if oidc.Provider == "" {
-		oidc.Provider = "Keycloak"
-	}
-	oidc.IssuerURL = strings.TrimSpace(oidc.IssuerURL)
-	oidc.ClientID = strings.TrimSpace(oidc.ClientID)
-	oidc.ClientSecret = strings.TrimSpace(oidc.ClientSecret)
-	oidc.RedirectURL = ""
-	return oidc
-}
-
 func normalizeSite(site SiteSettings) SiteSettings {
 	site.Name = strings.TrimSpace(site.Name)
 	if site.Name == "" {
@@ -517,13 +492,6 @@ func preserveMaskedStorageSecrets(incoming, current StoragePoliciesSettings) Sto
 		if cur, ok := currentByID[p.ID]; ok {
 			incoming.Policies[i].S3.SecretKey = cur.S3.SecretKey
 		}
-	}
-	return incoming
-}
-
-func preserveMaskedOIDCSecret(incoming, current OIDCSettings) OIDCSettings {
-	if incoming.ClientSecret == MaskedSecret {
-		incoming.ClientSecret = current.ClientSecret
 	}
 	return incoming
 }

@@ -5,7 +5,6 @@ const adminSettingsPageNames: Record<string, string> = {
   contact: '联系卡片',
   footer: '页脚备案',
   maintenance: '存储维护',
-  oidc: 'OIDC 登录',
   security: '账号安全',
   site: '站点信息',
   storage: '存储策略',

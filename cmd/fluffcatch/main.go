@@ -42,6 +42,7 @@ func main() {
 		slog.Error("failed to load config", "error", err)
 		os.Exit(1)
 	}
+	configManager := config.NewManager(options.configFile, cfg)
 
 	if options.frontendMode != "" {
 		if err := cfg.SetFrontendMode(options.frontendMode); err != nil {
@@ -51,12 +52,12 @@ func main() {
 	}
 
 	if options.migrateOnly {
-		runMigrationsAndExit(ctx, cfg)
+		runMigrationsAndExit(ctx, cfg, configManager)
 		return
 	}
 
 	if options.resetAdminPassword {
-		resetAdminPasswordAndExit(ctx, cfg, options.adminPassword)
+		resetAdminPasswordAndExit(ctx, cfg, configManager, options.adminPassword)
 		return
 	}
 
@@ -73,6 +74,23 @@ func main() {
 			os.Exit(1)
 		}
 		defer sqlDB.Close()
+	}
+
+	if _, created, err := auth.EnsureConfigSessionSecret(ctx, configManager); err != nil {
+		slog.Error("failed to ensure session secret config", "error", err)
+		os.Exit(1)
+	} else if created {
+		cfg = configManager.Current()
+		slog.Info("session secret written to config")
+	}
+
+	if password, created, err := auth.EnsureConfigAdminPassword(ctx, configManager); err != nil {
+		slog.Error("failed to ensure admin password config", "error", err)
+		os.Exit(1)
+	} else if created {
+		cfg = configManager.Current()
+		slog.Info("initial admin password hash written to config", "username", cfg.Auth.AdminUsername, "password", password)
+		slog.Info("save this password now; it will not be shown again")
 	}
 
 	settingsService := settings.NewServiceWithReferences(
@@ -94,7 +112,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	appServer := apphttp.NewServer(cfg, gormDB, storageManager, settingsService)
+	appServer := apphttp.NewServer(cfg, gormDB, storageManager, settingsService, configManager)
 	httpServer := &stdhttp.Server{
 		Addr:         cfg.HTTP.Addr,
 		Handler:      appServer.Routes(),
@@ -133,7 +151,7 @@ func parseFlags() cliOptions {
 	return options
 }
 
-func runMigrationsAndExit(ctx context.Context, cfg config.Config) {
+func runMigrationsAndExit(ctx context.Context, cfg config.Config, configManager *config.Manager) {
 	dsn, err := cfg.Database.DSN()
 	if err != nil {
 		slog.Error("failed to build mysql dsn", "error", err)
@@ -157,47 +175,58 @@ func runMigrationsAndExit(ctx context.Context, cfg config.Config) {
 		os.Exit(1)
 	}
 
-	password, created, err := auth.EnsureInitialAdmin(ctx, gormDB, cfg.Auth.AdminUsername)
+	if _, created, err := auth.EnsureConfigSessionSecret(ctx, configManager); err != nil {
+		slog.Error("failed to ensure session secret config", "error", err)
+		os.Exit(1)
+	} else if created {
+		slog.Info("session secret written to config")
+	}
+
+	password, created, err := auth.EnsureConfigAdminPassword(ctx, configManager)
 	if err != nil {
-		slog.Error("failed to ensure initial admin", "error", err)
+		slog.Error("failed to ensure admin password config", "error", err)
 		os.Exit(1)
 	}
 
 	slog.Info("database migrations completed")
 	if created {
-		slog.Info("initial admin user created", "username", cfg.Auth.AdminUsername, "password", password)
+		cfg = configManager.Current()
+		slog.Info("initial admin password hash written to config", "username", cfg.Auth.AdminUsername, "password", password)
 		slog.Info("save this password now; it will not be shown again")
 	} else {
-		slog.Info("admin user already exists; no password was generated")
+		slog.Info("admin password hash already exists in config; no password was generated")
 	}
 	slog.Info("please restart FluffCatch without --migrate to enter the main system")
 }
 
-func resetAdminPasswordAndExit(ctx context.Context, cfg config.Config, password string) {
-	dsn, err := cfg.Database.DSN()
-	if err != nil {
-		slog.Error("failed to build mysql dsn", "error", err)
-		os.Exit(1)
+func resetAdminPasswordAndExit(ctx context.Context, cfg config.Config, configManager *config.Manager, password string) {
+	var gormDB *gorm.DB
+	if cfg.Database.ConnectOnStart {
+		dsn, err := cfg.Database.DSN()
+		if err != nil {
+			slog.Error("failed to build mysql dsn", "error", err)
+			os.Exit(1)
+		}
+		gormDB, err = db.OpenGORM(ctx, dsn, databaseOptionsFromConfig(cfg.Database, cfg.App))
+		if err != nil {
+			slog.Warn("failed to connect mysql; password hash will still be written to config", "error", err)
+		} else {
+			sqlDB, err := gormDB.DB()
+			if err != nil {
+				slog.Error("failed to access mysql handle", "error", err)
+				os.Exit(1)
+			}
+			defer sqlDB.Close()
+		}
 	}
 
-	gormDB, err := db.OpenGORM(ctx, dsn, databaseOptionsFromConfig(cfg.Database, cfg.App))
-	if err != nil {
-		slog.Error("failed to connect mysql", "error", err)
-		os.Exit(1)
-	}
-	sqlDB, err := gormDB.DB()
-	if err != nil {
-		slog.Error("failed to access mysql handle", "error", err)
-		os.Exit(1)
-	}
-	defer sqlDB.Close()
-
-	password, err = auth.ResetAdminPassword(ctx, gormDB, cfg.Auth.AdminUsername, password)
+	password, err := auth.ResetConfigAdminPassword(ctx, configManager, gormDB, password)
 	if err != nil {
 		slog.Error("failed to reset admin password", "error", err)
 		os.Exit(1)
 	}
 
+	cfg = configManager.Current()
 	slog.Info("admin password reset completed", "username", cfg.Auth.AdminUsername, "password", password)
 	slog.Info("please restart FluffCatch without --reset-admin-password to enter the main system")
 }

@@ -226,7 +226,7 @@ func (server *Server) adminDashboard(w stdhttp.ResponseWriter, r *stdhttp.Reques
 }
 
 func (server *Server) changePassword(w stdhttp.ResponseWriter, r *stdhttp.Request) {
-	admin, ok, err := server.currentAdmin(r)
+	_, ok, err := server.currentAdmin(r)
 	if err != nil || !ok {
 		writeError(w, stdhttp.StatusUnauthorized, "admin authentication required")
 		return
@@ -244,7 +244,7 @@ func (server *Server) changePassword(w stdhttp.ResponseWriter, r *stdhttp.Reques
 		sessionID = cookie.Value
 	}
 
-	if err := server.authService.ChangePassword(r.Context(), admin.Username, req.CurrentPassword, req.NewPassword, sessionID); err != nil {
+	if err := server.authService.ChangePassword(r.Context(), req.CurrentPassword, req.NewPassword, sessionID); err != nil {
 		writeError(w, stdhttp.StatusBadRequest, err.Error())
 		return
 	}

@@ -10,7 +10,6 @@ import (
 
 const (
 	KeyStoragePolicies = "storage_policies"
-	KeyOIDC            = "oidc"
 	KeySite            = "site"
 	KeyUpload          = "upload"
 
@@ -19,14 +18,12 @@ const (
 
 type RuntimeSettings struct {
 	StoragePolicies StoragePoliciesSettings `json:"storagePolicies"`
-	OIDC            OIDCSettings            `json:"oidc"`
 	Site            SiteSettings            `json:"site"`
 	Upload          UploadSettings          `json:"upload"`
 }
 
 func (s RuntimeSettings) Sanitize() RuntimeSettings {
 	s.StoragePolicies = s.StoragePolicies.Sanitize()
-	s.OIDC = s.OIDC.Sanitize()
 	return s
 }
 
@@ -74,22 +71,6 @@ func (s S3Settings) Sanitize() S3Settings {
 		s.SecretKey = MaskedSecret
 	}
 	return s
-}
-
-type OIDCSettings struct {
-	Enabled      bool   `json:"enabled"`
-	Provider     string `json:"provider"`
-	IssuerURL    string `json:"issuerUrl"`
-	ClientID     string `json:"clientId"`
-	ClientSecret string `json:"clientSecret,omitempty"`
-	RedirectURL  string `json:"redirectUrl"`
-}
-
-func (o OIDCSettings) Sanitize() OIDCSettings {
-	if o.ClientSecret != "" {
-		o.ClientSecret = MaskedSecret
-	}
-	return o
 }
 
 type SiteSettings struct {
@@ -145,14 +126,6 @@ func FromConfig(cfg config.Config) RuntimeSettings {
 		StoragePolicies: StoragePoliciesSettings{
 			ActivePolicyID: defaultPolicy.ID,
 			Policies:       []StoragePolicy{defaultPolicy},
-		},
-		OIDC: OIDCSettings{
-			Enabled:      cfg.OIDC.Enabled,
-			Provider:     cfg.OIDC.Provider,
-			IssuerURL:    cfg.OIDC.IssuerURL,
-			ClientID:     cfg.OIDC.ClientID,
-			ClientSecret: cfg.OIDC.ClientSecret,
-			RedirectURL:  cfg.OIDC.RedirectURL,
 		},
 		Site: SiteSettings{
 			Name:               cfg.App.Name,

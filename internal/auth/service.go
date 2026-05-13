@@ -7,17 +7,16 @@ import (
 	"crypto/subtle"
 	"encoding/base64"
 	"encoding/hex"
-	"errors"
 	"fmt"
 	"strconv"
 	"strings"
 	"time"
 
+	"fluffcatch/internal/config"
 	appdb "fluffcatch/internal/db"
 
 	"golang.org/x/crypto/pbkdf2"
 	"gorm.io/gorm"
-	"gorm.io/gorm/clause"
 )
 
 const (
@@ -28,44 +27,33 @@ const (
 )
 
 type Service struct {
-	db               *gorm.DB
-	fallbackUsername string
+	db            *gorm.DB
+	configManager *config.Manager
 }
 
-func NewService(dbConn *gorm.DB, fallbackUsername string) *Service {
+func NewService(dbConn *gorm.DB, configManager *config.Manager) *Service {
 	return &Service{
-		db:               dbConn,
-		fallbackUsername: fallbackUsername,
+		db:            dbConn,
+		configManager: configManager,
 	}
 }
 
 func (service *Service) Login(ctx context.Context, req LoginRequest) LoginResponse {
-	if service.db == nil {
-		return LoginResponse{
-			Authenticated: false,
-			Message:       "database-backed admin login is not available",
-		}
-	}
-
-	var passwordHash string
-	err := service.db.WithContext(ctx).Model(&appdb.AdminUser{}).
-		Select("password_hash").
-		Where("username = ?", req.Username).
-		Take(&passwordHash).Error
-	if errors.Is(err, gorm.ErrRecordNotFound) {
+	cfg := service.currentConfig()
+	if strings.TrimSpace(req.Username) != cfg.Auth.AdminUsername {
 		return LoginResponse{
 			Authenticated: false,
 			Message:       "invalid username or password",
 		}
 	}
-	if err != nil {
+	if strings.TrimSpace(cfg.Auth.AdminPasswordHash) == "" {
 		return LoginResponse{
 			Authenticated: false,
-			Message:       "failed to load admin user",
+			Message:       "admin password is not initialized",
 		}
 	}
 
-	ok, err := VerifyPassword(req.Password, passwordHash)
+	ok, err := VerifyPassword(req.Password, cfg.Auth.AdminPasswordHash)
 	if err != nil || !ok {
 		return LoginResponse{
 			Authenticated: false,
@@ -76,7 +64,7 @@ func (service *Service) Login(ctx context.Context, req LoginRequest) LoginRespon
 	return LoginResponse{
 		Authenticated: true,
 		Message:       "login accepted",
-		Username:      req.Username,
+		Username:      cfg.Auth.AdminUsername,
 	}
 }
 
@@ -84,10 +72,9 @@ func (service *Service) CreateSession(ctx context.Context, username string, ttl 
 	if service.db == nil {
 		return "", time.Time{}, fmt.Errorf("database-backed sessions are not available")
 	}
-
-	var userID int64
-	if err := service.db.WithContext(ctx).Model(&appdb.AdminUser{}).Select("id").Where("username = ?", username).Take(&userID).Error; err != nil {
-		return "", time.Time{}, fmt.Errorf("load admin user for session: %w", err)
+	cfg := service.currentConfig()
+	if strings.TrimSpace(username) != cfg.Auth.AdminUsername {
+		return "", time.Time{}, fmt.Errorf("admin user not found")
 	}
 
 	sessionID, err := randomHex(32)
@@ -96,7 +83,7 @@ func (service *Service) CreateSession(ctx context.Context, username string, ttl 
 	}
 
 	expiresAt := time.Now().Add(ttl)
-	if err := service.db.WithContext(ctx).Create(&appdb.Session{ID: sessionID, AdminUserID: userID, ExpiresAt: expiresAt}).Error; err != nil {
+	if err := service.db.WithContext(ctx).Create(&appdb.Session{ID: sessionID, Username: cfg.Auth.AdminUsername, ExpiresAt: expiresAt}).Error; err != nil {
 		return "", time.Time{}, fmt.Errorf("create session: %w", err)
 	}
 
@@ -108,21 +95,23 @@ func (service *Service) AuthenticateSession(ctx context.Context, sessionID strin
 		return AdminUser{}, false, nil
 	}
 
-	var user AdminUser
+	var session appdb.Session
 	err := service.db.WithContext(ctx).
-		Table("sessions").
-		Select("admin_users.id, admin_users.username, admin_users.password_hash, admin_users.oidc_subject, admin_users.oidc_username, admin_users.oidc_email, admin_users.oidc_bound_at, admin_users.created_at, admin_users.updated_at").
-		Joins("INNER JOIN admin_users ON admin_users.id = sessions.admin_user_id").
-		Where("sessions.id = ? AND sessions.expires_at > CURRENT_TIMESTAMP", sessionID).
-		Take(&user).Error
-	if errors.Is(err, gorm.ErrRecordNotFound) {
+		Where("id = ? AND expires_at > CURRENT_TIMESTAMP", sessionID).
+		Take(&session).Error
+	if err == gorm.ErrRecordNotFound {
 		return AdminUser{}, false, nil
 	}
 	if err != nil {
 		return AdminUser{}, false, fmt.Errorf("authenticate session: %w", err)
 	}
 
-	return user, true, nil
+	cfg := service.currentConfig()
+	if session.Username != cfg.Auth.AdminUsername {
+		return AdminUser{}, false, nil
+	}
+
+	return AdminUser{Username: cfg.Auth.AdminUsername}, true, nil
 }
 
 func (service *Service) Logout(ctx context.Context, sessionID string) error {
@@ -137,145 +126,44 @@ func (service *Service) Logout(ctx context.Context, sessionID string) error {
 	return nil
 }
 
-func (service *Service) CreateSessionForUserID(ctx context.Context, userID int64, ttl time.Duration) (string, time.Time, error) {
-	if service.db == nil {
-		return "", time.Time{}, fmt.Errorf("database-backed sessions are not available")
-	}
-	sessionID, err := randomHex(32)
-	if err != nil {
-		return "", time.Time{}, err
-	}
-	expiresAt := time.Now().Add(ttl)
-	if err := service.db.WithContext(ctx).Create(&appdb.Session{ID: sessionID, AdminUserID: userID, ExpiresAt: expiresAt}).Error; err != nil {
-		return "", time.Time{}, fmt.Errorf("create session: %w", err)
-	}
-	return sessionID, expiresAt, nil
+func (service *Service) GetOIDCStatus(ctx context.Context, enabled bool, providerName string) (OIDCStatus, error) {
+	_ = ctx
+	cfg := service.currentConfig()
+	return OIDCStatus{
+		Enabled:      enabled,
+		Bound:        strings.TrimSpace(cfg.OIDC.BoundSubject) != "",
+		Subject:      cfg.OIDC.BoundSubject,
+		ProviderName: providerName,
+	}, nil
 }
 
-func (service *Service) GetOIDCStatus(ctx context.Context, username string, enabled bool, providerName string) (OIDCStatus, error) {
-	status := OIDCStatus{Enabled: enabled, ProviderName: providerName}
-	if service.db == nil {
-		return status, nil
-	}
-	var user AdminUser
-	err := service.db.WithContext(ctx).Model(&appdb.AdminUser{}).
-		Select("oidc_subject", "oidc_username", "oidc_email", "oidc_bound_at").
-		Where("username = ?", username).
-		Take(&user).Error
-	if errors.Is(err, gorm.ErrRecordNotFound) {
-		return status, fmt.Errorf("admin user not found")
-	}
-	if err != nil {
-		return status, fmt.Errorf("load oidc status: %w", err)
-	}
-	status.Bound = strings.TrimSpace(user.OIDCSubject) != ""
-	status.Subject = user.OIDCSubject
-	status.Username = user.OIDCUsername
-	status.Email = user.OIDCEmail
-	status.BoundAt = user.OIDCBoundAt
-	return status, nil
+func (service *Service) OIDCAllowed(info OIDCIdentity) bool {
+	cfg := service.currentConfig()
+	return oidcIdentityAllowed(cfg.OIDC, info)
 }
 
-func (service *Service) UserByOIDCSubject(ctx context.Context, subject string) (AdminUser, bool, error) {
-	if service.db == nil || strings.TrimSpace(subject) == "" {
-		return AdminUser{}, false, nil
+func (service *Service) BindOIDC(ctx context.Context, subject string) error {
+	_ = ctx
+	if service.configManager == nil {
+		return fmt.Errorf("config manager is not available")
 	}
-	var user AdminUser
-	err := service.db.WithContext(ctx).Model(&appdb.AdminUser{}).
-		Where("oidc_subject = ?", subject).
-		Take(&user).Error
-	if errors.Is(err, gorm.ErrRecordNotFound) {
-		return AdminUser{}, false, nil
-	}
-	if err != nil {
-		return AdminUser{}, false, fmt.Errorf("load oidc user: %w", err)
-	}
-	return user, true, nil
-}
-
-func (service *Service) BindOIDC(ctx context.Context, username string, subject string, oidcUsername string, email string) error {
-	if service.db == nil {
-		return fmt.Errorf("database-backed admin login is not available")
-	}
-	subject = strings.TrimSpace(subject)
-	if subject == "" {
+	if strings.TrimSpace(subject) == "" {
 		return fmt.Errorf("oidc subject is required")
 	}
-	current, found, err := service.UserByOIDCSubject(ctx, subject)
-	if err != nil {
-		return err
-	}
-	if found && current.Username != username {
-		return fmt.Errorf("this Keycloak account is already bound to another admin")
-	}
-	now := time.Now()
-	updates := map[string]any{
-		"oidc_subject":  subject,
-		"oidc_username": stringPtr(oidcUsername),
-		"oidc_email":    stringPtr(email),
-		"oidc_bound_at": now,
-		"updated_at":    gorm.Expr("CURRENT_TIMESTAMP"),
-	}
-	result := service.db.WithContext(ctx).Model(&appdb.AdminUser{}).Where("username = ?", username).Updates(updates)
-	if result.Error != nil {
-		return fmt.Errorf("bind oidc account: %w", result.Error)
-	}
-	if result.RowsAffected == 0 {
-		return fmt.Errorf("admin user not found")
-	}
-	return nil
+	_, err := service.configManager.BindOIDC(subject)
+	return err
 }
 
-func (service *Service) UnbindOIDC(ctx context.Context, username string) error {
-	if service.db == nil {
-		return fmt.Errorf("database-backed admin login is not available")
+func (service *Service) UnbindOIDC(ctx context.Context) error {
+	_ = ctx
+	if service.configManager == nil {
+		return fmt.Errorf("config manager is not available")
 	}
-	result := service.db.WithContext(ctx).Model(&appdb.AdminUser{}).Where("username = ?", username).Updates(map[string]any{
-		"oidc_subject":  nil,
-		"oidc_username": nil,
-		"oidc_email":    nil,
-		"oidc_bound_at": nil,
-		"updated_at":    gorm.Expr("CURRENT_TIMESTAMP"),
-	})
-	if result.Error != nil {
-		return fmt.Errorf("unbind oidc account: %w", result.Error)
-	}
-	if result.RowsAffected == 0 {
-		return fmt.Errorf("admin user not found")
-	}
-	return nil
+	_, err := service.configManager.UnbindOIDC()
+	return err
 }
 
-func EnsureInitialAdmin(ctx context.Context, dbConn *gorm.DB, username string) (string, bool, error) {
-	var count int64
-	if err := dbConn.WithContext(ctx).Model(&appdb.AdminUser{}).Count(&count).Error; err != nil {
-		return "", false, fmt.Errorf("count admin users: %w", err)
-	}
-	if count > 0 {
-		return "", false, nil
-	}
-
-	password, err := GeneratePassword()
-	if err != nil {
-		return "", false, err
-	}
-
-	passwordHash, err := HashPassword(password)
-	if err != nil {
-		return "", false, err
-	}
-
-	if err := dbConn.WithContext(ctx).Create(&appdb.AdminUser{Username: username, PasswordHash: passwordHash}).Error; err != nil {
-		return "", false, fmt.Errorf("create initial admin: %w", err)
-	}
-
-	return password, true, nil
-}
-
-func (service *Service) ChangePassword(ctx context.Context, username string, currentPassword string, newPassword string, currentSessionID string) error {
-	if service.db == nil {
-		return fmt.Errorf("database-backed admin login is not available")
-	}
+func (service *Service) ChangePassword(ctx context.Context, currentPassword string, newPassword string, currentSessionID string) error {
 	if strings.TrimSpace(newPassword) == "" {
 		return fmt.Errorf("new password is required")
 	}
@@ -283,16 +171,8 @@ func (service *Service) ChangePassword(ctx context.Context, username string, cur
 		return fmt.Errorf("new password must be at least 8 characters")
 	}
 
-	var passwordHash string
-	err := service.db.WithContext(ctx).Model(&appdb.AdminUser{}).Select("password_hash").Where("username = ?", username).Take(&passwordHash).Error
-	if errors.Is(err, gorm.ErrRecordNotFound) {
-		return fmt.Errorf("admin user not found")
-	}
-	if err != nil {
-		return fmt.Errorf("load admin user: %w", err)
-	}
-
-	ok, err := VerifyPassword(currentPassword, passwordHash)
+	cfg := service.currentConfig()
+	ok, err := VerifyPassword(currentPassword, cfg.Auth.AdminPasswordHash)
 	if err != nil || !ok {
 		return fmt.Errorf("current password is incorrect")
 	}
@@ -301,27 +181,75 @@ func (service *Service) ChangePassword(ctx context.Context, username string, cur
 	if err != nil {
 		return fmt.Errorf("hash new password: %w", err)
 	}
-
-	if err := service.db.WithContext(ctx).Model(&appdb.AdminUser{}).Where("username = ?", username).Updates(map[string]any{
-		"password_hash": newHash,
-		"updated_at":    gorm.Expr("CURRENT_TIMESTAMP"),
-	}).Error; err != nil {
-		return fmt.Errorf("update password: %w", err)
+	if service.configManager == nil {
+		return fmt.Errorf("config manager is not available")
+	}
+	if _, err := service.configManager.UpdateAdminPasswordHash(newHash); err != nil {
+		return fmt.Errorf("update config password hash: %w", err)
 	}
 
-	subquery := service.db.Model(&appdb.AdminUser{}).Select("id").Where("username = ?", username).Limit(1)
-	if err := service.db.WithContext(ctx).Where("admin_user_id = (?) AND id <> ?", subquery, currentSessionID).Delete(&appdb.Session{}).Error; err != nil {
-		return fmt.Errorf("invalidate other sessions: %w", err)
+	if service.db != nil {
+		query := service.db.WithContext(ctx)
+		if strings.TrimSpace(currentSessionID) != "" {
+			query = query.Where("id <> ?", currentSessionID)
+		}
+		if err := query.Delete(&appdb.Session{}).Error; err != nil {
+			return fmt.Errorf("invalidate other sessions: %w", err)
+		}
 	}
 
 	return nil
 }
 
-func ResetAdminPassword(ctx context.Context, dbConn *gorm.DB, username string, password string) (string, error) {
-	if strings.TrimSpace(username) == "" {
-		return "", fmt.Errorf("admin username is required")
+func EnsureConfigAdminPassword(ctx context.Context, manager *config.Manager) (string, bool, error) {
+	_ = ctx
+	if manager == nil {
+		return "", false, fmt.Errorf("config manager is required")
+	}
+	cfg := manager.Current()
+	if strings.TrimSpace(cfg.Auth.AdminPasswordHash) != "" {
+		return "", false, nil
 	}
 
+	password, err := GeneratePassword()
+	if err != nil {
+		return "", false, err
+	}
+	passwordHash, err := HashPassword(password)
+	if err != nil {
+		return "", false, err
+	}
+	if _, err := manager.UpdateAdminPasswordHash(passwordHash); err != nil {
+		return "", false, err
+	}
+	return password, true, nil
+}
+
+func EnsureConfigSessionSecret(ctx context.Context, manager *config.Manager) (string, bool, error) {
+	_ = ctx
+	if manager == nil {
+		return "", false, fmt.Errorf("config manager is required")
+	}
+	cfg := manager.Current()
+	if strings.TrimSpace(cfg.Auth.SessionSecret) != "" && cfg.Auth.SessionSecret != "change-me-in-production" {
+		return "", false, nil
+	}
+
+	secret, err := randomHex(32)
+	if err != nil {
+		return "", false, err
+	}
+	if _, err := manager.UpdateSessionSecret(secret); err != nil {
+		return "", false, err
+	}
+	return secret, true, nil
+}
+
+func ResetConfigAdminPassword(ctx context.Context, manager *config.Manager, dbConn *gorm.DB, password string) (string, error) {
+	_ = ctx
+	if manager == nil {
+		return "", fmt.Errorf("config manager is required")
+	}
 	if password == "" {
 		generated, err := GeneratePassword()
 		if err != nil {
@@ -334,35 +262,34 @@ func ResetAdminPassword(ctx context.Context, dbConn *gorm.DB, username string, p
 	if err != nil {
 		return "", err
 	}
-
-	result := dbConn.WithContext(ctx).Clauses(clause.OnConflict{
-		Columns: []clause.Column{{Name: "username"}},
-		DoUpdates: clause.Assignments(map[string]any{
-			"password_hash": passwordHash,
-			"updated_at":    gorm.Expr("CURRENT_TIMESTAMP"),
-		}),
-	}).Create(&appdb.AdminUser{Username: username, PasswordHash: passwordHash})
-	if result.Error != nil {
-		return "", fmt.Errorf("reset admin password: %w", result.Error)
+	if _, err := manager.UpdateAdminPasswordHash(passwordHash); err != nil {
+		return "", err
 	}
-	if result.RowsAffected == 0 {
-		return "", fmt.Errorf("admin password was not updated")
-	}
-
-	subquery := dbConn.Model(&appdb.AdminUser{}).Select("id").Where("username = ?", username).Limit(1)
-	if err := dbConn.WithContext(ctx).Where("admin_user_id = (?)", subquery).Delete(&appdb.Session{}).Error; err != nil {
-		return "", fmt.Errorf("invalidate sessions after password reset: %w", err)
+	if dbConn != nil {
+		if err := dbConn.WithContext(ctx).Where("1 = 1").Delete(&appdb.Session{}).Error; err != nil {
+			return "", fmt.Errorf("invalidate sessions after password reset: %w", err)
+		}
 	}
 
 	return password, nil
 }
 
-func stringPtr(value string) *string {
-	value = strings.TrimSpace(value)
-	if value == "" {
-		return nil
+type OIDCIdentity struct {
+	Subject string
+}
+
+func oidcIdentityAllowed(oidcConfig config.OIDCConfig, info OIDCIdentity) bool {
+	if strings.TrimSpace(oidcConfig.BoundSubject) != "" {
+		return strings.TrimSpace(info.Subject) == strings.TrimSpace(oidcConfig.BoundSubject)
 	}
-	return &value
+	return false
+}
+
+func (service *Service) currentConfig() config.Config {
+	if service.configManager == nil {
+		return config.Config{}
+	}
+	return service.configManager.Current()
 }
 
 func GeneratePassword() (string, error) {

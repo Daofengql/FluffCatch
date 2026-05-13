@@ -112,8 +112,9 @@ type S3Config struct {
 }
 
 type AuthConfig struct {
-	AdminUsername string `yaml:"admin_username"`
-	SessionSecret string `yaml:"session_secret"`
+	AdminUsername     string `yaml:"admin_username"`
+	AdminPasswordHash string `yaml:"admin_password_hash"`
+	SessionSecret     string `yaml:"session_secret"`
 }
 
 type OIDCConfig struct {
@@ -122,7 +123,7 @@ type OIDCConfig struct {
 	IssuerURL    string `yaml:"issuer_url"`
 	ClientID     string `yaml:"client_id"`
 	ClientSecret string `yaml:"client_secret"`
-	RedirectURL  string `yaml:"redirect_url"`
+	BoundSubject string `yaml:"bound_subject"`
 }
 
 type FrontendConfig struct {
@@ -190,7 +191,6 @@ func defaultConfig() Config {
 		},
 		Auth: AuthConfig{
 			AdminUsername: "admin",
-			SessionSecret: "change-me-in-production",
 		},
 		Frontend: FrontendConfig{
 			Mode:       "auto",
@@ -263,6 +263,7 @@ func applyEnvOverrides(cfg *Config) {
 	cfg.Storage.S3.AccountID = getEnv("S3_ACCOUNT_ID", cfg.Storage.S3.AccountID)
 
 	cfg.Auth.AdminUsername = getEnv("ADMIN_USERNAME", cfg.Auth.AdminUsername)
+	cfg.Auth.AdminPasswordHash = getEnv("ADMIN_PASSWORD_HASH", cfg.Auth.AdminPasswordHash)
 	cfg.Auth.SessionSecret = getEnv("SESSION_SECRET", cfg.Auth.SessionSecret)
 
 	cfg.OIDC.Enabled = getBoolEnv("OIDC_ENABLED", cfg.OIDC.Enabled)
@@ -270,7 +271,7 @@ func applyEnvOverrides(cfg *Config) {
 	cfg.OIDC.IssuerURL = getEnv("OIDC_ISSUER_URL", cfg.OIDC.IssuerURL)
 	cfg.OIDC.ClientID = getEnv("OIDC_CLIENT_ID", cfg.OIDC.ClientID)
 	cfg.OIDC.ClientSecret = getEnv("OIDC_CLIENT_SECRET", cfg.OIDC.ClientSecret)
-	cfg.OIDC.RedirectURL = getEnv("OIDC_REDIRECT_URL", cfg.OIDC.RedirectURL)
+	cfg.OIDC.BoundSubject = getEnv("OIDC_BOUND_SUBJECT", cfg.OIDC.BoundSubject)
 
 	cfg.Frontend.Mode = getEnv("FRONTEND_MODE", cfg.Frontend.Mode)
 	cfg.Frontend.StaticRoot = getEnv("FRONTEND_STATIC_ROOT", getEnv("STATIC_ROOT", cfg.Frontend.StaticRoot))
@@ -282,9 +283,21 @@ func applyEnvOverrides(cfg *Config) {
 }
 
 func normalizeAndValidate(cfg Config) (Config, error) {
-	if isProductionEnv(cfg.App.Env) && cfg.Auth.SessionSecret == "change-me-in-production" {
-		return Config{}, fmt.Errorf("auth.session_secret must be set in production or release")
+	cfg.Auth.AdminUsername = strings.TrimSpace(cfg.Auth.AdminUsername)
+	cfg.Auth.AdminPasswordHash = strings.TrimSpace(cfg.Auth.AdminPasswordHash)
+	cfg.Auth.SessionSecret = strings.TrimSpace(cfg.Auth.SessionSecret)
+	if cfg.Auth.AdminUsername == "" {
+		return Config{}, fmt.Errorf("auth.admin_username is required")
 	}
+	if cfg.Auth.SessionSecret == "change-me-in-production" {
+		cfg.Auth.SessionSecret = ""
+	}
+
+	cfg.OIDC.Provider = strings.TrimSpace(cfg.OIDC.Provider)
+	cfg.OIDC.IssuerURL = strings.TrimSpace(cfg.OIDC.IssuerURL)
+	cfg.OIDC.ClientID = strings.TrimSpace(cfg.OIDC.ClientID)
+	cfg.OIDC.ClientSecret = strings.TrimSpace(cfg.OIDC.ClientSecret)
+	cfg.OIDC.BoundSubject = strings.TrimSpace(cfg.OIDC.BoundSubject)
 
 	cfg.Storage.Driver = strings.ToLower(cfg.Storage.Driver)
 	cfg.Storage.PublicBaseURL = strings.TrimRight(cfg.Storage.PublicBaseURL, "/")

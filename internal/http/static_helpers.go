@@ -489,8 +489,6 @@ func adminSettingsPageNameForSEO(section string) string {
 		return "存储策略"
 	case "maintenance":
 		return "存储维护"
-	case "oidc":
-		return "OIDC 登录"
 	case "security":
 		return "账号安全"
 	default:

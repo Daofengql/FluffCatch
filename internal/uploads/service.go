@@ -159,7 +159,7 @@ func (service *Service) CreateApprovedWithLimits(ctx context.Context, eventID in
 		return gallery.Photo{}, fmt.Errorf("database is required")
 	}
 
-	if err := service.verifyEventAllowsSubmission(ctx, eventID); err != nil {
+	if err := service.verifyEventExists(ctx, eventID); err != nil {
 		return gallery.Photo{}, err
 	}
 	storedUpload, store, err := service.storeUpload(ctx, eventID, upload, uploadLimits{MaxImageBytes: maxImageBytes, MaxVideoBytes: maxVideoBytes})
@@ -491,6 +491,18 @@ func (service *Service) verifyEventAllowsSubmission(ctx context.Context, eventID
 	}
 	if !event.SubmissionEnabled {
 		return fmt.Errorf("submissions are closed")
+	}
+	return nil
+}
+
+func (service *Service) verifyEventExists(ctx context.Context, eventID int64) error {
+	var event appdb.Event
+	err := service.db.WithContext(ctx).Select("id").Where("id = ?", eventID).Take(&event).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return fmt.Errorf("event not found")
+	}
+	if err != nil {
+		return fmt.Errorf("load event: %w", err)
 	}
 	return nil
 }

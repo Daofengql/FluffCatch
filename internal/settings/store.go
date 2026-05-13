@@ -33,9 +33,6 @@ func (store *Store) Load(ctx context.Context) (RuntimeSettings, error) {
 		return RuntimeSettings{}, err
 	}
 
-	if err := store.loadValue(ctx, KeyOIDC, &current.OIDC); err != nil {
-		return RuntimeSettings{}, err
-	}
 	if err := store.loadValue(ctx, KeySite, &current.Site); err != nil {
 		return RuntimeSettings{}, err
 	}
@@ -62,15 +59,6 @@ func (store *Store) SaveStoragePolicies(ctx context.Context, policies StoragePol
 	}
 
 	return store.saveValue(ctx, KeyStoragePolicies, policies)
-}
-
-func (store *Store) SaveOIDC(ctx context.Context, oidc OIDCSettings) error {
-	if store.db == nil {
-		store.fallback.OIDC = oidc
-		return nil
-	}
-
-	return store.saveValue(ctx, KeyOIDC, oidc)
 }
 
 func (store *Store) SaveUpload(ctx context.Context, upload UploadSettings) error {

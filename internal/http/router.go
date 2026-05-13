@@ -19,6 +19,7 @@ import (
 
 type Server struct {
 	cfg              config.Config
+	configManager    *config.Manager
 	db               *gorm.DB
 	storageManager   *storage.Manager
 	settingsService  *settings.Service
@@ -95,13 +96,18 @@ func (cache *blurPreviewCache) Set(key string, content []byte, contentType strin
 	}
 }
 
-func NewServer(cfg config.Config, dbConn *gorm.DB, storageManager *storage.Manager, settingsService *settings.Service) *Server {
+func NewServer(cfg config.Config, dbConn *gorm.DB, storageManager *storage.Manager, settingsService *settings.Service, configManager ...*config.Manager) *Server {
+	manager := config.NewManager("", cfg)
+	if len(configManager) > 0 && configManager[0] != nil {
+		manager = configManager[0]
+	}
 	return &Server{
 		cfg:              cfg,
+		configManager:    manager,
 		db:               dbConn,
 		storageManager:   storageManager,
 		settingsService:  settingsService,
-		authService:      auth.NewService(dbConn, cfg.Auth.AdminUsername),
+		authService:      auth.NewService(dbConn, manager),
 		captchaStore:     auth.NewCaptchaStore(),
 		eventService:     events.NewService(dbConn, storageManager),
 		uploadService:    uploads.NewServiceWithLimits(dbConn, storageManager, cfg.Upload.MaxSizeMB, cfg.Upload.MaxVideoSizeMB),
@@ -186,7 +192,6 @@ func (server *Server) mountAPIRoutes(r *gin.Engine) {
 	admin.GET("/settings", server.ginHandler(server.getSettings))
 	admin.PUT("/settings/storage", server.ginHandler(server.updateStorageSettings))
 	admin.POST("/settings/storage/test", server.ginHandler(server.testStorageConnection))
-	admin.PUT("/settings/oidc", server.ginHandler(server.updateOIDCSettings))
 	admin.PUT("/settings/site", server.ginHandler(server.updateSiteSettings))
 	admin.POST("/settings/site/logo", server.ginHandler(server.uploadSiteLogo))
 	admin.DELETE("/settings/site/logo", server.ginHandler(server.clearSiteLogo))

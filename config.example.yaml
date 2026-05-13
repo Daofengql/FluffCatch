@@ -33,4 +33,12 @@ storage:
 
 auth:
   admin_username: admin
-  session_secret: change-me-in-production
+  admin_password_hash: ""
+  session_secret: ""
+
+oidc:
+  enabled: false
+  provider: Keycloak
+  issuer_url: ""
+  client_id: ""
+  client_secret: ""

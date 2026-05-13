@@ -24,7 +24,6 @@ func (server *Server) getSettings(w stdhttp.ResponseWriter, r *stdhttp.Request) 
 	}
 
 	sanitized := current.Sanitize()
-	sanitized.OIDC.RedirectURL = server.oidcRedirectURL(r)
 	sanitized.StoragePolicies = runtimeStoragePolicies.Sanitize()
 	writeJSON(w, stdhttp.StatusOK, map[string]any{
 		"settings": sanitized,
@@ -91,26 +90,6 @@ func (server *Server) testStorageConnection(w stdhttp.ResponseWriter, r *stdhttp
 
 	_ = store.Delete(r.Context(), testKey)
 	writeJSON(w, stdhttp.StatusOK, map[string]any{"success": true})
-}
-
-func (server *Server) updateOIDCSettings(w stdhttp.ResponseWriter, r *stdhttp.Request) {
-	var req settings.OIDCSettings
-	if err := decodeJSON(r, &req); err != nil {
-		writeError(w, stdhttp.StatusBadRequest, "invalid oidc settings payload")
-		return
-	}
-
-	updated, err := server.settingsService.UpdateOIDC(r.Context(), req)
-	if err != nil {
-		writeError(w, stdhttp.StatusBadRequest, err.Error())
-		return
-	}
-	updated.RedirectURL = server.oidcRedirectURL(r)
-
-	writeJSON(w, stdhttp.StatusOK, map[string]any{
-		"oidc":    updated.Sanitize(),
-		"message": "oidc settings updated",
-	})
 }
 
 func (server *Server) updateSiteSettings(w stdhttp.ResponseWriter, r *stdhttp.Request) {

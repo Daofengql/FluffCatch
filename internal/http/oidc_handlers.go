@@ -11,7 +11,8 @@ import (
 	"sync"
 	"time"
 
-	"fluffcatch/internal/settings"
+	"fluffcatch/internal/auth"
+	"fluffcatch/internal/config"
 
 	"github.com/coreos/go-oidc/v3/oidc"
 	"golang.org/x/oauth2"
@@ -31,9 +32,7 @@ type oidcStateStore struct {
 }
 
 type oidcUserInfo struct {
-	Subject           string
-	PreferredUsername string
-	Email             string
+	Subject string
 }
 
 func newOIDCStateStore() *oidcStateStore {
@@ -139,28 +138,22 @@ func (server *Server) oidcCallback(w stdhttp.ResponseWriter, r *stdhttp.Request)
 		server.redirectOIDCResult(w, r, flow, "Keycloak id_token 校验失败")
 		return
 	}
-	claims := struct {
-		PreferredUsername string `json:"preferred_username"`
-		Email             string `json:"email"`
-	}{}
-	_ = idToken.Claims(&claims)
-	info := oidcUserInfo{Subject: idToken.Subject, PreferredUsername: claims.PreferredUsername, Email: claims.Email}
+	info := oidcUserInfo{Subject: idToken.Subject}
 
 	switch flow.Action {
 	case "bind":
-		if err := server.authService.BindOIDC(r.Context(), flow.Username, info.Subject, info.PreferredUsername, info.Email); err != nil {
+		if err := server.authService.BindOIDC(r.Context(), info.Subject); err != nil {
 			server.redirectOIDCResult(w, r, flow, err.Error())
 			return
 		}
 		server.redirectOIDCResult(w, r, flow, "")
 	default:
-		user, found, err := server.authService.UserByOIDCSubject(r.Context(), info.Subject)
-		if err != nil || !found {
+		if !server.authService.OIDCAllowed(auth.OIDCIdentity{Subject: info.Subject}) {
 			flow.Action = "login"
-			server.redirectOIDCResult(w, r, flow, "该 Keycloak 账号尚未绑定管理员账号")
+			server.redirectOIDCResult(w, r, flow, "该 OIDC 账号未被允许登录后台")
 			return
 		}
-		sessionID, expiresAt, err := server.authService.CreateSessionForUserID(r.Context(), user.ID, 30*24*time.Hour)
+		sessionID, expiresAt, err := server.authService.CreateSession(r.Context(), server.configManager.Current().Auth.AdminUsername, 30*24*time.Hour)
 		if err != nil {
 			flow.Action = "login"
 			server.redirectOIDCResult(w, r, flow, "创建登录会话失败")
@@ -173,7 +166,7 @@ func (server *Server) oidcCallback(w stdhttp.ResponseWriter, r *stdhttp.Request)
 }
 
 func (server *Server) oidcStatus(w stdhttp.ResponseWriter, r *stdhttp.Request) {
-	admin, ok, err := server.currentAdmin(r)
+	_, ok, err := server.currentAdmin(r)
 	if err != nil {
 		writeError(w, stdhttp.StatusInternalServerError, "failed to authenticate session")
 		return
@@ -183,7 +176,7 @@ func (server *Server) oidcStatus(w stdhttp.ResponseWriter, r *stdhttp.Request) {
 		return
 	}
 	oidcSettings, _ := server.currentOIDCSettings(r.Context())
-	status, err := server.authService.GetOIDCStatus(r.Context(), admin.Username, oidcSettings.Enabled, oidcProviderName(oidcSettings))
+	status, err := server.authService.GetOIDCStatus(r.Context(), oidcSettings.Enabled, oidcProviderName(oidcSettings))
 	if err != nil {
 		writeError(w, stdhttp.StatusInternalServerError, err.Error())
 		return
@@ -192,7 +185,7 @@ func (server *Server) oidcStatus(w stdhttp.ResponseWriter, r *stdhttp.Request) {
 }
 
 func (server *Server) oidcUnbind(w stdhttp.ResponseWriter, r *stdhttp.Request) {
-	admin, ok, err := server.currentAdmin(r)
+	_, ok, err := server.currentAdmin(r)
 	if err != nil {
 		writeError(w, stdhttp.StatusInternalServerError, "failed to authenticate session")
 		return
@@ -201,7 +194,7 @@ func (server *Server) oidcUnbind(w stdhttp.ResponseWriter, r *stdhttp.Request) {
 		writeError(w, stdhttp.StatusUnauthorized, "admin authentication required")
 		return
 	}
-	if err := server.authService.UnbindOIDC(r.Context(), admin.Username); err != nil {
+	if err := server.authService.UnbindOIDC(r.Context()); err != nil {
 		writeError(w, stdhttp.StatusBadRequest, err.Error())
 		return
 	}
@@ -271,7 +264,7 @@ func (server *Server) redirectOIDCResult(w stdhttp.ResponseWriter, r *stdhttp.Re
 	stdhttp.Redirect(w, r, u.String(), stdhttp.StatusFound)
 }
 
-func oidcRuntime(ctx context.Context, oidcSettings settings.OIDCSettings, redirectURL string) (*oauth2.Config, *oidc.IDTokenVerifier, error) {
+func oidcRuntime(ctx context.Context, oidcSettings config.OIDCConfig, redirectURL string) (*oauth2.Config, *oidc.IDTokenVerifier, error) {
 	issuer := strings.TrimRight(strings.TrimSpace(oidcSettings.IssuerURL), "/")
 	redirectURL = strings.TrimSpace(redirectURL)
 	if issuer == "" || strings.TrimSpace(oidcSettings.ClientID) == "" || redirectURL == "" {
@@ -286,7 +279,7 @@ func oidcRuntime(ctx context.Context, oidcSettings settings.OIDCSettings, redire
 		ClientSecret: strings.TrimSpace(oidcSettings.ClientSecret),
 		Endpoint:     provider.Endpoint(),
 		RedirectURL:  redirectURL,
-		Scopes:       []string{oidc.ScopeOpenID, "profile", "email"},
+		Scopes:       []string{oidc.ScopeOpenID},
 	}
 	verifier := provider.Verifier(&oidc.Config{ClientID: oauthConfig.ClientID})
 	return oauthConfig, verifier, nil
@@ -352,15 +345,12 @@ func firstForwardedValue(value string) string {
 	return strings.TrimSpace(parts[0])
 }
 
-func (server *Server) currentOIDCSettings(ctx context.Context) (settings.OIDCSettings, error) {
-	current, err := server.settingsService.Load(ctx)
-	if err != nil {
-		return settings.OIDCSettings{}, err
-	}
-	return current.OIDC, nil
+func (server *Server) currentOIDCSettings(ctx context.Context) (config.OIDCConfig, error) {
+	_ = ctx
+	return server.configManager.Current().OIDC, nil
 }
 
-func oidcProviderName(oidcSettings settings.OIDCSettings) string {
+func oidcProviderName(oidcSettings config.OIDCConfig) string {
 	name := strings.TrimSpace(oidcSettings.Provider)
 	if name == "" {
 		return "Keycloak"
