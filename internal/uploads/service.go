@@ -419,32 +419,44 @@ func (service *Service) ListPendingForEvent(ctx context.Context, eventID int64) 
 func (service *Service) ApproveBatch(ctx context.Context, ids []int64, visibility string) (BatchResponse, error) {
 	visibility = visibilityOrDefault(visibility)
 	processed := 0
+	var errors []string
 	for _, id := range ids {
 		ok, err := service.approveOne(ctx, id, visibility)
 		if err != nil {
-			return BatchResponse{}, err
+			errors = append(errors, fmt.Sprintf("submission %d: %v", id, err))
+			continue
 		}
 		if ok {
 			processed++
 		}
 	}
 
-	return BatchResponse{Processed: processed, Message: "submissions approved"}, nil
+	message := "submissions approved"
+	if len(errors) > 0 {
+		message = fmt.Sprintf("%d approved, %d errors: %s", processed, len(errors), strings.Join(errors, "; "))
+	}
+	return BatchResponse{Processed: processed, Message: message}, nil
 }
 
 func (service *Service) DeleteBatch(ctx context.Context, ids []int64) (BatchResponse, error) {
 	processed := 0
+	var errors []string
 	for _, id := range ids {
 		ok, err := service.deleteOne(ctx, id)
 		if err != nil {
-			return BatchResponse{}, err
+			errors = append(errors, fmt.Sprintf("submission %d: %v", id, err))
+			continue
 		}
 		if ok {
 			processed++
 		}
 	}
 
-	return BatchResponse{Processed: processed, Message: "submissions deleted"}, nil
+	message := "submissions deleted"
+	if len(errors) > 0 {
+		message = fmt.Sprintf("%d deleted, %d errors: %s", processed, len(errors), strings.Join(errors, "; "))
+	}
+	return BatchResponse{Processed: processed, Message: message}, nil
 }
 
 func (service *Service) validateSubmissionAccess(ctx context.Context, eventID int64, token string) (consumedSubmissionLink, error) {
@@ -618,13 +630,9 @@ func (service *Service) submissionFromRecord(record appdb.Submission) Submission
 		TakenAt:          record.TakenAt,
 		CreatedAt:        record.CreatedAt,
 	}
-	if store, err := service.storageManager.StoreForPolicy(submission.StoragePolicyID); err == nil {
-		submission.URL = store.PublicURL(submission.ObjectKey)
-		if submission.ThumbnailKey != "" {
-			submission.ThumbnailURL = store.PublicURL(submission.ThumbnailKey)
-		}
-	} else {
-		submission.URL = storage.MediaURL(submission.StoragePolicyID, submission.ObjectKey)
+	submission.URL = mediaSubmissionURL(submission.ID, "original")
+	if submission.ThumbnailKey != "" {
+		submission.ThumbnailURL = mediaSubmissionURL(submission.ID, "thumbnail")
 	}
 	if len(record.Tags) > 0 {
 		_ = json.Unmarshal(record.Tags, &submission.Tags)
@@ -705,6 +713,10 @@ func scanPhoto(record appdb.Photo, storageManager *storage.Manager) gallery.Phot
 
 func mediaPhotoURL(photoID int64, variant string) string {
 	return fmt.Sprintf("/media/photos/%d/%s", photoID, variant)
+}
+
+func mediaSubmissionURL(submissionID int64, variant string) string {
+	return fmt.Sprintf("/media/submissions/%d/%s", submissionID, variant)
 }
 
 func attachPhotoTags(ctx context.Context, dbConn *gorm.DB, photos []gallery.Photo) error {

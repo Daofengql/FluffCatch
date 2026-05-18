@@ -340,11 +340,7 @@ upload:
 
 ## frontend
 
-```yaml
-frontend:
-  mode: auto
-  static_root: www/dist
-```
+前端服务模式不建议写入 `config.yaml`。开发调试时通过命令行参数 `--frontend-mode` 指定；部署时如需覆盖，可使用环境变量。
 
 | 模式 | 说明 |
 | --- | --- |
@@ -353,6 +349,10 @@ frontend:
 | `disk` | 只读取 `static_root` 指向的静态文件目录。 |
 | `external` | Go 服务不提供前端，适合 Vite 独立开发。 |
 | `disabled` | 关闭前端静态服务，只提供 API。 |
+
+命令行参数：
+
+- `--frontend-mode`
 
 环境变量：
 

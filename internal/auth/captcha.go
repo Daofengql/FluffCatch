@@ -102,10 +102,36 @@ func randomDigits(length int) (string, error) {
 
 func captchaSVG(answer string) string {
 	escaped := html.EscapeString(answer)
-	return fmt.Sprintf(`<svg xmlns="http://www.w3.org/2000/svg" width="180" height="54" viewBox="0 0 180 54">
-  <rect width="180" height="54" rx="12" fill="#e3f2fd"/>
-  <path d="M8 42 C32 10, 52 60, 82 20 S124 44, 142 12" fill="none" stroke="#90caf9" stroke-width="3"/>
-  <path d="M14 16 L168 39 M20 43 L164 12" stroke="#bbdefb" stroke-width="2"/>
-  <text x="50%%" y="50%%" dominant-baseline="middle" text-anchor="middle" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="26" font-weight="800" letter-spacing="6" fill="#1565c0">%s</text>
-</svg>`, escaped)
+	colors := []string{"#1565c0", "#c62828", "#2e7d32", "#6a1b9a", "#e65100", "#00838f"}
+	bgColors := []string{"#e3f2fd", "#ffebee", "#e8f5e9", "#f3e5f5", "#fff3e0", "#e0f7fa"}
+	r := randInt(0, len(colors))
+	return fmt.Sprintf(
+		`<svg xmlns="http://www.w3.org/2000/svg" width="200" height="60" viewBox="0 0 200 60">
+  <rect width="200" height="60" rx="12" fill="%s"/>
+  <line x1="%d" y1="%d" x2="%d" y2="%d" stroke="%s" stroke-width="%d" opacity="0.5"/>
+  <line x1="%d" y1="%d" x2="%d" y2="%d" stroke="%s" stroke-width="%d" opacity="0.4"/>
+  <line x1="%d" y1="%d" x2="%d" y2="%d" stroke="%s" stroke-width="%d" opacity="0.4"/>
+  <line x1="%d" y1="%d" x2="%d" y2="%d" stroke="%s" stroke-width="%d" opacity="0.3"/>
+  <text x="50%%" y="50%%" dominant-baseline="middle" text-anchor="middle" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="28" font-weight="700" letter-spacing="4" fill="%s" transform="rotate(%d, 100, 30)">%s</text>
+</svg>`,
+		bgColors[r],
+		randInt(0, 50), randInt(0, 30), randInt(150, 200), randInt(30, 60), colors[(r+1)%len(colors)], randInt(1, 3),
+		randInt(0, 200), randInt(40, 60), randInt(30, 170), randInt(0, 20), colors[(r+2)%len(colors)], randInt(1, 3),
+		randInt(10, 60), randInt(0, 10), randInt(140, 190), randInt(50, 60), colors[(r+3)%len(colors)], randInt(1, 3),
+		randInt(50, 150), randInt(0, 60), randInt(60, 140), randInt(0, 60), colors[(r+4)%len(colors)], randInt(1, 3),
+		colors[r],
+		randInt(-3, 4),
+		escaped,
+	)
+}
+
+func randInt(min, max int) int {
+	if min >= max {
+		return min
+	}
+	n, err := rand.Int(rand.Reader, big.NewInt(int64(max-min)))
+	if err != nil {
+		return min
+	}
+	return min + int(n.Int64())
 }

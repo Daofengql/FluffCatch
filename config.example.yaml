@@ -33,6 +33,10 @@ storage:
   local_path: data/uploads
   public_prefix: /media
 
+upload:
+  max_size_mb: 50
+  max_video_size_mb: 200
+
 auth:
   admin_username: admin
   admin_password_hash: ""
@@ -44,3 +48,4 @@ oidc:
   issuer_url: ""
   client_id: ""
   client_secret: ""
+  bound_subject: ""

@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"io"
+	"log/slog"
 	stdhttp "net/http"
 	"strings"
 
@@ -86,7 +87,9 @@ func (server *Server) deleteAdminEvent(w stdhttp.ResponseWriter, r *stdhttp.Requ
 		if err != nil {
 			continue
 		}
-		_ = store.Delete(r.Context(), object.Key)
+		if err := store.Delete(r.Context(), object.Key); err != nil {
+			slog.Warn("failed to delete storage object after event deletion", "policy", object.PolicyID, "key", object.Key, "error", err)
+		}
 	}
 
 	writeJSON(w, stdhttp.StatusOK, map[string]any{"message": "event deleted", "deletedObjects": len(objects)})
@@ -168,7 +171,9 @@ func (server *Server) uploadEventCover(w stdhttp.ResponseWriter, r *stdhttp.Requ
 		return
 	}
 	if result.RowsAffected == 0 {
-		_ = store.Delete(r.Context(), stored.Key)
+		if err := store.Delete(r.Context(), stored.Key); err != nil {
+			slog.Warn("failed to delete cover after event not found", "key", stored.Key, "error", err)
+		}
 		writeError(w, stdhttp.StatusNotFound, "event not found")
 		return
 	}

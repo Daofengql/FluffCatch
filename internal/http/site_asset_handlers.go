@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"io"
+	"log/slog"
 	stdhttp "net/http"
 	"net/url"
 	"strings"
@@ -102,7 +103,9 @@ func (server *Server) uploadSiteLogo(w stdhttp.ResponseWriter, r *stdhttp.Reques
 
 	current, err := server.settingsService.Load(r.Context())
 	if err != nil {
-		_ = store.Delete(r.Context(), stored.Key)
+		if err := store.Delete(r.Context(), stored.Key); err != nil {
+			slog.Warn("failed to delete logo after settings load error", "key", stored.Key, "error", err)
+		}
 		writeError(w, stdhttp.StatusInternalServerError, "failed to load site settings")
 		return
 	}
@@ -110,7 +113,9 @@ func (server *Server) uploadSiteLogo(w stdhttp.ResponseWriter, r *stdhttp.Reques
 	current.Site.LogoURL = stored.URL
 	updated, err := server.settingsService.UpdateSite(r.Context(), current.Site)
 	if err != nil {
-		_ = store.Delete(r.Context(), stored.Key)
+		if err := store.Delete(r.Context(), stored.Key); err != nil {
+			slog.Warn("failed to delete logo after settings save error", "key", stored.Key, "error", err)
+		}
 		writeError(w, stdhttp.StatusInternalServerError, "failed to save site logo")
 		return
 	}
@@ -242,7 +247,9 @@ func (server *Server) uploadSiteBackground(w stdhttp.ResponseWriter, r *stdhttp.
 
 	current, err := server.settingsService.Load(r.Context())
 	if err != nil {
-		_ = store.Delete(r.Context(), stored.Key)
+		if err := store.Delete(r.Context(), stored.Key); err != nil {
+			slog.Warn("failed to delete background after settings load error", "key", stored.Key, "error", err)
+		}
 		writeError(w, stdhttp.StatusInternalServerError, "failed to load site settings")
 		return
 	}
@@ -258,7 +265,9 @@ func (server *Server) uploadSiteBackground(w stdhttp.ResponseWriter, r *stdhttp.
 	}
 	updated, err := server.settingsService.UpdateSite(r.Context(), current.Site)
 	if err != nil {
-		_ = store.Delete(r.Context(), stored.Key)
+		if err := store.Delete(r.Context(), stored.Key); err != nil {
+			slog.Warn("failed to delete background after settings save error", "key", stored.Key, "error", err)
+		}
 		writeError(w, stdhttp.StatusInternalServerError, "failed to save site background")
 		return
 	}
@@ -293,7 +302,9 @@ func (server *Server) deleteSiteAsset(ctx context.Context, assetURL string) {
 			key, keyErr := url.PathUnescape(parts[1])
 			if policyErr == nil && keyErr == nil {
 				if store, err := server.storageManager.StoreForPolicy(policyID); err == nil {
-					_ = store.Delete(ctx, key)
+					if err := store.Delete(ctx, key); err != nil {
+						slog.Warn("failed to delete site asset by policy", "policy", policyID, "key", key, "error", err)
+					}
 					return
 				}
 			}
@@ -307,6 +318,8 @@ func (server *Server) deleteSiteAsset(ctx context.Context, assetURL string) {
 	publicURL := strings.TrimRight(store.PublicURL(""), "/")
 	if strings.HasPrefix(assetURL, publicURL+"/") {
 		key := strings.TrimPrefix(assetURL, publicURL+"/")
-		_ = store.Delete(ctx, key)
+		if err := store.Delete(ctx, key); err != nil {
+			slog.Warn("failed to delete site asset by public url", "key", key, "error", err)
+		}
 	}
 }

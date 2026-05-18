@@ -31,6 +31,7 @@ import type { SelectChangeEvent } from '@mui/material/Select';
 import { useEffect, useMemo, useState } from 'react';
 import { approveSubmissions, deleteSubmissions, getEventPendingSubmissions, getPendingSubmissions, type EventCard, type Photo, type Submission } from '../api/client';
 import { usePersistentState } from '../hooks/usePersistentState';
+import { ConfirmDialog } from './ConfirmDialog';
 import { ImagePreviewDialog, type ImagePreviewItem } from './ImagePreviewDialog';
 
 type ViewMode = 'card' | 'list';
@@ -49,6 +50,7 @@ export function SubmissionReviewDialog({ event, onChanged, onClose, open }: Subm
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
   const [previewIndex, setPreviewIndex] = useState<number | null>(null);
+  const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false);
   const [viewMode, setViewMode] = usePersistentState<ViewMode>('fluffcatch.event.submissions.viewMode', 'card', viewModes);
   const [approveVisibility, setApproveVisibility] = useState<Photo['visibility']>('public');
 
@@ -88,17 +90,30 @@ export function SubmissionReviewDialog({ event, onChanged, onClose, open }: Subm
     setSelected(checked ? submissions.map((submission) => submission.id) : []);
   }
 
-  async function batch(action: 'approve' | 'delete') {
+  async function approveSelected() {
     if (!selected.length) return;
     setError('');
     try {
-      if (action === 'approve') await approveSubmissions(selected, approveVisibility);
-      else await deleteSubmissions(selected);
+      await approveSubmissions(selected, approveVisibility);
       setSelected([]);
       refresh();
       onChanged?.();
     } catch (err) {
       setError(err instanceof Error ? err.message : '操作失败');
+    }
+  }
+
+  async function handleDeleteConfirm(headers: Record<string, string>) {
+    if (!selected.length) return;
+    setDeleteConfirmOpen(false);
+    setError('');
+    try {
+      await deleteSubmissions(selected, headers);
+      setSelected([]);
+      refresh();
+      onChanged?.();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : '删除失败');
     }
   }
 
@@ -137,10 +152,10 @@ export function SubmissionReviewDialog({ event, onChanged, onClose, open }: Subm
                 <MenuItem value="private">私密</MenuItem>
               </Select>
             </FormControl>
-            <Button disabled={!selected.length} onClick={() => void batch('approve')} variant="contained">
+            <Button disabled={!selected.length} onClick={() => void approveSelected()} variant="contained">
               批量通过 ({selected.length})
             </Button>
-            <Button color="error" disabled={!selected.length} onClick={() => void batch('delete')} variant="outlined">
+            <Button color="error" disabled={!selected.length} onClick={() => setDeleteConfirmOpen(true)} variant="outlined">
               批量删除 ({selected.length})
             </Button>
           </Stack>
@@ -270,6 +285,14 @@ export function SubmissionReviewDialog({ event, onChanged, onClose, open }: Subm
         onClose={() => setPreviewIndex(null)}
         onIndexChange={setPreviewIndex}
         open={previewIndex !== null}
+      />
+      <ConfirmDialog
+        confirmLabel="确认删除"
+        onCancel={() => setDeleteConfirmOpen(false)}
+        onConfirm={(headers) => void handleDeleteConfirm(headers)}
+        open={deleteConfirmOpen}
+        subtitle={`确定删除已选择的 ${selected.length} 个待审核投稿吗？原始文件和缩略图也会一起删除。`}
+        title="删除待审核投稿"
       />
     </Dialog>
   );

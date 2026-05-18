@@ -23,6 +23,7 @@ type oidcFlowState struct {
 	Username    string
 	RedirectURL string
 	ReturnBase  string
+	Nonce       string
 	ExpiresAt   time.Time
 }
 
@@ -138,6 +139,10 @@ func (server *Server) oidcCallback(w stdhttp.ResponseWriter, r *stdhttp.Request)
 		server.redirectOIDCResult(w, r, flow, "Keycloak id_token 校验失败")
 		return
 	}
+	if flow.Nonce == "" || idToken.Nonce != flow.Nonce {
+		server.redirectOIDCResult(w, r, flow, "Keycloak nonce 校验失败")
+		return
+	}
 	info := oidcUserInfo{Subject: idToken.Subject}
 
 	switch flow.Action {
@@ -230,14 +235,19 @@ func (server *Server) startOIDCFlow(r *stdhttp.Request, action string, username 
 	if err != nil {
 		return "", fmt.Errorf("failed to create oidc state")
 	}
+	nonce, err := randomURLToken(32)
+	if err != nil {
+		return "", fmt.Errorf("failed to create oidc nonce")
+	}
 	server.oidcStates.Put(state, oidcFlowState{
 		Action:      action,
 		Username:    username,
 		RedirectURL: redirectURL,
 		ReturnBase:  server.oidcReturnBaseURL(r),
+		Nonce:       nonce,
 		ExpiresAt:   time.Now().Add(10 * time.Minute),
 	})
-	return oauthConfig.AuthCodeURL(state, oidc.Nonce(state)), nil
+	return oauthConfig.AuthCodeURL(state, oidc.Nonce(nonce)), nil
 }
 
 func (server *Server) redirectOIDCResult(w stdhttp.ResponseWriter, r *stdhttp.Request, flow oidcFlowState, message string) {

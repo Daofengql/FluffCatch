@@ -2,6 +2,7 @@ package http
 
 import (
 	"context"
+	"log/slog"
 	stdhttp "net/http"
 	"strings"
 
@@ -88,7 +89,9 @@ func (server *Server) testStorageConnection(w stdhttp.ResponseWriter, r *stdhttp
 		return
 	}
 
-	_ = store.Delete(r.Context(), testKey)
+	if err := store.Delete(r.Context(), testKey); err != nil {
+		slog.Warn("failed to delete storage connection test object", "key", testKey, "error", err)
+	}
 	writeJSON(w, stdhttp.StatusOK, map[string]any{"success": true})
 }
 

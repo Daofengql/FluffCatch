@@ -7,18 +7,26 @@ import (
 )
 
 type rateLimiter struct {
-	mu       sync.Mutex
-	attempts map[string][]time.Time
-	perSec   int
-	burst    int
+	mu         sync.Mutex
+	attempts   map[string][]time.Time
+	perSec     int
+	burst      int
+	stopCh     chan struct{}
 }
 
 func newRateLimiter(perSec int, burst int) *rateLimiter {
-	return &rateLimiter{
+	rl := &rateLimiter{
 		attempts: map[string][]time.Time{},
 		perSec:   perSec,
 		burst:    burst,
+		stopCh:   make(chan struct{}),
 	}
+	go rl.cleanupLoop()
+	return rl
+}
+
+func (rl *rateLimiter) Stop() {
+	close(rl.stopCh)
 }
 
 func (rl *rateLimiter) Allow(ip string) bool {
@@ -42,17 +50,39 @@ func (rl *rateLimiter) Allow(ip string) bool {
 	}
 
 	rl.attempts[ip] = append(valid, now)
+	return true
+}
 
-	// Clean up old entries periodically.
-	if len(rl.attempts) > 10000 {
-		for ip, attempts := range rl.attempts {
-			if len(attempts) == 0 {
-				delete(rl.attempts, ip)
-			}
+func (rl *rateLimiter) cleanupLoop() {
+	ticker := time.NewTicker(10 * time.Minute)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ticker.C:
+			rl.evictExpired()
+		case <-rl.stopCh:
+			return
 		}
 	}
+}
 
-	return true
+func (rl *rateLimiter) evictExpired() {
+	rl.mu.Lock()
+	defer rl.mu.Unlock()
+	cutoff := time.Now().Add(-time.Minute)
+	for ip, attempts := range rl.attempts {
+		valid := attempts[:0]
+		for _, t := range attempts {
+			if t.After(cutoff) {
+				valid = append(valid, t)
+			}
+		}
+		if len(valid) == 0 {
+			delete(rl.attempts, ip)
+		} else {
+			rl.attempts[ip] = valid
+		}
+	}
 }
 
 func clientIP(remoteAddr string) string {

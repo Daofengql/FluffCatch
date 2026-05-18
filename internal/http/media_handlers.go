@@ -13,12 +13,14 @@ import (
 	"fluffcatch/internal/gallery"
 	appimage "fluffcatch/internal/image"
 	"fluffcatch/internal/storage"
+	"fluffcatch/internal/uploads"
 
 	"github.com/gin-gonic/gin"
 )
 
 func (server *Server) mountLocalMedia(r *gin.Engine) {
 	r.GET("/media/photos/:id/:variant", server.ginHandler(server.servePhotoMedia))
+	r.GET("/media/submissions/:id/:variant", server.ginHandler(server.serveSubmissionMedia))
 	r.GET("/media/:policyID/*key", func(c *gin.Context) {
 		policyID := c.Param("policyID")
 		w := c.Writer
@@ -58,6 +60,52 @@ func (server *Server) mountLocalMedia(r *gin.Engine) {
 		}
 		stdhttp.ServeFile(w, r, targetPath)
 	})
+}
+
+func (server *Server) serveSubmissionMedia(w stdhttp.ResponseWriter, r *stdhttp.Request) {
+	id, ok := parseIDParam(w, r, "id")
+	if !ok {
+		return
+	}
+	variant := routeParam(r, "variant")
+	if variant != "original" && variant != "thumbnail" {
+		writeError(w, stdhttp.StatusBadRequest, "invalid media variant")
+		return
+	}
+
+	_, isAdmin, err := server.currentAdmin(r)
+	if err != nil {
+		writeError(w, stdhttp.StatusInternalServerError, "failed to authenticate session")
+		return
+	}
+	if !isAdmin {
+		writeError(w, stdhttp.StatusNotFound, "media not found")
+		return
+	}
+
+	submission, found, err := server.uploadService.Get(r.Context(), id)
+	if err != nil {
+		writeError(w, stdhttp.StatusInternalServerError, "failed to load submission")
+		return
+	}
+	if !found || submission.Status != uploads.SubmissionPending {
+		writeError(w, stdhttp.StatusNotFound, "media not found")
+		return
+	}
+
+	key := submission.ObjectKey
+	contentType := submission.ContentType
+	contentLength := submission.SizeBytes
+	if variant == "thumbnail" {
+		if submission.ThumbnailKey == "" {
+			writeError(w, stdhttp.StatusNotFound, "media not found")
+			return
+		}
+		key = submission.ThumbnailKey
+		contentType = thumbnailContentType(key)
+		contentLength = -1
+	}
+	server.serveStoredObject(w, r, submission.StoragePolicyID, key, contentType, contentLength, false)
 }
 
 func (server *Server) servePhotoMedia(w stdhttp.ResponseWriter, r *stdhttp.Request) {

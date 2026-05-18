@@ -8,6 +8,8 @@ import (
 	"io"
 	"testing"
 
+	appdb "fluffcatch/internal/db"
+
 	"gorm.io/driver/mysql"
 	"gorm.io/gorm"
 )
@@ -61,6 +63,25 @@ func TestAdminApprovedUploadIgnoresSubmissionEnabled(t *testing.T) {
 	err = service.verifyEventAllowsSubmission(context.Background(), 1)
 	if err == nil || err.Error() != "submissions are closed" {
 		t.Fatalf("expected public submission check to reject closed submissions, got %v", err)
+	}
+}
+
+func TestSubmissionFromRecordUsesAdminMediaURLs(t *testing.T) {
+	service := NewService(nil, nil, 20)
+	submission := service.submissionFromRecord(appdb.Submission{
+		ID:              42,
+		StoragePolicyID: "default-local",
+		ObjectKey:       "events/1/media/original.jpg",
+		ThumbnailKey:    stringPtr("events/1/thumbnails/thumb.jpg"),
+		ContentType:     "image/jpeg",
+		Status:          string(SubmissionPending),
+	})
+
+	if submission.URL != "/media/submissions/42/original" {
+		t.Fatalf("expected admin original URL, got %q", submission.URL)
+	}
+	if submission.ThumbnailURL != "/media/submissions/42/thumbnail" {
+		t.Fatalf("expected admin thumbnail URL, got %q", submission.ThumbnailURL)
 	}
 }
 

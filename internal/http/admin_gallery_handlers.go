@@ -2,6 +2,7 @@ package http
 
 import (
 	"fmt"
+	"log/slog"
 	stdhttp "net/http"
 
 	"fluffcatch/internal/auth"
@@ -160,7 +161,9 @@ func (server *Server) deletePhoto(w stdhttp.ResponseWriter, r *stdhttp.Request) 
 		if err != nil {
 			continue
 		}
-		_ = store.Delete(r.Context(), object.Key)
+		if err := store.Delete(r.Context(), object.Key); err != nil {
+			slog.Warn("failed to delete storage object after photo deletion", "policy", object.PolicyID, "key", object.Key, "error", err)
+		}
 	}
 	writeJSON(w, stdhttp.StatusOK, map[string]any{"message": "photo deleted", "deletedObjects": len(objects)})
 }
@@ -196,7 +199,9 @@ func (server *Server) batchDeletePhotos(w stdhttp.ResponseWriter, r *stdhttp.Req
 		if err != nil {
 			continue
 		}
-		_ = store.Delete(r.Context(), object.Key)
+		if err := store.Delete(r.Context(), object.Key); err != nil {
+			slog.Warn("failed to delete storage object after batch photo deletion", "policy", object.PolicyID, "key", object.Key, "error", err)
+		}
 	}
 	writeJSON(w, stdhttp.StatusOK, map[string]any{"deleted": deleted, "deletedObjects": len(allObjects)})
 }
@@ -213,10 +218,18 @@ func (server *Server) adminDashboard(w stdhttp.ResponseWriter, r *stdhttp.Reques
 		var photosCount int64
 		var pendingSubmissions int64
 		var bytes int64
-		_ = server.db.WithContext(r.Context()).Model(&appdb.Event{}).Count(&eventsCount).Error
-		_ = server.db.WithContext(r.Context()).Model(&appdb.Photo{}).Count(&photosCount).Error
-		_ = server.db.WithContext(r.Context()).Model(&appdb.Submission{}).Where("status = ?", string(uploads.SubmissionPending)).Count(&pendingSubmissions).Error
-		_ = server.db.WithContext(r.Context()).Model(&appdb.Photo{}).Select("COALESCE(SUM(size_bytes), 0)").Scan(&bytes).Error
+		if err := server.db.WithContext(r.Context()).Model(&appdb.Event{}).Count(&eventsCount).Error; err != nil {
+			slog.Warn("admin dashboard: failed to count events", "error", err)
+		}
+		if err := server.db.WithContext(r.Context()).Model(&appdb.Photo{}).Count(&photosCount).Error; err != nil {
+			slog.Warn("admin dashboard: failed to count photos", "error", err)
+		}
+		if err := server.db.WithContext(r.Context()).Model(&appdb.Submission{}).Where("status = ?", string(uploads.SubmissionPending)).Count(&pendingSubmissions).Error; err != nil {
+			slog.Warn("admin dashboard: failed to count pending submissions", "error", err)
+		}
+		if err := server.db.WithContext(r.Context()).Model(&appdb.Photo{}).Select("COALESCE(SUM(size_bytes), 0)").Scan(&bytes).Error; err != nil {
+			slog.Warn("admin dashboard: failed to sum photo bytes", "error", err)
+		}
 		stats["events"] = eventsCount
 		stats["photos"] = photosCount
 		stats["pendingSubmissions"] = pendingSubmissions

@@ -61,7 +61,6 @@ func (server *Server) login(w stdhttp.ResponseWriter, r *stdhttp.Request) {
 }
 
 func setSessionCookie(w stdhttp.ResponseWriter, r *stdhttp.Request, env string, sessionID string, expiresAt time.Time) {
-	secure := r.TLS != nil || env == "production"
 	stdhttp.SetCookie(w, &stdhttp.Cookie{
 		Name:     "fluffcatch_session",
 		Value:    sessionID,
@@ -69,15 +68,25 @@ func setSessionCookie(w stdhttp.ResponseWriter, r *stdhttp.Request, env string, 
 		Expires:  expiresAt,
 		HttpOnly: true,
 		SameSite: stdhttp.SameSiteLaxMode,
-		Secure:   secure,
+		Secure:   isSecure(r, env),
 	})
+}
+
+func isSecure(r *stdhttp.Request, env string) bool {
+	if r.TLS != nil {
+		return true
+	}
+	if r.Header.Get("X-Forwarded-Proto") == "https" {
+		return true
+	}
+	return env == "production" || env == "release"
 }
 
 func (server *Server) logout(w stdhttp.ResponseWriter, r *stdhttp.Request) {
 	if cookie, err := r.Cookie("fluffcatch_session"); err == nil {
 		_ = server.authService.Logout(r.Context(), cookie.Value)
 	}
-	secure := r.TLS != nil || server.cfg.App.Env == "production"
+	secure := isSecure(r, server.cfg.App.Env)
 	stdhttp.SetCookie(w, &stdhttp.Cookie{
 		Name:     "fluffcatch_session",
 		Value:    "",
