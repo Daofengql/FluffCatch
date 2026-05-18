@@ -45,6 +45,8 @@ type HTTPConfig struct {
 }
 
 type DatabaseConfig struct {
+	Driver            string        `yaml:"driver"`
+	SQLitePath        string        `yaml:"sqlite_path"`
 	Host              string        `yaml:"host"`
 	Port              int           `yaml:"port"`
 	User              string        `yaml:"user"`
@@ -65,7 +67,33 @@ type DatabaseConfig struct {
 	ConnectRetryDelay time.Duration `yaml:"connect_retry_delay"`
 }
 
+const (
+	DatabaseDriverAuto   = "auto"
+	DatabaseDriverMySQL  = "mysql"
+	DatabaseDriverSQLite = "sqlite"
+)
+
 func (database DatabaseConfig) DSN() (string, error) {
+	switch database.EffectiveDriver() {
+	case DatabaseDriverSQLite:
+		return database.SQLiteDSN(), nil
+	default:
+		return withMySQLDefaults(database).MySQLDSN()
+	}
+}
+
+func (database DatabaseConfig) EffectiveDriver() string {
+	driver := strings.ToLower(strings.TrimSpace(database.Driver))
+	if driver == "" || driver == DatabaseDriverAuto {
+		if database.hasMySQLConnectionConfig() {
+			return DatabaseDriverMySQL
+		}
+		return DatabaseDriverSQLite
+	}
+	return driver
+}
+
+func (database DatabaseConfig) MySQLDSN() (string, error) {
 	location, err := time.LoadLocation(database.Location)
 	if err != nil {
 		return "", fmt.Errorf("load mysql location: %w", err)
@@ -91,6 +119,24 @@ func (database DatabaseConfig) DSN() (string, error) {
 	cfg.CheckConnLiveness = true
 
 	return cfg.FormatDSN(), nil
+}
+
+func (database DatabaseConfig) SQLiteDSN() string {
+	path := strings.TrimSpace(database.SQLitePath)
+	if path == "" {
+		path = "data/fluffcatch.db"
+	}
+	return path
+}
+
+func (database DatabaseConfig) hasMySQLConnectionConfig() bool {
+	return strings.TrimSpace(database.Host) != "" ||
+		database.Port != 0 ||
+		strings.TrimSpace(database.User) != "" ||
+		strings.TrimSpace(database.Password) != "" ||
+		strings.TrimSpace(database.Database) != "" ||
+		strings.TrimSpace(database.Charset) != "" ||
+		strings.TrimSpace(database.Location) != ""
 }
 
 type StorageConfig struct {
@@ -161,14 +207,8 @@ func defaultConfig() Config {
 			WriteTimeout: 30 * time.Second,
 		},
 		Database: DatabaseConfig{
-			Host:              "127.0.0.1",
-			Port:              3306,
-			User:              "fluffcatch",
-			Password:          "fluffcatch",
-			Database:          "fluffcatch",
-			Charset:           "utf8mb4",
-			Location:          "Local",
-			ParseTime:         true,
+			Driver:            DatabaseDriverAuto,
+			SQLitePath:        "data/fluffcatch.db",
 			ConnectOnStart:    true,
 			MaxOpenConns:      20,
 			MaxIdleConns:      10,
@@ -231,6 +271,8 @@ func applyEnvOverrides(cfg *Config) {
 	cfg.HTTP.ReadTimeout = getDurationEnv("HTTP_READ_TIMEOUT", cfg.HTTP.ReadTimeout)
 	cfg.HTTP.WriteTimeout = getDurationEnv("HTTP_WRITE_TIMEOUT", cfg.HTTP.WriteTimeout)
 
+	cfg.Database.Driver = getEnv("DATABASE_DRIVER", getEnv("DB_DRIVER", cfg.Database.Driver))
+	cfg.Database.SQLitePath = getEnv("SQLITE_PATH", getEnv("DATABASE_SQLITE_PATH", cfg.Database.SQLitePath))
 	cfg.Database.Host = getEnv("MYSQL_HOST", cfg.Database.Host)
 	cfg.Database.Port = getIntEnv("MYSQL_PORT", cfg.Database.Port)
 	cfg.Database.User = getEnv("MYSQL_USER", cfg.Database.User)
@@ -299,6 +341,19 @@ func normalizeAndValidate(cfg Config) (Config, error) {
 	cfg.OIDC.ClientSecret = strings.TrimSpace(cfg.OIDC.ClientSecret)
 	cfg.OIDC.BoundSubject = strings.TrimSpace(cfg.OIDC.BoundSubject)
 
+	cfg.Database.Driver = cfg.Database.EffectiveDriver()
+	switch cfg.Database.Driver {
+	case DatabaseDriverMySQL:
+		cfg.Database = withMySQLDefaults(cfg.Database)
+	case DatabaseDriverSQLite:
+		cfg.Database.SQLitePath = strings.TrimSpace(cfg.Database.SQLitePath)
+		if cfg.Database.SQLitePath == "" {
+			cfg.Database.SQLitePath = "data/fluffcatch.db"
+		}
+	default:
+		return Config{}, fmt.Errorf("unsupported database.driver %q", cfg.Database.Driver)
+	}
+
 	cfg.Storage.Driver = strings.ToLower(cfg.Storage.Driver)
 	cfg.Storage.PublicBaseURL = strings.TrimRight(cfg.Storage.PublicBaseURL, "/")
 	switch cfg.Storage.Driver {
@@ -312,6 +367,29 @@ func normalizeAndValidate(cfg Config) (Config, error) {
 	}
 
 	return cfg, nil
+}
+
+func withMySQLDefaults(database DatabaseConfig) DatabaseConfig {
+	if strings.TrimSpace(database.Host) == "" {
+		database.Host = "127.0.0.1"
+	}
+	if database.Port == 0 {
+		database.Port = 3306
+	}
+	if strings.TrimSpace(database.User) == "" {
+		database.User = "fluffcatch"
+	}
+	if strings.TrimSpace(database.Database) == "" {
+		database.Database = "fluffcatch"
+	}
+	if strings.TrimSpace(database.Charset) == "" {
+		database.Charset = "utf8mb4"
+	}
+	if strings.TrimSpace(database.Location) == "" {
+		database.Location = "Local"
+	}
+	database.ParseTime = true
+	return database
 }
 
 func IsReleaseEnv(env string) bool {

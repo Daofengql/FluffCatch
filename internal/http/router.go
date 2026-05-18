@@ -107,7 +107,7 @@ func NewServer(cfg config.Config, dbConn *gorm.DB, storageManager *storage.Manag
 		db:               dbConn,
 		storageManager:   storageManager,
 		settingsService:  settingsService,
-		authService:      auth.NewService(dbConn, manager),
+		authService:      auth.NewService(manager),
 		captchaStore:     auth.NewCaptchaStore(),
 		eventService:     events.NewService(dbConn, storageManager),
 		uploadService:    uploads.NewServiceWithLimits(dbConn, storageManager, cfg.Upload.MaxSizeMB, cfg.Upload.MaxVideoSizeMB),

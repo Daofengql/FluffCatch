@@ -6,27 +6,6 @@ CREATE TABLE settings (
   PRIMARY KEY (`key`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
-CREATE TABLE admin_users (
-  id bigint unsigned NOT NULL AUTO_INCREMENT,
-  username varchar(191) NOT NULL,
-  password_hash varchar(255) NOT NULL,
-  created_at timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  updated_at timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-  PRIMARY KEY (id),
-  UNIQUE KEY admin_users_username_unique (username)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
-
-CREATE TABLE sessions (
-  id char(64) NOT NULL,
-  admin_user_id bigint unsigned NOT NULL,
-  expires_at timestamp NOT NULL,
-  created_at timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  PRIMARY KEY (id),
-  KEY sessions_admin_user_id_index (admin_user_id),
-  KEY sessions_expires_at_index (expires_at),
-  CONSTRAINT sessions_admin_user_id_foreign FOREIGN KEY (admin_user_id) REFERENCES admin_users (id) ON DELETE CASCADE
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
-
 CREATE TABLE events (
   id bigint unsigned NOT NULL AUTO_INCREMENT,
   title varchar(191) NOT NULL,
@@ -43,8 +22,6 @@ CREATE TABLE events (
   cover_thumbnail_key varchar(512) NULL,
   is_public boolean NOT NULL DEFAULT true,
   submission_enabled boolean NOT NULL DEFAULT true,
-  submission_password_hash varchar(255) NULL,
-  submission_password_plain varchar(191) NULL,
   private_password_hash varchar(255) NULL,
   private_password_plain varchar(191) NULL,
   sort_at datetime NOT NULL,
@@ -81,6 +58,8 @@ CREATE TABLE photos (
   KEY photos_storage_policy_id_index (storage_policy_id),
   KEY photos_policy_object_public_index (storage_policy_id, object_key(191), visibility, event_id),
   KEY photos_policy_thumbnail_public_index (storage_policy_id, thumbnail_key(191), visibility, event_id),
+  KEY photos_photographer_index (photographer_name),
+  KEY photos_taken_at_index (taken_at),
   CONSTRAINT photos_event_id_foreign FOREIGN KEY (event_id) REFERENCES events (id) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
@@ -97,6 +76,7 @@ CREATE TABLE submissions (
   tags json NOT NULL,
   status enum('pending', 'approved') NOT NULL DEFAULT 'pending',
   exif json NULL,
+  taken_at datetime NULL,
   created_at timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP,
   approved_at timestamp NULL,
   PRIMARY KEY (id),
@@ -104,6 +84,7 @@ CREATE TABLE submissions (
   KEY submissions_event_status_created_index (event_id, status, created_at, id),
   KEY submissions_status_created_index (status, created_at, id),
   KEY submissions_storage_policy_id_index (storage_policy_id),
+  KEY submissions_taken_at_index (taken_at),
   CONSTRAINT submissions_event_id_foreign FOREIGN KEY (event_id) REFERENCES events (id) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
@@ -134,17 +115,21 @@ CREATE TABLE photo_likes (
   CONSTRAINT photo_likes_photo_id_foreign FOREIGN KEY (photo_id) REFERENCES photos (id) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
-CREATE TABLE access_grants (
+CREATE TABLE submission_links (
   id bigint unsigned NOT NULL AUTO_INCREMENT,
-  photo_id bigint unsigned NULL,
-  event_id bigint unsigned NULL,
+  event_id bigint unsigned NOT NULL,
   token_hash char(64) NOT NULL,
+  label varchar(191) NOT NULL,
+  photographer_name varchar(191) NULL,
   expires_at timestamp NULL,
+  max_uses int unsigned NOT NULL DEFAULT 0,
+  use_count int unsigned NOT NULL DEFAULT 0,
+  revoked_at timestamp NULL,
   created_at timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   PRIMARY KEY (id),
-  UNIQUE KEY access_grants_token_hash_unique (token_hash),
-  KEY access_grants_photo_id_index (photo_id),
-  KEY access_grants_event_id_index (event_id),
-  CONSTRAINT access_grants_photo_id_foreign FOREIGN KEY (photo_id) REFERENCES photos (id) ON DELETE CASCADE,
-  CONSTRAINT access_grants_event_id_foreign FOREIGN KEY (event_id) REFERENCES events (id) ON DELETE CASCADE
+  UNIQUE KEY submission_links_token_hash_unique (token_hash),
+  KEY submission_links_event_id_index (event_id),
+  KEY submission_links_expires_at_index (expires_at),
+  CONSTRAINT submission_links_event_id_foreign FOREIGN KEY (event_id) REFERENCES events (id) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;

@@ -23,12 +23,12 @@ func TestLoadDefaults(t *testing.T) {
 		t.Fatalf("expected default storage driver local, got %q", cfg.Storage.Driver)
 	}
 
-	if cfg.Database.Host != "127.0.0.1" {
-		t.Fatalf("expected default mysql host, got %q", cfg.Database.Host)
+	if cfg.Database.Driver != DatabaseDriverSQLite {
+		t.Fatalf("expected default database driver sqlite, got %q", cfg.Database.Driver)
 	}
 
-	if cfg.Database.Port != 3306 {
-		t.Fatalf("expected default mysql port, got %d", cfg.Database.Port)
+	if cfg.Database.SQLitePath != "data/fluffcatch.db" {
+		t.Fatalf("expected default sqlite path, got %q", cfg.Database.SQLitePath)
 	}
 
 	if cfg.Database.MaxOpenConns != 20 {
@@ -134,6 +134,10 @@ auth:
 	if cfg.Database.ConnMaxLifetime != 26*time.Minute {
 		t.Fatalf("expected mysql conn max lifetime from YAML, got %s", cfg.Database.ConnMaxLifetime)
 	}
+
+	if cfg.Database.Driver != DatabaseDriverMySQL {
+		t.Fatalf("expected database YAML to select mysql, got %q", cfg.Database.Driver)
+	}
 }
 
 func TestEnvironmentOverridesYAML(t *testing.T) {
@@ -166,6 +170,7 @@ database:
 
 func TestDatabaseDSNFromSeparateFields(t *testing.T) {
 	cfg := DatabaseConfig{
+		Driver:       DatabaseDriverMySQL,
 		Host:         "db.local",
 		Port:         3307,
 		User:         "fluff",
@@ -195,6 +200,59 @@ func TestDatabaseDSNFromSeparateFields(t *testing.T) {
 	}
 
 	for _, expected := range expectedParts {
+		if !strings.Contains(dsn, expected) {
+			t.Fatalf("expected DSN %q to contain %q", dsn, expected)
+		}
+	}
+}
+
+func TestDatabaseAutoUsesSQLiteWithoutMySQLConfig(t *testing.T) {
+	cfg := DatabaseConfig{
+		Driver:     DatabaseDriverAuto,
+		SQLitePath: "data/test.db",
+	}
+
+	if got := cfg.EffectiveDriver(); got != DatabaseDriverSQLite {
+		t.Fatalf("expected sqlite auto driver, got %q", got)
+	}
+	dsn, err := cfg.DSN()
+	if err != nil {
+		t.Fatalf("DSN() returned error: %v", err)
+	}
+	if dsn != "data/test.db" {
+		t.Fatalf("expected sqlite path dsn, got %q", dsn)
+	}
+}
+
+func TestDatabaseAutoUsesMySQLWhenConnectionFieldsExist(t *testing.T) {
+	cfg := DatabaseConfig{
+		Driver:   DatabaseDriverAuto,
+		Host:     "db.local",
+		Database: "fluffcatch",
+	}
+
+	if got := cfg.EffectiveDriver(); got != DatabaseDriverMySQL {
+		t.Fatalf("expected mysql auto driver, got %q", got)
+	}
+}
+
+func TestDatabaseDSNFillsMySQLDefaultsBeforeNormalization(t *testing.T) {
+	cfg := DatabaseConfig{
+		Driver:   DatabaseDriverAuto,
+		Host:     "db.local",
+		Database: "fluffcatch",
+	}
+
+	dsn, err := cfg.DSN()
+	if err != nil {
+		t.Fatalf("DSN() returned error: %v", err)
+	}
+	for _, expected := range []string{
+		"fluffcatch@tcp(db.local:3306)/fluffcatch?",
+		"charset=utf8mb4",
+		"parseTime=true",
+		"loc=Local",
+	} {
 		if !strings.Contains(dsn, expected) {
 			t.Fatalf("expected DSN %q to contain %q", dsn, expected)
 		}

@@ -44,7 +44,7 @@ func TestLoginUsesConfigPasswordHash(t *testing.T) {
 	}
 	cfg.Auth.AdminPasswordHash = hash
 
-	service := NewService(nil, config.NewManager("", cfg))
+	service := NewService(config.NewManager("", cfg))
 
 	result := service.Login(context.Background(), LoginRequest{Username: "admin", Password: "fluffy-secret"})
 	if !result.Authenticated || result.Username != "admin" {
@@ -68,7 +68,7 @@ func TestChangePasswordUpdatesConfigManager(t *testing.T) {
 	}
 	cfg.Auth.AdminPasswordHash = hash
 	manager := config.NewManager("", cfg)
-	service := NewService(nil, manager)
+	service := NewService(manager)
 
 	if err := service.ChangePassword(context.Background(), "old-secret", "new-secret", ""); err != nil {
 		t.Fatalf("ChangePassword() returned error: %v", err)

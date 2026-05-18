@@ -101,6 +101,8 @@ jobs:
           fi
 
           go build \
+            -trimpath \
+            -buildvcs=false \
             -tags embed_frontend \
             -ldflags="-s -w -X fluffcatch/internal/buildinfo.Mode=release" \
             -o "build/${binary}" \

@@ -1,16 +1,7 @@
 package auth
 
-import "time"
-
 type AdminUser struct {
 	Username string `json:"username"`
-}
-
-type Session struct {
-	ID        string    `json:"id"`
-	Username  string    `json:"username"`
-	ExpiresAt time.Time `json:"expiresAt"`
-	CreatedAt time.Time `json:"createdAt"`
 }
 
 type LoginRequest struct {

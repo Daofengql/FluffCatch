@@ -11,15 +11,6 @@ type Setting struct {
 
 func (Setting) TableName() string { return "settings" }
 
-type Session struct {
-	ID        string    `gorm:"column:id;primaryKey"`
-	Username  string    `gorm:"column:username"`
-	ExpiresAt time.Time `gorm:"column:expires_at"`
-	CreatedAt time.Time `gorm:"column:created_at"`
-}
-
-func (Session) TableName() string { return "sessions" }
-
 type Event struct {
 	ID                   int64      `gorm:"column:id;primaryKey;autoIncrement"`
 	Title                string     `gorm:"column:title"`

@@ -1,3 +1,6 @@
+GO_BUILD_FLAGS ?= -trimpath -buildvcs=false
+GO_LDFLAGS ?= -s -w -X fluffcatch/internal/buildinfo.Mode=release
+
 .PHONY: dev api web build test tidy migrate reset-admin-password migrate-help
 
 dev:
@@ -17,7 +20,7 @@ web:
 
 build:
 	cd www && npm install && npm run build
-	go build -tags embed_frontend -ldflags "-X fluffcatch/internal/buildinfo.Mode=release" -o bin/fluffcatch ./cmd/fluffcatch
+	go build $(GO_BUILD_FLAGS) -tags embed_frontend -ldflags "$(GO_LDFLAGS)" -o bin/fluffcatch ./cmd/fluffcatch
 
 test:
 	go test ./...

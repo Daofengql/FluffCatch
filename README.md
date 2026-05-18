@@ -6,20 +6,21 @@ FluffCatch 是一个自部署的兽聚返图收集与画廊应用。它面向单
 
 - Go 后端位于仓库根目录。
 - React + TypeScript + MUI 前端位于 `www/`。
-- MySQL 数据库结构位于 `migrations/`。
+- 默认内置 SQLite，仍支持 MySQL；数据库迁移位于 `migrations/`。
 - 默认使用本地文件系统存储图片，并预留 MinIO/S3 存储接口。
 
 ## 当前状态
 
-当前仓库已经具备可运行的前后端骨架与首版核心闭环：兽聚卡片、公开画廊、图片投稿、后台审核、数据库会话登录、多存储策略读取、站点信息设置与前端内嵌构建。后续仍可继续补强图片缩略图、EXIF 展示、OIDC 实际登录和更完整的隐私访问体验。
+当前仓库已经具备可运行的前后端骨架与首版核心闭环：兽聚卡片、公开画廊、图片投稿、后台审核、管理员会话登录、多存储策略读取、站点信息设置与前端内嵌构建。后续仍可继续补强图片缩略图、EXIF 展示、OIDC 实际登录和更完整的隐私访问体验。
 
 ## 快速开始
 
 ```bash
-cp config.example.yaml config.yaml
 go mod tidy
 go run ./cmd/fluffcatch
 ```
+
+不提供 `config.yaml` 时会使用内置 SQLite，数据库文件默认位于 `data/fluffcatch.db`，首次启动会自动创建 SQLite 表结构。
 
 另开一个终端启动前端开发服务器：
 
@@ -33,17 +34,17 @@ npm run dev
 - 前端开发服务器：`http://localhost:5173`
 - 健康检查：`http://localhost:8080/api/v1/health`
 
-数据库连接使用分项配置，不需要手写 DSN URL。请在 `config.yaml` 中分别填写：
+如果希望使用 MySQL，可以复制示例配置并填写数据库连接。MySQL 配置使用分项字段，不需要手写 DSN URL：
 
-- `database.host`
-- `database.port`
-- `database.user`
-- `database.password`
-- `database.database`
+```bash
+cp config.example.yaml config.yaml
+go run ./cmd/fluffcatch --migrate
+go run ./cmd/fluffcatch
+```
 
-默认情况下，后端启动时会连接 MySQL，但不会自动建表。建表需要显式进入迁移模式。
+`database.driver` 支持 `auto`、`sqlite`、`mysql`。`auto` 会在检测到 MySQL 连接字段时使用 MySQL，否则使用 SQLite。SQLite 数据库文件不存在或为空时会在正常启动中自动初始化；MySQL 首次部署和升级建议显式运行 `--migrate`。
 
-后端使用 Go 标准库连接池管理 MySQL 连接。默认会启用驱动连接存活检查，并设置连接、读取、写入超时；如果 MySQL 临时断开，后续请求会从池中重新获取可用连接。启动连接失败时会按 `database.connect_retries` 和 `database.connect_retry_delay` 自动重试。
+后端使用 Go 标准库连接池管理数据库连接。MySQL 默认会启用驱动连接存活检查，并设置连接、读取、写入超时；如果 MySQL 临时断开，后续请求会从池中重新获取可用连接。SQLite 会使用 WAL、外键约束和单写连接池以适配本地单文件数据库。
 
 如遇到本机 MySQL、代理或防火墙偶发断开，可以按需在 `config.yaml` 中增加这些可选项：
 
@@ -57,7 +58,7 @@ npm run dev
 - `database.connect_retries`：启动连接重试次数，默认 `5`。
 - `database.connect_retry_delay`：启动连接重试间隔，默认 `2s`。
 
-如果只想执行数据库迁移，不进入主系统，可以运行：
+如果只想执行数据库迁移，不进入主系统，可以运行。这个入口主要用于 MySQL 首次部署、升级维护，或需要手动迁移已有 SQLite 数据库时：
 
 ```bash
 go run ./cmd/fluffcatch --migrate
@@ -105,16 +106,16 @@ cd www
 npm install
 npm run build
 cd ..
-go build -tags embed_frontend -ldflags "-X fluffcatch/internal/buildinfo.Mode=release" -o bin/fluffcatch ./cmd/fluffcatch
+go build -trimpath -buildvcs=false -tags embed_frontend -ldflags "-s -w -X fluffcatch/internal/buildinfo.Mode=release" -o bin/fluffcatch ./cmd/fluffcatch
 ```
 
 Windows 下也可以构建为：
 
 ```bash
-go build -tags embed_frontend -ldflags "-X fluffcatch/internal/buildinfo.Mode=release" -o bin/fluffcatch.exe ./cmd/fluffcatch
+go build -trimpath -buildvcs=false -tags embed_frontend -ldflags "-s -w -X fluffcatch/internal/buildinfo.Mode=release" -o bin/fluffcatch.exe ./cmd/fluffcatch
 ```
 
-构建完成后，运行 `bin/fluffcatch` 或 `bin/fluffcatch.exe` 即可用一个二进制文件同时提供 API 和内嵌的 React 前端。MySQL 和已上传图片仍然是外部运行时数据，不会被打包进二进制文件。
+构建完成后，运行 `bin/fluffcatch` 或 `bin/fluffcatch.exe` 即可用一个二进制文件同时提供 API 和内嵌的 React 前端。默认 SQLite 数据库、上传文件和站点资源会落在 `data/` 下；如果改用 MySQL，则 MySQL 数据仍是外部运行时数据。当前 SQLite 驱动为纯 Go，发布构建也可以设置 `CGO_ENABLED=0` 来获得更好的跨机器可移植性。
 
 开发时可以单独启动前后端：
 
@@ -164,7 +165,7 @@ npm run dev
 - `POST /admin/settings/site/logo`
 - `DELETE /admin/settings/site/logo`
 
-管理员登录使用 `config.yaml` 中的 `auth.admin_username` 与 `auth.admin_password_hash`，登录页包含图片验证码；登录后通过数据库中的 `sessions` 表和 `fluffcatch_session` Cookie 访问后台。OIDC 配置和绑定身份也保存在配置文件中。
+管理员登录使用 `config.yaml` 中的 `auth.admin_username` 与 `auth.admin_password_hash`，登录页包含图片验证码；登录后通过进程内会话和 `fluffcatch_session` Cookie 访问后台。服务重启后需要重新登录；如果部署多实例，需要让同一浏览器会话固定访问同一个后端实例。OIDC 配置和绑定身份也保存在配置文件中。
 
 ## 前后台路由
 
@@ -189,7 +190,7 @@ npm run dev
 
 ## 数据库迁移
 
-迁移 SQL 会编译进二进制文件，发布包不需要额外携带 `migrations/` 目录。首次部署或升级时运行：
+迁移 SQL 会编译进二进制文件，发布包不需要额外携带 `migrations/` 目录。SQLite 数据库文件不存在或为空时会在正常启动中自动初始化；MySQL 首次部署或升级时运行：
 
 ```bash
 ./fluffcatch --migrate
@@ -206,4 +207,4 @@ make migrate
 make reset-admin-password
 ```
 
-`make build` 会先构建前端，再使用 `embed_frontend` 构建标签编译包含内嵌前端的 Go 二进制文件，并写入 release 构建标记以关闭 Gin 和 GORM 的框架 info 日志。
+`make build` 会先构建前端，再使用 `embed_frontend` 构建标签编译包含内嵌前端的 Go 二进制文件，并通过 `-trimpath`、`-buildvcs=false` 和 `-s -w` 生成更小、更干净的 release 产物，同时写入 release 构建标记以关闭 Gin 和 GORM 的框架 info 日志。

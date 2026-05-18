@@ -485,8 +485,11 @@ func (service *Service) consumeSubmissionLinkTx(ctx context.Context, tx *gorm.DB
 	}
 	tokenHash := auth.TokenHash(token)
 	var record appdb.SubmissionLink
-	err := tx.WithContext(ctx).Clauses(clause.Locking{Strength: "UPDATE"}).
-		Where("event_id = ? AND token_hash = ?", eventID, tokenHash).
+	query := tx.WithContext(ctx)
+	if tx.Dialector.Name() != "sqlite" {
+		query = query.Clauses(clause.Locking{Strength: "UPDATE"})
+	}
+	err := query.Where("event_id = ? AND token_hash = ?", eventID, tokenHash).
 		Take(&record).Error
 	if errors.Is(err, gorm.ErrRecordNotFound) {
 		return consumedSubmissionLink{}, false, nil

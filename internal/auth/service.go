@@ -13,10 +13,8 @@ import (
 	"time"
 
 	"fluffcatch/internal/config"
-	appdb "fluffcatch/internal/db"
 
 	"golang.org/x/crypto/pbkdf2"
-	"gorm.io/gorm"
 )
 
 const (
@@ -27,13 +25,13 @@ const (
 )
 
 type Service struct {
-	db            *gorm.DB
+	sessions      *SessionStore
 	configManager *config.Manager
 }
 
-func NewService(dbConn *gorm.DB, configManager *config.Manager) *Service {
+func NewService(configManager *config.Manager) *Service {
 	return &Service{
-		db:            dbConn,
+		sessions:      NewSessionStore(),
 		configManager: configManager,
 	}
 }
@@ -69,9 +67,6 @@ func (service *Service) Login(ctx context.Context, req LoginRequest) LoginRespon
 }
 
 func (service *Service) CreateSession(ctx context.Context, username string, ttl time.Duration) (string, time.Time, error) {
-	if service.db == nil {
-		return "", time.Time{}, fmt.Errorf("database-backed sessions are not available")
-	}
 	cfg := service.currentConfig()
 	if strings.TrimSpace(username) != cfg.Auth.AdminUsername {
 		return "", time.Time{}, fmt.Errorf("admin user not found")
@@ -83,31 +78,23 @@ func (service *Service) CreateSession(ctx context.Context, username string, ttl 
 	}
 
 	expiresAt := time.Now().Add(ttl)
-	if err := service.db.WithContext(ctx).Create(&appdb.Session{ID: sessionID, Username: cfg.Auth.AdminUsername, ExpiresAt: expiresAt}).Error; err != nil {
-		return "", time.Time{}, fmt.Errorf("create session: %w", err)
-	}
+	service.sessions.Create(sessionID, cfg.Auth.AdminUsername, ttl)
 
 	return sessionID, expiresAt, nil
 }
 
 func (service *Service) AuthenticateSession(ctx context.Context, sessionID string) (AdminUser, bool, error) {
-	if service.db == nil || strings.TrimSpace(sessionID) == "" {
+	if strings.TrimSpace(sessionID) == "" {
 		return AdminUser{}, false, nil
 	}
 
-	var session appdb.Session
-	err := service.db.WithContext(ctx).
-		Where("id = ? AND expires_at > CURRENT_TIMESTAMP", sessionID).
-		Take(&session).Error
-	if err == gorm.ErrRecordNotFound {
+	entry, ok := service.sessions.Get(sessionID)
+	if !ok {
 		return AdminUser{}, false, nil
-	}
-	if err != nil {
-		return AdminUser{}, false, fmt.Errorf("authenticate session: %w", err)
 	}
 
 	cfg := service.currentConfig()
-	if session.Username != cfg.Auth.AdminUsername {
+	if entry.Username != cfg.Auth.AdminUsername {
 		return AdminUser{}, false, nil
 	}
 
@@ -115,14 +102,10 @@ func (service *Service) AuthenticateSession(ctx context.Context, sessionID strin
 }
 
 func (service *Service) Logout(ctx context.Context, sessionID string) error {
-	if service.db == nil || strings.TrimSpace(sessionID) == "" {
+	if strings.TrimSpace(sessionID) == "" {
 		return nil
 	}
-
-	if err := service.db.WithContext(ctx).Where("id = ?", sessionID).Delete(&appdb.Session{}).Error; err != nil {
-		return fmt.Errorf("delete session: %w", err)
-	}
-
+	service.sessions.Delete(sessionID)
 	return nil
 }
 
@@ -188,15 +171,7 @@ func (service *Service) ChangePassword(ctx context.Context, currentPassword stri
 		return fmt.Errorf("update config password hash: %w", err)
 	}
 
-	if service.db != nil {
-		query := service.db.WithContext(ctx)
-		if strings.TrimSpace(currentSessionID) != "" {
-			query = query.Where("id <> ?", currentSessionID)
-		}
-		if err := query.Delete(&appdb.Session{}).Error; err != nil {
-			return fmt.Errorf("invalidate other sessions: %w", err)
-		}
-	}
+	service.sessions.DeleteAllExcept(currentSessionID)
 
 	return nil
 }
@@ -245,7 +220,7 @@ func EnsureConfigSessionSecret(ctx context.Context, manager *config.Manager) (st
 	return secret, true, nil
 }
 
-func ResetConfigAdminPassword(ctx context.Context, manager *config.Manager, dbConn *gorm.DB, password string) (string, error) {
+func ResetConfigAdminPassword(ctx context.Context, manager *config.Manager, password string) (string, error) {
 	_ = ctx
 	if manager == nil {
 		return "", fmt.Errorf("config manager is required")
@@ -264,11 +239,6 @@ func ResetConfigAdminPassword(ctx context.Context, manager *config.Manager, dbCo
 	}
 	if _, err := manager.UpdateAdminPasswordHash(passwordHash); err != nil {
 		return "", err
-	}
-	if dbConn != nil {
-		if err := dbConn.WithContext(ctx).Where("1 = 1").Delete(&appdb.Session{}).Error; err != nil {
-			return "", fmt.Errorf("invalidate sessions after password reset: %w", err)
-		}
 	}
 
 	return password, nil

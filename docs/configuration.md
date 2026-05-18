@@ -5,8 +5,17 @@
 ## 快速启动
 
 ```bash
-cp config.example.yaml config.yaml
 go mod tidy
+go run ./cmd/fluffcatch
+```
+
+这会使用默认 SQLite 数据库 `data/fluffcatch.db`。如果数据库文件不存在或为空，正常启动会自动创建表结构；首次启动如果还没有管理员密码，程序会把生成的密码哈希写入 `config.yaml` 并在终端显示一次明文密码。
+
+如果要使用 MySQL：
+
+```bash
+cp config.example.yaml config.yaml
+go run ./cmd/fluffcatch --migrate
 go run ./cmd/fluffcatch
 ```
 
@@ -80,10 +89,12 @@ http:
 
 ## database
 
-FluffCatch 使用 MySQL。配置采用分项字段，不需要手写 DSN。
+FluffCatch 支持 SQLite 和 MySQL。默认 `database.driver=auto`：检测到 MySQL 连接字段时使用 MySQL；没有 MySQL 配置时使用内置 SQLite。MySQL 配置采用分项字段，不需要手写 DSN。
 
 ```yaml
 database:
+  driver: auto
+  sqlite_path: data/fluffcatch.db
   host: 127.0.0.1
   port: 3306
   user: fluffcatch
@@ -106,6 +117,8 @@ database:
 
 | 字段 | 说明 |
 | --- | --- |
+| `driver` | `auto`、`sqlite` 或 `mysql`。默认 `auto`。 |
+| `sqlite_path` | SQLite 数据库文件路径，默认 `data/fluffcatch.db`。 |
 | `host` | MySQL 主机。 |
 | `port` | MySQL 端口。 |
 | `user` | MySQL 用户名。 |
@@ -127,6 +140,10 @@ database:
 
 环境变量：
 
+- `DATABASE_DRIVER`
+- `DB_DRIVER`
+- `SQLITE_PATH`
+- `DATABASE_SQLITE_PATH`
 - `MYSQL_HOST`
 - `MYSQL_PORT`
 - `MYSQL_USER`
@@ -148,15 +165,27 @@ database:
 
 ## 数据库迁移
 
-服务启动不会自动建表。首次部署或升级时需要显式执行迁移：
+迁移 SQL 位于 `migrations/`，并按数据库方言分开执行。迁移文件会编译进二进制文件，使用 release 二进制时不需要额外携带迁移目录。
+
+SQLite：
+
+- 默认数据库文件是 `data/fluffcatch.db`。
+- 数据库文件不存在或为空时，正常启动会自动执行初始迁移。
+- 已存在的 SQLite 数据库不会在每次启动时自动迁移；需要升级维护时可以显式执行迁移后退出：
 
 ```bash
 go run ./cmd/fluffcatch --migrate
 ```
 
-迁移 SQL 位于 `migrations/`，会编译进二进制文件。使用 release 二进制时不需要额外携带迁移目录。
+MySQL：
 
-迁移模式执行完会退出，之后重新正常启动服务。
+- 首次部署或升级时建议显式执行迁移。
+- 迁移完成后进程会退出，再正常启动服务。
+
+```bash
+go run ./cmd/fluffcatch --config config.production.yaml --migrate
+go run ./cmd/fluffcatch --config config.production.yaml
+```
 
 ## auth
 
@@ -171,13 +200,15 @@ auth:
 | --- | --- |
 | `admin_username` | 管理员用户名。 |
 | `admin_password_hash` | 管理员密码哈希。首次为空时程序会生成随机密码并回写配置。 |
-| `session_secret` | 会话和私密访问签名密钥。生产环境建议设置随机长字符串。 |
+| `session_secret` | 私密访问签名密钥。生产环境建议设置随机长字符串。 |
 
 环境变量：
 
 - `ADMIN_USERNAME`
 - `ADMIN_PASSWORD_HASH`
 - `SESSION_SECRET`
+
+管理员登录会话保存在后端进程内存中，并通过 `fluffcatch_session` Cookie 关联。服务重启后管理员需要重新登录；如果部署多实例，需要让同一浏览器会话固定访问同一个后端实例。
 
 首次迁移或首次启动时，如果 `admin_password_hash` 为空，程序会自动生成管理员密码并在终端输出一次：
 
@@ -344,16 +375,33 @@ cd www
 npm install
 npm run build
 cd ..
-go build -tags embed_frontend -ldflags "-X fluffcatch/internal/buildinfo.Mode=release" -o bin/fluffcatch ./cmd/fluffcatch
+go build -trimpath -buildvcs=false -tags embed_frontend -ldflags "-s -w -X fluffcatch/internal/buildinfo.Mode=release" -o bin/fluffcatch ./cmd/fluffcatch
 ```
 
 Windows：
 
 ```bash
-go build -tags embed_frontend -ldflags "-X fluffcatch/internal/buildinfo.Mode=release" -o bin/fluffcatch.exe ./cmd/fluffcatch
+go build -trimpath -buildvcs=false -tags embed_frontend -ldflags "-s -w -X fluffcatch/internal/buildinfo.Mode=release" -o bin/fluffcatch.exe ./cmd/fluffcatch
 ```
 
-构建产物会内嵌前端静态文件，但 MySQL 数据和上传对象仍是外部运行时数据。
+构建产物会内嵌前端静态文件。默认 SQLite 数据库、上传对象、Logo 和背景图会落在本地 `data/` 目录；如果配置 MySQL 或外部对象存储，这些运行时数据仍在对应外部服务中。当前 SQLite 驱动为纯 Go，发布构建也可以设置 `CGO_ENABLED=0` 来获得更好的跨机器可移植性。
+
+## 单二进制 SQLite 部署
+
+最小部署可以只发布二进制文件：
+
+```bash
+./fluffcatch
+```
+
+首次启动会：
+
+- 使用 `data/fluffcatch.db` 创建 SQLite 数据库。
+- 在数据库文件不存在或为空时自动执行 SQLite 初始迁移。
+- 使用 `data/uploads` 作为本地对象存储。
+- 如果没有 `config.yaml`，在生成管理员密码和会话密钥时创建一个只包含安全配置的 `config.yaml`。
+
+这种模式适合个人站点、轻量 NAS、内网返图站或低并发部署。需要更强的并发写入、集中备份或已有数据库运维体系时，可以切换到 MySQL。
 
 ## 常用命令
 
@@ -365,4 +413,3 @@ make test
 make migrate
 make reset-admin-password
 ```
-

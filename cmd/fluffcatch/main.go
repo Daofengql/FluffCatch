@@ -70,7 +70,7 @@ func main() {
 	if gormDB != nil {
 		sqlDB, err := gormDB.DB()
 		if err != nil {
-			slog.Error("failed to access mysql handle", "error", err)
+			slog.Error("failed to access database handle", "error", err)
 			os.Exit(1)
 		}
 		defer sqlDB.Close()
@@ -154,23 +154,23 @@ func parseFlags() cliOptions {
 func runMigrationsAndExit(ctx context.Context, cfg config.Config, configManager *config.Manager) {
 	dsn, err := cfg.Database.DSN()
 	if err != nil {
-		slog.Error("failed to build mysql dsn", "error", err)
+		slog.Error("failed to build database dsn", "driver", cfg.Database.Driver, "error", err)
 		os.Exit(1)
 	}
 
 	gormDB, err := db.OpenGORM(ctx, dsn, databaseOptionsFromConfig(cfg.Database, cfg.App))
 	if err != nil {
-		slog.Error("failed to connect mysql", "error", err)
+		slog.Error("failed to connect database", "driver", cfg.Database.Driver, "error", err)
 		os.Exit(1)
 	}
 	sqlDB, err := gormDB.DB()
 	if err != nil {
-		slog.Error("failed to access mysql handle", "error", err)
+		slog.Error("failed to access database handle", "error", err)
 		os.Exit(1)
 	}
 	defer sqlDB.Close()
 
-	if err := db.Migrate(ctx, sqlDB); err != nil {
+	if err := db.Migrate(ctx, sqlDB, cfg.Database.Driver); err != nil {
 		slog.Error("database migration failed", "error", err)
 		os.Exit(1)
 	}
@@ -200,32 +200,11 @@ func runMigrationsAndExit(ctx context.Context, cfg config.Config, configManager 
 }
 
 func resetAdminPasswordAndExit(ctx context.Context, cfg config.Config, configManager *config.Manager, password string) {
-	var gormDB *gorm.DB
-	if cfg.Database.ConnectOnStart {
-		dsn, err := cfg.Database.DSN()
-		if err != nil {
-			slog.Error("failed to build mysql dsn", "error", err)
-			os.Exit(1)
-		}
-		gormDB, err = db.OpenGORM(ctx, dsn, databaseOptionsFromConfig(cfg.Database, cfg.App))
-		if err != nil {
-			slog.Warn("failed to connect mysql; password hash will still be written to config", "error", err)
-		} else {
-			sqlDB, err := gormDB.DB()
-			if err != nil {
-				slog.Error("failed to access mysql handle", "error", err)
-				os.Exit(1)
-			}
-			defer sqlDB.Close()
-		}
-	}
-
-	password, err := auth.ResetConfigAdminPassword(ctx, configManager, gormDB, password)
+	password, err := auth.ResetConfigAdminPassword(ctx, configManager, password)
 	if err != nil {
 		slog.Error("failed to reset admin password", "error", err)
 		os.Exit(1)
 	}
-
 	cfg = configManager.Current()
 	slog.Info("admin password reset completed", "username", cfg.Auth.AdminUsername, "password", password)
 	slog.Info("please restart FluffCatch without --reset-admin-password to enter the main system")
@@ -239,7 +218,7 @@ func backfillEXIFAndExit(ctx context.Context, cfg config.Config) {
 	}
 	sqlDB, err := gormDB.DB()
 	if err != nil {
-		slog.Error("failed to access mysql handle", "error", err)
+		slog.Error("failed to access database handle", "error", err)
 		os.Exit(1)
 	}
 	defer sqlDB.Close()
@@ -321,20 +300,41 @@ func storageConfigFromPolicy(policy settings.StoragePolicy) storage.Config {
 
 func mustOpenDatabase(ctx context.Context, cfg config.Config) *gorm.DB {
 	if !cfg.Database.ConnectOnStart {
-		slog.Info("mysql connection skipped", "reason", "database.connect_on_start is false")
+		slog.Info("database connection skipped", "reason", "database.connect_on_start is false")
 		return nil
 	}
 
 	dsn, err := cfg.Database.DSN()
 	if err != nil {
-		slog.Error("failed to build mysql dsn", "error", err)
+		slog.Error("failed to build database dsn", "driver", cfg.Database.Driver, "error", err)
 		os.Exit(1)
+	}
+	sqliteNeedsInitialMigration := false
+	if cfg.Database.Driver == config.DatabaseDriverSQLite {
+		needsMigration, err := db.SQLiteNeedsInitialMigration(dsn)
+		if err != nil {
+			slog.Error("failed to inspect sqlite database", "error", err)
+			os.Exit(1)
+		}
+		sqliteNeedsInitialMigration = needsMigration
 	}
 
 	dbConn, err := db.OpenGORM(ctx, dsn, databaseOptionsFromConfig(cfg.Database, cfg.App))
 	if err != nil {
-		slog.Error("failed to connect mysql", "error", err)
+		slog.Error("failed to connect database", "driver", cfg.Database.Driver, "error", err)
 		os.Exit(1)
+	}
+	if sqliteNeedsInitialMigration {
+		sqlDB, err := dbConn.DB()
+		if err != nil {
+			slog.Error("failed to access database handle", "error", err)
+			os.Exit(1)
+		}
+		if err := db.Migrate(ctx, sqlDB, cfg.Database.Driver); err != nil {
+			slog.Error("sqlite initial migration failed", "error", err)
+			os.Exit(1)
+		}
+		slog.Info("sqlite database initialized", "path", cfg.Database.SQLitePath)
 	}
 
 	return dbConn
@@ -342,6 +342,7 @@ func mustOpenDatabase(ctx context.Context, cfg config.Config) *gorm.DB {
 
 func databaseOptionsFromConfig(database config.DatabaseConfig, app config.AppConfig) db.Options {
 	return db.Options{
+		Driver:            database.Driver,
 		MaxOpenConns:      database.MaxOpenConns,
 		MaxIdleConns:      database.MaxIdleConns,
 		ConnMaxLifetime:   database.ConnMaxLifetime,
