@@ -34,12 +34,12 @@ func (server *Server) login(w stdhttp.ResponseWriter, r *stdhttp.Request) {
 	}
 	var req auth.LoginRequest
 	if err := decodeJSON(r, &req); err != nil {
-		writeError(w, stdhttp.StatusBadRequest, "invalid login payload")
+		writeError(w, stdhttp.StatusBadRequest, "登录参数无效")
 		return
 	}
 
 	if !server.captchaStore.Verify(r.Context(), req.CaptchaID, req.CaptchaAnswer) {
-		writeError(w, stdhttp.StatusBadRequest, "invalid captcha")
+		writeError(w, stdhttp.StatusBadRequest, "验证码错误或已过期")
 		return
 	}
 

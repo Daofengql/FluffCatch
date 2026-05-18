@@ -140,6 +140,9 @@ func (service *Service) ResolveSubmissionToken(ctx context.Context, eventID int6
 	if token == "" {
 		return SubmissionLink{}, false, nil
 	}
+	if err := service.verifyEventAllowsSubmission(ctx, eventID); err != nil {
+		return SubmissionLink{}, false, nil
+	}
 	var record appdb.SubmissionLink
 	err := service.db.WithContext(ctx).
 		Where("event_id = ? AND token_hash = ?", eventID, auth.TokenHash(token)).

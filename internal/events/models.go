@@ -33,22 +33,23 @@ type Event struct {
 }
 
 type CreateEventRequest struct {
-	Title             string `json:"title"`
-	Description       string `json:"description"`
-	Location          string `json:"location"`
-	ProvinceCode      string `json:"provinceCode"`
-	ProvinceName      string `json:"provinceName"`
-	CityCode          string `json:"cityCode"`
-	CityName          string `json:"cityName"`
-	StartTime         string `json:"startTime"`
-	EndTime           string `json:"endTime"`
-	CoverPolicyID     string `json:"coverPolicyId"`
-	CoverObjectKey    string `json:"coverObjectKey"`
-	CoverURL          string `json:"coverUrl"`
-	RemoveCover       bool   `json:"removeCover"`
-	IsPublic          bool   `json:"isPublic"`
-	SubmissionEnabled bool   `json:"submissionEnabled"`
-	PrivatePassword   string `json:"privatePassword"`
+	Title                string `json:"title"`
+	Description          string `json:"description"`
+	Location             string `json:"location"`
+	ProvinceCode         string `json:"provinceCode"`
+	ProvinceName         string `json:"provinceName"`
+	CityCode             string `json:"cityCode"`
+	CityName             string `json:"cityName"`
+	StartTime            string `json:"startTime"`
+	EndTime              string `json:"endTime"`
+	CoverPolicyID        string `json:"coverPolicyId"`
+	CoverObjectKey       string `json:"coverObjectKey"`
+	CoverURL             string `json:"coverUrl"`
+	RemoveCover          bool   `json:"removeCover"`
+	IsPublic             bool   `json:"isPublic"`
+	SubmissionEnabled    bool   `json:"submissionEnabled"`
+	PrivatePassword      string `json:"privatePassword"`
+	ClearPrivatePassword bool   `json:"clearPrivatePassword"`
 }
 
 type ListOptions struct {

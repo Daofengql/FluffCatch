@@ -242,7 +242,8 @@ async function request<T>(url: string, options?: RequestInit, cache?: CacheOptio
     .then(async (response) => {
       if (!response.ok) {
         const payload = await response.json().catch(() => ({ error: response.statusText }));
-        throw new Error(payload.error || response.statusText);
+        const message = payload.error || payload.message || response.statusText || '请求失败';
+        throw new Error(message);
       }
       return (await response.json()) as T;
     })
@@ -424,7 +425,7 @@ export async function getPhotoList(eventId: number, admin = false): Promise<Phot
   return payload.photos ?? [];
 }
 
-export async function saveEvent(event: Partial<EventCard> & { privatePassword?: string }) {
+export async function saveEvent(event: Partial<EventCard> & { clearPrivatePassword?: boolean; privatePassword?: string }) {
   const body = JSON.stringify({
     title: event.title,
     description: event.description,
@@ -440,7 +441,8 @@ export async function saveEvent(event: Partial<EventCard> & { privatePassword?: 
     removeCover: false,
     isPublic: Boolean(event.isPublic),
     submissionEnabled: event.submissionEnabled ?? true,
-    privatePassword: event.privatePassword || ''
+    privatePassword: event.privatePassword || '',
+    clearPrivatePassword: Boolean(event.clearPrivatePassword)
   });
   if (event.id) {
     const result = await request<{ event: EventCard }>(`/api/v1/admin/events/${event.id}`, { method: 'PUT', body });

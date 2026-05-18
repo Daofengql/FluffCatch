@@ -1,7 +1,7 @@
 import { Close } from '@mui/icons-material';
 import { Alert, Box, Button, Dialog, DialogActions, DialogContent, DialogTitle, IconButton, Stack, TextField, Typography } from '@mui/material';
 import { type FormEvent, useEffect, useState } from 'react';
-import { resolveSubmissionToken, type EventCard } from '../api/client';
+import { resolveSubmissionToken, type EventCard, type SubmissionLink } from '../api/client';
 import { getCachedMe, refreshMe, subscribeAuthState } from '../api/authState';
 import { SubmissionForm } from './SubmissionForm';
 
@@ -15,6 +15,7 @@ type SubmissionDialogProps = {
 export function SubmissionDialog({ event, onClose, onUploaded, open }: SubmissionDialogProps) {
   const [authenticated, setAuthenticated] = useState(() => getCachedMe().authenticated);
   const [submissionToken, setSubmissionToken] = useState('');
+  const [submissionLink, setSubmissionLink] = useState<SubmissionLink | null>(null);
   const [photographerName, setPhotographerName] = useState('');
   const [tokenError, setTokenError] = useState('');
   const [verifyingToken, setVerifyingToken] = useState(false);
@@ -29,6 +30,7 @@ export function SubmissionDialog({ event, onClose, onUploaded, open }: Submissio
   useEffect(() => {
     if (!open) {
       setSubmissionToken('');
+      setSubmissionLink(null);
       setPhotographerName('');
       setTokenError('');
       setVerifyingToken(false);
@@ -53,6 +55,7 @@ export function SubmissionDialog({ event, onClose, onUploaded, open }: Submissio
         return;
       }
       setSubmissionToken(code);
+      setSubmissionLink(result.link || null);
       setPhotographerName(result.link?.photographerName || '');
     } catch {
       setTokenError('投稿码校验失败，请稍后重试。');
@@ -104,6 +107,7 @@ export function SubmissionDialog({ event, onClose, onUploaded, open }: Submissio
           <SubmissionForm
             event={event}
             initialPhotographerName={photographerName}
+            initialSubmissionLink={submissionLink}
             initialSubmissionToken={submissionToken}
             lockPhotographerName={Boolean(photographerName)}
             onRequestClose={onClose}

@@ -93,10 +93,14 @@ func (service *Service) CreateWithLimits(ctx context.Context, eventID int64, upl
 		return Submission{}, fmt.Errorf("database is required")
 	}
 
-	upload, err := service.applySubmissionAccess(ctx, eventID, upload)
+	link, err := service.validateSubmissionAccess(ctx, eventID, upload.SubmissionToken)
 	if err != nil {
 		return Submission{}, err
 	}
+	if strings.TrimSpace(link.PhotographerName) != "" {
+		upload.PhotographerName = link.PhotographerName
+	}
+
 	storedUpload, store, err := service.storeUpload(ctx, eventID, upload, uploadLimits{MaxImageBytes: maxImageBytes, MaxVideoBytes: maxVideoBytes})
 	if err != nil {
 		return Submission{}, err
@@ -108,24 +112,40 @@ func (service *Service) CreateWithLimits(ctx context.Context, eventID int64, upl
 		return Submission{}, fmt.Errorf("encode tags: %w", err)
 	}
 
-	record := appdb.Submission{
-		EventID:          eventID,
-		StoragePolicyID:  storedUpload.PolicyID,
-		ObjectKey:        storedUpload.ObjectKey,
-		ThumbnailKey:     stringPtr(storedUpload.ThumbnailKey),
-		ContentHash:      storedUpload.ContentHash,
-		ContentType:      storedUpload.ContentType,
-		SizeBytes:        storedUpload.SizeBytes,
-		PhotographerName: stringPtr(upload.PhotographerName),
-		Tags:             tagsJSON,
-		Status:           string(SubmissionPending),
-		Exif:             storedUpload.Exif,
-		TakenAt:          storedUpload.TakenAt,
-	}
-	err = service.db.WithContext(ctx).Create(&record).Error
+	var record appdb.Submission
+	err = service.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		consumedLink, ok, err := service.consumeSubmissionLinkTx(ctx, tx, eventID, upload.SubmissionToken)
+		if err != nil {
+			return err
+		}
+		if !ok {
+			return fmt.Errorf("invalid or expired submission link")
+		}
+		if strings.TrimSpace(consumedLink.PhotographerName) != "" {
+			upload.PhotographerName = consumedLink.PhotographerName
+		}
+		record = appdb.Submission{
+			EventID:          eventID,
+			StoragePolicyID:  storedUpload.PolicyID,
+			ObjectKey:        storedUpload.ObjectKey,
+			ThumbnailKey:     stringPtr(storedUpload.ThumbnailKey),
+			ContentHash:      storedUpload.ContentHash,
+			ContentType:      storedUpload.ContentType,
+			SizeBytes:        storedUpload.SizeBytes,
+			PhotographerName: stringPtr(upload.PhotographerName),
+			Tags:             tagsJSON,
+			Status:           string(SubmissionPending),
+			Exif:             storedUpload.Exif,
+			TakenAt:          storedUpload.TakenAt,
+		}
+		if err := tx.Create(&record).Error; err != nil {
+			return fmt.Errorf("create submission: %w", err)
+		}
+		return nil
+	})
 	if err != nil {
 		service.deleteStoredUpload(ctx, store, storedUpload)
-		return Submission{}, fmt.Errorf("create submission: %w", err)
+		return Submission{}, err
 	}
 
 	created, found, err := service.Get(ctx, record.ID)
@@ -427,57 +447,61 @@ func (service *Service) DeleteBatch(ctx context.Context, ids []int64) (BatchResp
 	return BatchResponse{Processed: processed, Message: "submissions deleted"}, nil
 }
 
-func (service *Service) applySubmissionAccess(ctx context.Context, eventID int64, upload FileUpload) (FileUpload, error) {
-	if strings.TrimSpace(upload.SubmissionToken) == "" {
-		return upload, fmt.Errorf("submission link is required")
+func (service *Service) validateSubmissionAccess(ctx context.Context, eventID int64, token string) (consumedSubmissionLink, error) {
+	token = strings.TrimSpace(token)
+	if token == "" {
+		return consumedSubmissionLink{}, fmt.Errorf("submission link is required")
 	}
-	link, ok, err := service.consumeSubmissionLink(ctx, eventID, upload.SubmissionToken)
+	if err := service.verifyEventAllowsSubmission(ctx, eventID); err != nil {
+		return consumedSubmissionLink{}, err
+	}
+
+	tokenHash := auth.TokenHash(token)
+	var record appdb.SubmissionLink
+	err := service.db.WithContext(ctx).
+		Where("event_id = ? AND token_hash = ?", eventID, tokenHash).
+		Take(&record).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return consumedSubmissionLink{}, fmt.Errorf("invalid or expired submission link")
+	}
 	if err != nil {
-		return upload, err
+		return consumedSubmissionLink{}, fmt.Errorf("load submission link: %w", err)
 	}
-	if !ok {
-		return upload, fmt.Errorf("invalid or expired submission link")
+	now := time.Now()
+	if record.RevokedAt != nil || (record.ExpiresAt != nil && now.After(*record.ExpiresAt)) || (record.MaxUses > 0 && record.UseCount >= record.MaxUses) {
+		return consumedSubmissionLink{}, fmt.Errorf("invalid or expired submission link")
 	}
-	if strings.TrimSpace(link.PhotographerName) != "" {
-		upload.PhotographerName = link.PhotographerName
-	}
-	return upload, nil
+	return consumedSubmissionLink{PhotographerName: stringValue(record.PhotographerName)}, nil
 }
 
 type consumedSubmissionLink struct {
 	PhotographerName string
 }
 
-func (service *Service) consumeSubmissionLink(ctx context.Context, eventID int64, token string) (consumedSubmissionLink, bool, error) {
-	tokenHash := auth.TokenHash(token)
-	var link consumedSubmissionLink
-	var consumed bool
-	err := service.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		var record appdb.SubmissionLink
-		err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
-			Where("event_id = ? AND token_hash = ?", eventID, tokenHash).
-			Take(&record).Error
-		if errors.Is(err, gorm.ErrRecordNotFound) {
-			return nil
-		}
-		if err != nil {
-			return fmt.Errorf("load submission link: %w", err)
-		}
-		now := time.Now()
-		if record.RevokedAt != nil || (record.ExpiresAt != nil && now.After(*record.ExpiresAt)) || (record.MaxUses > 0 && record.UseCount >= record.MaxUses) {
-			return nil
-		}
-		if err := tx.Model(&appdb.SubmissionLink{}).Where("id = ?", record.ID).Update("use_count", gorm.Expr("use_count + 1")).Error; err != nil {
-			return fmt.Errorf("consume submission link: %w", err)
-		}
-		link.PhotographerName = stringValue(record.PhotographerName)
-		consumed = true
-		return nil
-	})
-	if err != nil {
-		return link, false, err
+func (service *Service) consumeSubmissionLinkTx(ctx context.Context, tx *gorm.DB, eventID int64, token string) (consumedSubmissionLink, bool, error) {
+	token = strings.TrimSpace(token)
+	if token == "" {
+		return consumedSubmissionLink{}, false, nil
 	}
-	return link, consumed, nil
+	tokenHash := auth.TokenHash(token)
+	var record appdb.SubmissionLink
+	err := tx.WithContext(ctx).Clauses(clause.Locking{Strength: "UPDATE"}).
+		Where("event_id = ? AND token_hash = ?", eventID, tokenHash).
+		Take(&record).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return consumedSubmissionLink{}, false, nil
+	}
+	if err != nil {
+		return consumedSubmissionLink{}, false, fmt.Errorf("load submission link: %w", err)
+	}
+	now := time.Now()
+	if record.RevokedAt != nil || (record.ExpiresAt != nil && now.After(*record.ExpiresAt)) || (record.MaxUses > 0 && record.UseCount >= record.MaxUses) {
+		return consumedSubmissionLink{}, false, nil
+	}
+	if err := tx.WithContext(ctx).Model(&appdb.SubmissionLink{}).Where("id = ?", record.ID).Update("use_count", gorm.Expr("use_count + 1")).Error; err != nil {
+		return consumedSubmissionLink{}, false, fmt.Errorf("consume submission link: %w", err)
+	}
+	return consumedSubmissionLink{PhotographerName: stringValue(record.PhotographerName)}, true, nil
 }
 
 func (service *Service) verifyEventAllowsSubmission(ctx context.Context, eventID int64) error {

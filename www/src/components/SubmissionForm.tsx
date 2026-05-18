@@ -2,7 +2,7 @@ import { Cancel, ClearAll } from '@mui/icons-material';
 import { Alert, Box, Button, FormControl, FormControlLabel, InputLabel, LinearProgress, MenuItem, Paper, Select, Stack, Switch, TextField, Typography } from '@mui/material';
 import type { SelectChangeEvent } from '@mui/material/Select';
 import { type ChangeEvent, type FormEvent, useEffect, useMemo, useRef, useState } from 'react';
-import { getUploadSettings, submitPhotoWithProgress, type EventCard } from '../api/client';
+import { getUploadSettings, submitPhotoWithProgress, type EventCard, type SubmissionLink } from '../api/client';
 import { getCachedMe, refreshMe, subscribeAuthState } from '../api/authState';
 
 type QueueItem = {
@@ -19,6 +19,7 @@ type SubmissionFormProps = {
   event: EventCard | null;
   footer?: React.ReactNode;
   initialPhotographerName?: string;
+  initialSubmissionLink?: SubmissionLink | null;
   initialSubmissionToken?: string;
   lockPhotographerName?: boolean;
   onUploaded?: () => void;
@@ -26,7 +27,7 @@ type SubmissionFormProps = {
   showCloseButton?: boolean;
 };
 
-export function SubmissionForm({ event, footer, initialPhotographerName = '', initialSubmissionToken = '', lockPhotographerName = false, onRequestClose, onUploaded, showCloseButton = false }: SubmissionFormProps) {
+export function SubmissionForm({ event, footer, initialPhotographerName = '', initialSubmissionLink = null, initialSubmissionToken = '', lockPhotographerName = false, onRequestClose, onUploaded, showCloseButton = false }: SubmissionFormProps) {
   const [message, setMessage] = useState('');
   const [error, setError] = useState('');
   const [submitting, setSubmitting] = useState(false);
@@ -37,6 +38,7 @@ export function SubmissionForm({ event, footer, initialPhotographerName = '', in
   const [previewEnabled, setPreviewEnabled] = useState(false);
   const [maxConcurrentUploads, setMaxConcurrentUploads] = useState(2);
   const [maxFilesPerUpload, setMaxFilesPerUpload] = useState(20);
+  const [completedWithCurrentToken, setCompletedWithCurrentToken] = useState(0);
   const activeUploadsRef = useRef<Map<string, AbortController>>(new Map());
   const cancelRequestedRef = useRef(false);
   const queueRef = useRef<QueueItem[]>([]);
@@ -82,7 +84,12 @@ export function SubmissionForm({ event, footer, initialPhotographerName = '', in
     setMessage('');
     setError('');
     setPhotographerName(initialPhotographerName);
+    setCompletedWithCurrentToken(0);
   }, [event?.id, initialPhotographerName]);
+
+  useEffect(() => {
+    setCompletedWithCurrentToken(0);
+  }, [initialSubmissionToken]);
 
   useEffect(() => {
     const unsubscribe = subscribeAuthState((payload) => setAuthenticated(payload.authenticated));
@@ -105,14 +112,16 @@ export function SubmissionForm({ event, footer, initialPhotographerName = '', in
   function appendFiles(files: File[]) {
     if (!files.length) return;
     setError('');
-    const availableSlots = Math.max(0, maxFilesPerUpload - queueRef.current.length);
+    const remainingUses = remainingSubmissionUses(initialSubmissionLink, completedWithCurrentToken);
+    const effectiveLimit = remainingUses === undefined ? maxFilesPerUpload : Math.min(maxFilesPerUpload, remainingUses);
+    const availableSlots = Math.max(0, effectiveLimit - queueRef.current.length);
     if (availableSlots <= 0) {
-      setError(`每次最多选择 ${maxFilesPerUpload} 个媒体文件。`);
+      setError(remainingUses === 0 ? '这个投稿链接已达到使用次数。' : `本次最多还能选择 ${effectiveLimit} 个媒体文件。`);
       return;
     }
     const acceptedFiles = files.slice(0, availableSlots);
     if (acceptedFiles.length < files.length) {
-      setError(`每次最多选择 ${maxFilesPerUpload} 个媒体文件，已加入前 ${acceptedFiles.length} 个。`);
+      setError(`本次最多还能选择 ${effectiveLimit} 个媒体文件，已加入前 ${acceptedFiles.length} 个。`);
     }
     const nextItems = acceptedFiles.map((file) => ({
       file,
@@ -181,6 +190,11 @@ export function SubmissionForm({ event, footer, initialPhotographerName = '', in
       setError('队列里没有待上传的文件。');
       return;
     }
+    const remainingUses = authenticated ? undefined : remainingSubmissionUses(initialSubmissionLink, completedWithCurrentToken);
+    if (remainingUses !== undefined && uploadItems.length > remainingUses) {
+      setError(remainingUses > 0 ? `这个投稿链接本次还可上传 ${remainingUses} 个媒体文件，请移除多余文件后再提交。` : '这个投稿链接已达到使用次数。');
+      return;
+    }
     const concurrency = Math.min(clampUploadConcurrency(maxConcurrentUploads), uploadItems.length || 1);
     setSubmitting(true);
     let successCount = 0;
@@ -247,6 +261,9 @@ export function SubmissionForm({ event, footer, initialPhotographerName = '', in
       await Promise.all(Array.from({ length: concurrency }, () => worker()));
 
       if (successCount > 0) {
+        if (!authenticated && initialSubmissionToken) {
+          setCompletedWithCurrentToken((value) => value + successCount);
+        }
         onUploaded?.();
       }
       if (cancelRequestedRef.current || canceledCount > 0) {
@@ -270,6 +287,11 @@ export function SubmissionForm({ event, footer, initialPhotographerName = '', in
       {message && <Alert severity="success">{message}</Alert>}
       {error && <Alert severity="error">{error}</Alert>}
       {authenticated && <Alert severity="info">当前为管理员登录状态：上传会直接进入正式画廊，不需要限时投稿链接，也不会进入审核池。</Alert>}
+      {!authenticated && initialSubmissionLink?.maxUses ? (
+        <Alert severity="info">
+          这个投稿链接还可上传 {Math.max(0, initialSubmissionLink.maxUses - initialSubmissionLink.useCount - completedWithCurrentToken)} 个媒体文件。
+        </Alert>
+      ) : null}
       <Stack direction={{ xs: 'column', sm: 'row' }} sx={{ gap: 2 }}>
         <TextField
           fullWidth
@@ -439,4 +461,9 @@ function clampUploadConcurrency(value?: number) {
 function clampMaxFiles(value?: number) {
   const parsed = Number(value) || 20;
   return Math.max(1, Math.min(200, Math.floor(parsed)));
+}
+
+function remainingSubmissionUses(link: SubmissionLink | null | undefined, completedWithCurrentToken: number) {
+  if (!link || !link.maxUses) return undefined;
+  return Math.max(0, link.maxUses - link.useCount - completedWithCurrentToken);
 }

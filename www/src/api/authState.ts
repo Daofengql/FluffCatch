@@ -57,6 +57,10 @@ export async function refreshMe(force = false) {
 
 export async function loginAdmin(username: string, password: string, captchaId: string, captchaAnswer: string) {
   const result = await login(username, password, captchaId, captchaAnswer);
+  if (!result.authenticated) {
+    writeCachedMe({ authenticated: false });
+    throw new Error(result.message || '登录失败');
+  }
   writeCachedMe({ authenticated: result.authenticated, username: result.username || username });
   return result;
 }

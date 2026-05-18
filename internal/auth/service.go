@@ -43,13 +43,13 @@ func (service *Service) Login(ctx context.Context, req LoginRequest) LoginRespon
 	if strings.TrimSpace(req.Username) != cfg.Auth.AdminUsername {
 		return LoginResponse{
 			Authenticated: false,
-			Message:       "invalid username or password",
+			Message:       "用户名或密码错误",
 		}
 	}
 	if strings.TrimSpace(cfg.Auth.AdminPasswordHash) == "" {
 		return LoginResponse{
 			Authenticated: false,
-			Message:       "admin password is not initialized",
+			Message:       "管理员密码尚未初始化",
 		}
 	}
 
@@ -57,13 +57,13 @@ func (service *Service) Login(ctx context.Context, req LoginRequest) LoginRespon
 	if err != nil || !ok {
 		return LoginResponse{
 			Authenticated: false,
-			Message:       "invalid username or password",
+			Message:       "用户名或密码错误",
 		}
 	}
 
 	return LoginResponse{
 		Authenticated: true,
-		Message:       "login accepted",
+		Message:       "登录成功",
 		Username:      cfg.Auth.AdminUsername,
 	}
 }

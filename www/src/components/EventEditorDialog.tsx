@@ -54,6 +54,7 @@ export function EventEditorDialog({ event, mode, onClose, onSaved, open }: Event
   const [saving, setSaving] = useState(false);
   const [coverFile, setCoverFile] = useState<File | null>(null);
   const [coverPreviewUrl, setCoverPreviewUrl] = useState('');
+  const [clearPrivatePassword, setClearPrivatePassword] = useState(false);
   const [region, setRegion] = useState<CityValue>({ cityCode: '', cityName: '', provinceCode: '', provinceName: '' });
   const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false);
 
@@ -73,6 +74,7 @@ export function EventEditorDialog({ event, mode, onClose, onSaved, open }: Event
     }
     if (open) {
       setError('');
+      setClearPrivatePassword(false);
     }
   }, [open, mode, event]);
 
@@ -94,6 +96,7 @@ export function EventEditorDialog({ event, mode, onClose, onSaved, open }: Event
 
   function handleClose() {
     clearCoverSelection();
+    setClearPrivatePassword(false);
     onClose();
   }
 
@@ -130,7 +133,8 @@ export function EventEditorDialog({ event, mode, onClose, onSaved, open }: Event
         endTime: String(formData.get('endTime') || ''),
         isPublic: formData.get('isPublic') === 'on',
         submissionEnabled: formData.get('submissionEnabled') === 'on',
-        privatePassword: String(formData.get('privatePassword') || '')
+        privatePassword: String(formData.get('privatePassword') || ''),
+        clearPrivatePassword
       });
 
       if (selectedCoverFile && selectedCoverFile.size > 0) {
@@ -237,7 +241,24 @@ export function EventEditorDialog({ event, mode, onClose, onSaved, open }: Event
                   <TextField defaultValue={toDatetimeLocal(editorEvent.endTime)} fullWidth label="结束时间" name="endTime" slotProps={{ inputLabel: { shrink: true } }} type="datetime-local" />
                 </Grid>
               </Grid>
-              <TextField fullWidth helperText={mode === 'edit' ? '留空则不修改当前私密口令' : '用于解锁这个兽聚中的私密图片'} label="私密图片访问口令" name="privatePassword" />
+              <Stack direction={{ xs: 'column', sm: 'row' }} sx={{ alignItems: { xs: 'stretch', sm: 'flex-start' }, gap: 1 }}>
+                <TextField
+                  fullWidth
+                  helperText={mode === 'edit' ? '留空则不修改当前私密口令；填写新口令会覆盖清除操作。' : '用于解锁这个兽聚中的私密图片'}
+                  label="私密图片访问口令"
+                  name="privatePassword"
+                />
+                {mode === 'edit' && (
+                  <Button
+                    color={clearPrivatePassword ? 'warning' : 'inherit'}
+                    onClick={() => setClearPrivatePassword((value) => !value)}
+                    sx={{ flexShrink: 0, minHeight: 56 }}
+                    variant={clearPrivatePassword ? 'contained' : 'outlined'}
+                  >
+                    {clearPrivatePassword ? '将清除口令' : '清除口令'}
+                  </Button>
+                )}
+              </Stack>
 
               <Grid container spacing={2}>
                 <Grid size={{ xs: 12, sm: 6 }}>

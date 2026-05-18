@@ -21,28 +21,26 @@ type Session struct {
 func (Session) TableName() string { return "sessions" }
 
 type Event struct {
-	ID                      int64      `gorm:"column:id;primaryKey;autoIncrement"`
-	Title                   string     `gorm:"column:title"`
-	Description             string     `gorm:"column:description"`
-	Location                string     `gorm:"column:location"`
-	ProvinceCode            *string    `gorm:"column:province_code"`
-	ProvinceName            *string    `gorm:"column:province_name"`
-	CityCode                *string    `gorm:"column:city_code"`
-	CityName                *string    `gorm:"column:city_name"`
-	StartsAt                *time.Time `gorm:"column:starts_at"`
-	EndsAt                  *time.Time `gorm:"column:ends_at"`
-	CoverStoragePolicyID    *string    `gorm:"column:cover_storage_policy_id"`
-	CoverObjectKey          *string    `gorm:"column:cover_object_key"`
-	CoverThumbnailKey       *string    `gorm:"column:cover_thumbnail_key"`
-	IsPublic                bool       `gorm:"column:is_public"`
-	SubmissionEnabled       bool       `gorm:"column:submission_enabled"`
-	SubmissionPasswordHash  *string    `gorm:"column:submission_password_hash"`
-	SubmissionPasswordPlain *string    `gorm:"column:submission_password_plain"`
-	PrivatePasswordHash     *string    `gorm:"column:private_password_hash"`
-	PrivatePasswordPlain    *string    `gorm:"column:private_password_plain"`
-	SortAt                  time.Time  `gorm:"column:sort_at"`
-	CreatedAt               time.Time  `gorm:"column:created_at"`
-	UpdatedAt               time.Time  `gorm:"column:updated_at"`
+	ID                   int64      `gorm:"column:id;primaryKey;autoIncrement"`
+	Title                string     `gorm:"column:title"`
+	Description          string     `gorm:"column:description"`
+	Location             string     `gorm:"column:location"`
+	ProvinceCode         *string    `gorm:"column:province_code"`
+	ProvinceName         *string    `gorm:"column:province_name"`
+	CityCode             *string    `gorm:"column:city_code"`
+	CityName             *string    `gorm:"column:city_name"`
+	StartsAt             *time.Time `gorm:"column:starts_at"`
+	EndsAt               *time.Time `gorm:"column:ends_at"`
+	CoverStoragePolicyID *string    `gorm:"column:cover_storage_policy_id"`
+	CoverObjectKey       *string    `gorm:"column:cover_object_key"`
+	CoverThumbnailKey    *string    `gorm:"column:cover_thumbnail_key"`
+	IsPublic             bool       `gorm:"column:is_public"`
+	SubmissionEnabled    bool       `gorm:"column:submission_enabled"`
+	PrivatePasswordHash  *string    `gorm:"column:private_password_hash"`
+	PrivatePasswordPlain *string    `gorm:"column:private_password_plain"`
+	SortAt               time.Time  `gorm:"column:sort_at"`
+	CreatedAt            time.Time  `gorm:"column:created_at"`
+	UpdatedAt            time.Time  `gorm:"column:updated_at"`
 }
 
 func (Event) TableName() string { return "events" }

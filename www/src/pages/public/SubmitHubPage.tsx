@@ -1,7 +1,7 @@
 import { Alert, Box, Button, CircularProgress, FormControl, InputLabel, MenuItem, Paper, Select, Stack, Typography } from '@mui/material';
 import { useEffect, useMemo, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
-import { getEvents, resolveSubmissionToken, type EventCard } from '../../api/client';
+import { getEvents, resolveSubmissionToken, type EventCard, type SubmissionLink } from '../../api/client';
 import { SubmissionForm } from '../../components/SubmissionForm';
 import { formatEventLocation } from '../../utils/eventLocation';
 
@@ -14,6 +14,7 @@ export function SubmitHubPage() {
   const tokenFromUrl = searchParams.get('token') || searchParams.get('submissionToken') || '';
   const eventIdFromUrl = searchParams.get('eventId') || searchParams.get('event') || '';
   const [tokenPhotographerName, setTokenPhotographerName] = useState('');
+  const [tokenLink, setTokenLink] = useState<SubmissionLink | null>(null);
   const [tokenError, setTokenError] = useState('');
 
   function loadEvents() {
@@ -39,6 +40,7 @@ export function SubmitHubPage() {
 
   useEffect(() => {
     setTokenPhotographerName('');
+    setTokenLink(null);
     setTokenError('');
     if (!selectedEvent || !tokenFromUrl) return;
     resolveSubmissionToken(selectedEvent.id, tokenFromUrl)
@@ -47,6 +49,7 @@ export function SubmitHubPage() {
           setTokenError('这个限时投稿链接无效、已过期或已达到使用次数。');
           return;
         }
+        setTokenLink(result.link || null);
         setTokenPhotographerName(result.link?.photographerName || '');
       })
       .catch(() => setTokenError('投稿链接校验失败，请稍后重试。'));
@@ -103,6 +106,7 @@ export function SubmitHubPage() {
                 <SubmissionForm
                   event={selectedEvent}
                   initialPhotographerName={tokenPhotographerName}
+                  initialSubmissionLink={tokenLink}
                   initialSubmissionToken={tokenFromUrl}
                   lockPhotographerName={Boolean(tokenPhotographerName)}
                 />

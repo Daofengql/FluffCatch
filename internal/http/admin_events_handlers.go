@@ -196,6 +196,10 @@ func (server *Server) setEventCoverFromPhoto(w stdhttp.ResponseWriter, r *stdhtt
 		writeError(w, stdhttp.StatusNotFound, "photo not found")
 		return
 	}
+	if photo.Visibility != "public" {
+		writeError(w, stdhttp.StatusBadRequest, "only public photos can be used as event cover")
+		return
+	}
 	coverKey := photo.ObjectKey
 	if photo.ThumbnailKey != nil && strings.TrimSpace(*photo.ThumbnailKey) != "" {
 		coverKey = *photo.ThumbnailKey

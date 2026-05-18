@@ -92,6 +92,7 @@ export function EventDetailPage() {
   const [quickTagInput, setQuickTagInput] = useState('');
   const [quickTagSaving, setQuickTagSaving] = useState(false);
   const [downloadId, setDownloadId] = useState<number | null>(null);
+  const [downloadError, setDownloadError] = useState('');
   const [batchDownloadOpen, setBatchDownloadOpen] = useState(false);
   const [privateAccessPassword, setPrivateAccessPassword] = useState('');
   const [privateAccessUnlocked, setPrivateAccessUnlocked] = useState(() => (
@@ -362,7 +363,7 @@ export function EventDetailPage() {
       setPrivateAccessUnlocked(true);
       setPrivateAccessPassword('');
       const nextPhotos = await loadPrivatePhotos();
-      const nextIndex = nextPhotos.findIndex((photo) => photo.id === targetID && photo.accessGranted);
+      const nextIndex = [...publicPhotos, ...nextPhotos].findIndex((photo) => photo.id === targetID && photo.accessGranted);
       if (nextIndex < 0) {
         setPasswordError('已验证口令，但图片仍未解锁，请刷新后重试。');
         return;
@@ -399,10 +400,11 @@ export function EventDetailPage() {
 
   async function handleSingleDownload(photo: Photo) {
     setDownloadId(photo.id);
+    setDownloadError('');
     try {
       await downloadPhoto(photoURL(photo), downloadFilename(event?.title ?? 'fluffcatch', photo));
     } catch (err) {
-      setError(err instanceof Error ? err.message : '下载失败');
+      setDownloadError(err instanceof Error ? err.message : '下载失败');
     } finally {
       setDownloadId(null);
     }
@@ -862,11 +864,13 @@ export function EventDetailPage() {
       </Stack>
     );
   }
-  if (error || !event) return <Alert severity="error">{error || '兽聚不存在'}</Alert>;
+  if (!event) return <Alert severity="error">{error || '兽聚不存在'}</Alert>;
 
   return (
     <Stack sx={{ gap: 3 }}>
       {message && <Alert onClose={() => setMessage('')} severity="success">{message}</Alert>}
+      {error && <Alert onClose={() => setError('')} severity="error">{error}</Alert>}
+      {downloadError && <Alert onClose={() => setDownloadError('')} severity="error">{downloadError}</Alert>}
 
       <Paper
         sx={(theme) => ({

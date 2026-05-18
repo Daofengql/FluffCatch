@@ -11,6 +11,9 @@ import (
 )
 
 const hardMaxConcurrentUploads = 8
+const uploadMultipartMemoryBytes int64 = 32 * 1024 * 1024
+const hardMaxUploadBatchBytes int64 = 2 * 1024 * 1024 * 1024
+const perFileMultipartOverheadBytes int64 = 1024 * 1024
 
 func (server *Server) publicSite(w stdhttp.ResponseWriter, r *stdhttp.Request) {
 	current, err := server.settingsService.Load(r.Context())
@@ -149,9 +152,9 @@ func (server *Server) createSubmission(w stdhttp.ResponseWriter, r *stdhttp.Requ
 	defer server.releaseUploadSlot()
 	maxImageBytes := int64(uploadSettings.MaxFileSizeMB) * 1024 * 1024
 	maxVideoBytes := int64(uploadSettings.MaxVideoSizeMB) * 1024 * 1024
-	maxBatchBytes := max(maxImageBytes, maxVideoBytes) * int64(uploadSettings.MaxFilesPerUpload)
+	maxBatchBytes := maxUploadRequestBytes(maxImageBytes, maxVideoBytes, uploadSettings.MaxFilesPerUpload)
 	r.Body = stdhttp.MaxBytesReader(w, r.Body, maxBatchBytes)
-	if err := r.ParseMultipartForm(maxBatchBytes); err != nil {
+	if err := r.ParseMultipartForm(uploadMultipartMemoryBytes); err != nil {
 		writeError(w, stdhttp.StatusBadRequest, "invalid multipart upload")
 		return
 	}
@@ -263,6 +266,28 @@ func (server *Server) acquireUploadSlot(w stdhttp.ResponseWriter, configuredLimi
 		writeError(w, stdhttp.StatusTooManyRequests, fmt.Sprintf("too many concurrent uploads, maximum is %d", limit))
 		return false
 	}
+}
+
+func maxUploadRequestBytes(maxImageBytes int64, maxVideoBytes int64, maxFiles int) int64 {
+	maxFileBytes := max(maxImageBytes, maxVideoBytes)
+	if maxFileBytes <= 0 {
+		maxFileBytes = 20 * 1024 * 1024
+	}
+	if maxFiles <= 0 {
+		maxFiles = 1
+	}
+	if maxFiles > 200 {
+		maxFiles = 200
+	}
+	batchBytes := maxFileBytes * int64(maxFiles)
+	minRequired := maxFileBytes + perFileMultipartOverheadBytes*int64(maxFiles)
+	if batchBytes > hardMaxUploadBatchBytes && hardMaxUploadBatchBytes > minRequired {
+		return hardMaxUploadBatchBytes
+	}
+	if batchBytes > hardMaxUploadBatchBytes {
+		return minRequired
+	}
+	return batchBytes
 }
 
 func (server *Server) releaseUploadSlot() {

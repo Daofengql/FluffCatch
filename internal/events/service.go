@@ -142,6 +142,10 @@ func (service *Service) Update(ctx context.Context, id int64, req CreateEventReq
 		updates["cover_storage_policy_id"] = stringPtr(event.CoverPolicyID)
 		updates["cover_object_key"] = stringPtr(event.CoverObjectKey)
 	}
+	if req.ClearPrivatePassword {
+		updates["private_password_hash"] = nil
+		updates["private_password_plain"] = nil
+	}
 	if privatePasswordHash != "" {
 		updates["private_password_hash"] = privatePasswordHash
 		updates["private_password_plain"] = strings.TrimSpace(req.PrivatePassword)
