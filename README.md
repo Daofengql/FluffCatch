@@ -177,3 +177,13 @@ data/                本地运行时数据，默认不提交
 - [docs/features.md](docs/features.md)：功能说明。
 - [docs/configuration.md](docs/configuration.md)：配置、环境变量和部署说明。
 - [docs/api.md](docs/api.md)：HTTP API 参考。
+
+## 许可证
+
+本项目采用 [PolyForm Noncommercial License 1.0.0](LICENSE)。允许非商业使用、学习、修改和分发；不得将本项目或其衍生版本用于商业用途或收费服务。
+
+分发原项目、修改版或衍生版本时，必须同时保留许可证文本以及 [NOTICE](NOTICE) 中的 Required Notice，包括原始仓库地址：
+
+```text
+https://github.com/Daofengql/FluffCatch
+```
