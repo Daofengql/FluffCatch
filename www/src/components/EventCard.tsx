@@ -43,7 +43,7 @@ export function EventCard({ event }: EventCardProps) {
           <Stack direction="row" sx={{ gap: 1, mb: 2 }}>
             <Chip color={event.isPublic ? 'success' : 'default'} label={event.isPublic ? '公开' : '隐藏'} size="small" />
             <Chip color={event.submissionEnabled ? 'primary' : 'default'} label={event.submissionEnabled ? '可投稿' : '已关闭投稿'} size="small" />
-            <Chip icon={<Collections />} label={`${event.photoCount || 0} 张图片`} size="small" />
+            <Chip icon={<Collections />} label={`${event.photoCount || 0} 张返图`} size="small" />
           </Stack>
           <Typography gutterBottom sx={{ fontWeight: 800 }} variant="h5">
             {event.title}

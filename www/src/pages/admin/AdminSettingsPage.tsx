@@ -65,7 +65,7 @@ type BackgroundVariant = 'desktop' | 'mobile';
 const fallbackFooterSections: FooterSection[] = [
   {
     title: '关于站点',
-    html: `<p>兽聚返图收集与画廊</p><p>© ${new Date().getFullYear()} FluffCatch. All rights reserved.</p>`
+    html: `<p>活动返图收集与画廊</p><p>© ${new Date().getFullYear()} FluffCatch. All rights reserved.</p>`
   },
   {
     title: '快速入口',
@@ -79,7 +79,7 @@ const fallbackFooterSections: FooterSection[] = [
 
 const fallbackSite: SiteSettings = {
   name: 'FluffCatch',
-  subtitle: '兽聚返图收集与画廊',
+  subtitle: '活动返图收集与画廊',
   logoUrl: '',
   homeMarkdown: '',
   themeMode: 'system',
@@ -102,6 +102,18 @@ const fallbackUpload: UploadSettings = {
 };
 
 const emptyS3: S3Settings = { endpoint: '', bucket: '', region: '', accessKey: '', secretKey: '', useSsl: false, accountId: '' };
+
+function storagePolicyForEditing(policy: StoragePolicy): StoragePolicy {
+  if (!policy.s3) return policy;
+  return {
+    ...policy,
+    s3: {
+      ...policy.s3,
+      // The API masks persisted secrets. Keep the mask out of the editable value.
+      secretKey: policy.s3.secretKey === '***' ? '' : policy.s3.secretKey || ''
+    }
+  };
+}
 
 const driverOptions: { value: StorageDriver; label: string }[] = [
   { value: 'local', label: '本地存储' },
@@ -189,7 +201,7 @@ export function AdminSettingsPage() {
         if (policies.length > 0) {
           const activeId = payload.settings.storagePolicies.activePolicyId;
           const active = policies.find((p) => p.id === activeId) ?? policies[0];
-          setStoragePolicy(active);
+          setStoragePolicy(storagePolicyForEditing(active));
         }
       })
       .catch((err: unknown) => {
@@ -879,7 +891,7 @@ export function AdminSettingsPage() {
                       <TextField fullWidth label="Access Key" onChange={(event) => updateS3Field('accessKey', event.target.value)} value={storagePolicy.s3?.accessKey || ''} />
                     </Grid>
                     <Grid size={{ xs: 12, sm: 6 }}>
-                      <TextField fullWidth label="Secret Key" onChange={(event) => updateS3Field('secretKey', event.target.value)} type="password" value={storagePolicy.s3?.secretKey || ''} />
+                      <TextField fullWidth helperText="留空表示保持当前密钥，输入新值将替换当前密钥" label="Secret Key" onChange={(event) => updateS3Field('secretKey', event.target.value)} type="password" value={storagePolicy.s3?.secretKey || ''} />
                     </Grid>
                   </Grid>
                   {storagePolicy.driver === 'minio' && (

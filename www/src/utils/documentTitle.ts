@@ -27,8 +27,8 @@ export function pageNameForPath(pathname: string, options: { eventTitle?: string
   if (pathname === '/') return '首页';
   if (pathname === '/submit') return '返图入口';
   if (pathname === '/login') return '登录';
-  if (pathname.startsWith('/events/')) return options.eventTitle?.trim() || '兽聚详情';
-  if (pathname === '/admin' || pathname === '/admin/events' || pathname === '/admin/dashboard' || pathname === '/admin/submissions') return '兽聚管理';
+  if (pathname.startsWith('/events/')) return options.eventTitle?.trim() || '活动详情';
+  if (pathname === '/admin' || pathname === '/admin/events' || pathname === '/admin/dashboard' || pathname === '/admin/submissions') return '活动管理';
   if (pathname === '/admin/settings') return '系统设置';
   if (pathname.startsWith('/admin/settings/')) {
     const parts = pathname.split('/').filter(Boolean);

@@ -206,7 +206,7 @@ export function EventDetailPage() {
   function refreshEventOnly() {
     return getEvent(eventId)
       .then(setEvent)
-      .catch((err: unknown) => setError(err instanceof Error ? err.message : '兽聚信息刷新失败'));
+      .catch((err: unknown) => setError(err instanceof Error ? err.message : '活动信息刷新失败'));
   }
 
   function handleSubmissionUploaded() {
@@ -390,7 +390,7 @@ export function EventDetailPage() {
 
   function handleEventSaved() {
     setEditorOpen(false);
-    setMessage('兽聚已更新。');
+    setMessage('活动已更新。');
     void Promise.all([refreshEventOnly(), refreshPhotoSections()]);
   }
 
@@ -433,7 +433,7 @@ export function EventDetailPage() {
     setError('');
     try {
       await batchDeletePhotos(selectedIds, headers);
-      setMessage(`已删除 ${selectedIds.length} 张图片。`);
+      setMessage(`已删除 ${selectedIds.length} 张返图。`);
       setSelectedIds([]);
       void refreshPhotoSections();
     } catch (err) {
@@ -864,7 +864,7 @@ export function EventDetailPage() {
       </Stack>
     );
   }
-  if (!event) return <Alert severity="error">{error || '兽聚不存在'}</Alert>;
+  if (!event) return <Alert severity="error">{error || '活动不存在'}</Alert>;
 
   return (
     <Stack sx={{ gap: 3 }}>
@@ -908,7 +908,7 @@ export function EventDetailPage() {
             <Stack direction="row" sx={{ flexWrap: 'wrap', gap: 1 }}>
               <Chip color={event.isPublic ? 'success' : 'default'} label={event.isPublic ? '公开画廊' : '隐藏'} size="small" />
               <Chip color={event.submissionEnabled ? 'primary' : 'default'} label={event.submissionEnabled ? '开放投稿' : '投稿关闭'} size="small" />
-              <Chip label={`${event.photoCount || publicTotal + privateTotal || photos.length} 张图片`} size="small" />
+              <Chip label={`${event.photoCount || publicTotal + privateTotal || photos.length} 张返图`} size="small" />
             </Stack>
             <Box>
               <Typography sx={{ fontWeight: 900 }} variant="h4">
@@ -940,7 +940,7 @@ export function EventDetailPage() {
                     限时投稿链接
                   </Button>
                   <Button onClick={() => setEditorOpen(true)} startIcon={<Edit />} sx={{ width: 'fit-content' }} variant="outlined">
-                    编辑兽聚
+                    编辑活动
                   </Button>
                   <Button onClick={() => setReviewOpen(true)} startIcon={<CloudUpload />} sx={{ width: 'fit-content' }} variant="outlined">
                     审核返图
@@ -1145,7 +1145,7 @@ export function EventDetailPage() {
       </PhotoSection>
 
       {(authenticated || privateTotal > 0) && (
-        <PhotoSection title="非公开返图" subtitle={authenticated ? `${privateTotal} 个私密媒体，管理员可直接查看` : privateAccessUnlocked ? `${privateTotal} 个私密媒体，已在当前浏览器会话中解锁` : `${privateTotal} 个私密媒体，需要输入这个兽聚的私密口令后查看`}>
+        <PhotoSection title="非公开返图" subtitle={authenticated ? `${privateTotal} 个私密媒体，管理员可直接查看` : privateAccessUnlocked ? `${privateTotal} 个私密媒体，已在当前浏览器会话中解锁` : `${privateTotal} 个私密媒体，需要输入这个活动的私密口令后查看`}>
           <PhotoSectionBody loading={privateLoading}>
             <Grid container spacing={{ xs: 1, sm: 2 }}>
               {restrictedPhotos.map((photo) => renderPhotoCard(photo, photos.findIndex((item) => item.id === photo.id), true))}
@@ -1199,7 +1199,7 @@ export function EventDetailPage() {
         <DialogContent>
           <Stack component="form" id="gallery-password-form" onSubmit={(submitEvent) => { submitEvent.preventDefault(); void unlockProtectedPhoto(); }} sx={{ gap: 2, pt: 1 }}>
             <Typography color="text.secondary" variant="body2">
-              这个兽聚的私密返图需要访问口令。验证通过后，本次浏览器会话内会保持解锁。
+              这个活动的私密返图需要访问口令。验证通过后，本次浏览器会话内会保持解锁。
             </Typography>
             <TextField
               autoFocus

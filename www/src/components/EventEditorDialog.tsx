@@ -165,7 +165,7 @@ export function EventEditorDialog({ event, mode, onClose, onSaved, open }: Event
   return (
     <>
     <Dialog fullWidth maxWidth="md" onClose={handleClose} open={open}>
-      <DialogTitle>{mode === 'edit' ? '编辑兽聚' : '新建兽聚'}</DialogTitle>
+      <DialogTitle>{mode === 'edit' ? '编辑活动' : '新建活动'}</DialogTitle>
       <DialogContent dividers>
         <Card elevation={0} sx={{ border: '1px solid', borderColor: 'divider' }}>
           {activeCoverUrl ? (
@@ -244,7 +244,7 @@ export function EventEditorDialog({ event, mode, onClose, onSaved, open }: Event
               <Stack direction={{ xs: 'column', sm: 'row' }} sx={{ alignItems: { xs: 'stretch', sm: 'flex-start' }, gap: 1 }}>
                 <TextField
                   fullWidth
-                  helperText={mode === 'edit' ? '留空则不修改当前私密口令；填写新口令会覆盖清除操作。' : '用于解锁这个兽聚中的私密图片'}
+                  helperText={mode === 'edit' ? '留空则不修改当前私密口令；填写新口令会覆盖清除操作。' : '用于解锁这个活动中的私密图片'}
                   label="私密图片访问口令"
                   name="privatePassword"
                 />
@@ -277,7 +277,7 @@ export function EventEditorDialog({ event, mode, onClose, onSaved, open }: Event
 
               {coverFile && (
                 <Typography color="text.secondary" variant="caption">
-                  海报会在点击「{mode === 'edit' ? '保存修改' : '创建兽聚'}」时上传。
+                  海报会在点击「{mode === 'edit' ? '保存修改' : '创建活动'}」时上传。
                 </Typography>
               )}
             </Stack>
@@ -291,14 +291,14 @@ export function EventEditorDialog({ event, mode, onClose, onSaved, open }: Event
         <Box>
           {mode === 'edit' && (
             <Button color="error" onClick={() => setDeleteConfirmOpen(true)} variant="outlined">
-              删除兽聚
+              删除活动
             </Button>
           )}
         </Box>
         <Stack direction="row" sx={{ gap: 1 }}>
           <Button onClick={handleClose}>取消</Button>
           <Button disabled={saving} form="event-editor-form" type="submit" variant="contained">
-            {saving ? '保存中...' : mode === 'edit' ? '保存修改' : '创建兽聚'}
+            {saving ? '保存中...' : mode === 'edit' ? '保存修改' : '创建活动'}
           </Button>
         </Stack>
       </DialogActions>
@@ -309,7 +309,7 @@ export function EventEditorDialog({ event, mode, onClose, onSaved, open }: Event
         onConfirm={handleDeleteConfirm}
         open={deleteConfirmOpen}
         subtitle={event ? `确定删除「${event.title}」吗？相关投稿和图片记录会一起删除。` : ''}
-        title="删除兽聚"
+        title="删除活动"
       />
     </>
   );

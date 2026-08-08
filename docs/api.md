@@ -329,7 +329,7 @@ OIDC 提供商回调接口。该接口不返回 JSON，会重定向到前端：
 ```json
 {
   "name": "FluffCatch",
-  "subtitle": "兽聚返图收集与画廊",
+  "subtitle": "活动返图收集与画廊",
   "logoUrl": "",
   "homeMarkdown": "",
   "themeMode": "system",
@@ -1086,7 +1086,7 @@ OIDC 提供商回调接口。该接口不返回 JSON，会重定向到前端：
 ```json
 {
   "name": "FluffCatch",
-  "subtitle": "兽聚返图收集与画廊",
+  "subtitle": "活动返图收集与画廊",
   "logoUrl": "",
   "homeMarkdown": "",
   "themeMode": "system",
@@ -1343,4 +1343,3 @@ OIDC 提供商回调接口。该接口不返回 JSON，会重定向到前端：
 
 - 本地存储会通过该接口提供对象。
 - 外部公开对象存储通常会直接返回 `publicBaseUrl` 拼出的 URL，不一定经过该接口。
-

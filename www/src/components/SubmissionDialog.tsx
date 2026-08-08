@@ -93,7 +93,7 @@ export function SubmissionDialog({ event, onClose, onUploaded, open }: Submissio
             </Typography>
             {canUpload && (
               <Typography color="text.secondary" sx={{ mt: 0.5 }} variant="body2">
-                {event ? `投稿到「${event.title}」；批量选择图片后会按队列逐张提交审核。` : '请选择要投稿的兽聚。'}
+                {event ? `投稿到「${event.title}」；批量选择图片或视频后会按队列逐个提交审核。` : '请选择要投稿的活动。'}
               </Typography>
             )}
           </Box>

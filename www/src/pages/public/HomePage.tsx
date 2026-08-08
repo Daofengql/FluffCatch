@@ -4,6 +4,7 @@ import {
   Alert,
   Box,
   Button,
+  Chip,
   CircularProgress,
   Collapse,
   FormControl,
@@ -26,7 +27,7 @@ import { EventCard } from '../../components/EventCard';
 
 const fallbackSite: SiteSettings = {
   name: 'FluffCatch',
-  subtitle: '兽聚返图收集与画廊',
+  subtitle: '活动返图收集与画廊',
   logoUrl: '',
   homeMarkdown: '',
   themeMode: 'system',
@@ -40,7 +41,7 @@ const fallbackSite: SiteSettings = {
   footerSections: [
     {
       title: '关于站点',
-      html: `<p>兽聚返图收集与画廊</p><p>© ${new Date().getFullYear()} FluffCatch. All rights reserved.</p>`
+      html: `<p>活动返图收集与画廊</p><p>© ${new Date().getFullYear()} FluffCatch. All rights reserved.</p>`
     },
     {
       title: '快速入口',
@@ -162,11 +163,41 @@ export function HomePage() {
           </Box>
         </Paper>
       )}
+      {!site.homeMarkdown.trim() && (
+        <Paper
+          sx={(theme) => ({
+            bgcolor: 'background.paper',
+            border: '1px solid',
+            borderColor: theme.palette.mode === 'dark' ? 'rgba(226, 232, 240, 0.18)' : 'divider',
+            borderRadius: 2,
+            p: { xs: 3, md: 4 }
+          })}
+        >
+          <Stack sx={{ gap: 2 }}>
+            <Box>
+              <Typography color="primary" sx={{ fontWeight: 800, mb: 0.75 }} variant="overline">
+                FluffCatch
+              </Typography>
+              <Typography sx={{ fontWeight: 900, lineHeight: 1.15 }} variant="h4">
+                活动返图收集与画廊
+              </Typography>
+              <Typography color="text.secondary" sx={{ mt: 1.5, maxWidth: 760 }} variant="body1">
+                为聚会、展会、摄影活动或社群活动生成投稿入口，摄影师上传后进入审核池，公开或私密返图会统一沉淀到活动画廊。
+              </Typography>
+            </Box>
+            <Stack direction="row" sx={{ flexWrap: 'wrap', gap: 1 }}>
+              {['限时投稿链接', '返图审核', '公开/私密画廊', '批量下载'].map((label) => (
+                <Chip key={label} label={label} size="small" />
+              ))}
+            </Stack>
+          </Stack>
+        </Paper>
+      )}
       <Paper sx={{ borderRadius: 3, p: 2.5 }}>
         <Stack direction={{ xs: 'column', md: 'row' }} sx={{ alignItems: { xs: 'stretch', md: 'center' }, justifyContent: 'space-between', gap: 2 }}>
           <Box>
-            <Typography sx={{ fontWeight: 800 }}>兽聚筛选</Typography>
-            <Typography color="text.secondary" variant="body2">按地区、时间找到想看的兽聚。</Typography>
+            <Typography sx={{ fontWeight: 800 }}>活动筛选</Typography>
+            <Typography color="text.secondary" variant="body2">按地区、时间找到想看的活动。</Typography>
           </Box>
           <Button onClick={() => setFiltersOpen((prev) => !prev)} sx={{ minHeight: 40, whiteSpace: 'nowrap' }} variant="outlined">
             {filtersOpen ? '收起筛选' : '展开筛选'}
@@ -226,7 +257,7 @@ export function HomePage() {
         <Stack sx={{ gap: 2.5 }}>
           <Stack direction={{ xs: 'column', sm: 'row' }} sx={{ alignItems: { xs: 'flex-start', sm: 'center' }, gap: 1, justifyContent: 'space-between' }}>
             <Typography color="text.secondary" variant="body2">
-              共 {eventPage.total} 个公开兽聚{hasSubmittedFilters || urlQuery.trim() ? '符合当前条件' : ''}
+              共 {eventPage.total} 个公开活动{hasSubmittedFilters || urlQuery.trim() ? '符合当前条件' : ''}
             </Typography>
             {eventPage.totalPages > 1 && (
               <Typography color="text.secondary" variant="body2">
@@ -244,10 +275,10 @@ export function HomePage() {
               <Grid size={{ xs: 12 }}>
                 <Paper sx={{ p: 4, textAlign: 'center' }}>
                   <Typography sx={{ fontWeight: 800 }} variant="h6">
-                    {urlQuery.trim() || hasSubmittedFilters ? '没有匹配的兽聚' : '还没有公开兽聚'}
+                    {urlQuery.trim() || hasSubmittedFilters ? '没有匹配的活动' : '还没有公开活动'}
                   </Typography>
                   <Typography color="text.secondary" sx={{ mt: 1 }}>
-                    {urlQuery.trim() || hasSubmittedFilters ? '可以调整名称、地区、时间或排序后再试一次。' : '管理员创建公开兽聚后，这里会显示卡片式入口。'}
+                    {urlQuery.trim() || hasSubmittedFilters ? '可以调整名称、地区、时间或排序后再试一次。' : '管理员创建公开活动后，这里会显示卡片式入口。'}
                   </Typography>
                 </Paper>
               </Grid>

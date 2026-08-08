@@ -64,6 +64,12 @@ func (server *Server) testStorageConnection(w stdhttp.ResponseWriter, r *stdhttp
 		return
 	}
 
+	policy, err := server.settingsService.ResolveStoragePolicySecrets(r.Context(), policy)
+	if err != nil {
+		writeJSON(w, stdhttp.StatusOK, map[string]any{"success": false, "error": err.Error()})
+		return
+	}
+
 	normalized, err := settings.NormalizeStoragePolicy(policy)
 	if err != nil {
 		writeJSON(w, stdhttp.StatusOK, map[string]any{"success": false, "error": err.Error()})

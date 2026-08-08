@@ -22,7 +22,7 @@ import { PublicLayoutHeader } from './PublicLayout';
 const drawerWidth = 240;
 const fallbackSite: SiteSettings = {
   name: 'FluffCatch',
-  subtitle: '兽聚返图收集与画廊',
+  subtitle: '活动返图收集与画廊',
   logoUrl: '',
   homeMarkdown: '',
   themeMode: 'system',
@@ -36,7 +36,7 @@ const fallbackSite: SiteSettings = {
   footerSections: [
     {
       title: '关于站点',
-      html: `<p>兽聚返图收集与画廊</p><p>© ${new Date().getFullYear()} FluffCatch. All rights reserved.</p>`
+      html: `<p>活动返图收集与画廊</p><p>© ${new Date().getFullYear()} FluffCatch. All rights reserved.</p>`
     },
     {
       title: '快速入口',
@@ -50,7 +50,7 @@ const fallbackSite: SiteSettings = {
 };
 
 const navItems = [
-  { label: '兽聚管理', path: '/admin/events', icon: <Folder /> },
+  { label: '活动管理', path: '/admin/events', icon: <Folder /> },
   { label: '系统设置', path: '/admin/settings', icon: <Settings /> }
 ];
 

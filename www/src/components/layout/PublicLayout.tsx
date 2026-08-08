@@ -12,7 +12,7 @@ import { sanitizeFooterHtml } from '../../utils/html';
 
 const defaultSite: SiteSettings = {
   name: 'FluffCatch',
-  subtitle: '兽聚返图收集与画廊',
+  subtitle: '活动返图收集与画廊',
   logoUrl: '',
   homeMarkdown: '',
   themeMode: 'system',
@@ -26,7 +26,7 @@ const defaultSite: SiteSettings = {
   footerSections: [
     {
       title: '关于站点',
-      html: `<p>兽聚返图收集与画廊</p><p>© ${new Date().getFullYear()} FluffCatch. All rights reserved.</p>`
+      html: `<p>活动返图收集与画廊</p><p>© ${new Date().getFullYear()} FluffCatch. All rights reserved.</p>`
     },
     {
       title: '快速入口',
@@ -373,7 +373,7 @@ export function PublicLayoutHeader({ authenticated, hideAdminEntry = false, hide
             }}
           >
             <TextField
-              aria-label="按名称搜索兽聚"
+              aria-label="按名称搜索活动"
               fullWidth
               onChange={(event) => updateHomeSearch(event.target.value)}
               onFocus={() => { if (suggestions.length || submittedSuggestionQuery === homeSearch.trim()) setSuggestionsOpen(Boolean(homeSearch.trim())); }}
@@ -384,7 +384,7 @@ export function PublicLayoutHeader({ authenticated, hideAdminEntry = false, hide
                   submitHomeSearch();
                 }
               }}
-              placeholder="搜索兽聚名称"
+              placeholder="搜索活动名称"
               size="small"
               slotProps={{
                 input: {
@@ -399,7 +399,7 @@ export function PublicLayoutHeader({ authenticated, hideAdminEntry = false, hide
                         <CircularProgress size={16} />
                       ) : (
                         <IconButton
-                          aria-label="搜索兽聚"
+                          aria-label="搜索活动"
                           edge="end"
                           onClick={() => {
                             loadHomeSuggestions();
@@ -451,7 +451,7 @@ export function PublicLayoutHeader({ authenticated, hideAdminEntry = false, hide
                 ))}
                 {!suggestions.length && !suggestionsLoading && (
                   <Typography color="text.secondary" sx={{ px: 1.5, py: 1.25 }} variant="body2">
-                    没有匹配的兽聚
+                    没有匹配的活动
                   </Typography>
                 )}
               </Paper>

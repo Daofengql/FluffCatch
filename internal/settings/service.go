@@ -50,7 +50,7 @@ func (service *Service) UpdateStoragePolicies(ctx context.Context, policies Stor
 		return StoragePoliciesSettings{}, err
 	}
 
-	policies = preserveMaskedStorageSecrets(policies, current.StoragePolicies)
+	policies = preserveUnchangedStorageSecrets(policies, current.StoragePolicies)
 	normalized, err := normalizeStoragePolicies(policies)
 	if err != nil {
 		return StoragePoliciesSettings{}, err
@@ -74,6 +74,21 @@ func (service *Service) UpdateStoragePolicies(ctx context.Context, policies Stor
 	}
 
 	return normalized, nil
+}
+
+// ResolveStoragePolicySecrets applies the same keep-existing-secret semantics
+// used by updates to connection tests, where the persisted secret is needed
+// to test a policy whose secret field was left unchanged.
+func (service *Service) ResolveStoragePolicySecrets(ctx context.Context, policy StoragePolicy) (StoragePolicy, error) {
+	current, err := service.store.Load(ctx)
+	if err != nil {
+		return StoragePolicy{}, err
+	}
+
+	merged := preserveUnchangedStorageSecrets(StoragePoliciesSettings{
+		Policies: []StoragePolicy{policy},
+	}, current.StoragePolicies)
+	return merged.Policies[0], nil
 }
 
 func (service *Service) StoragePolicyUsage(ctx context.Context) (map[string]PolicyUsage, error) {
@@ -480,13 +495,14 @@ func validPolicyID(id string) bool {
 	return strings.TrimSpace(id) != ""
 }
 
-func preserveMaskedStorageSecrets(incoming, current StoragePoliciesSettings) StoragePoliciesSettings {
+func preserveUnchangedStorageSecrets(incoming, current StoragePoliciesSettings) StoragePoliciesSettings {
 	currentByID := make(map[string]StoragePolicy, len(current.Policies))
 	for _, p := range current.Policies {
 		currentByID[p.ID] = p
 	}
 	for i, p := range incoming.Policies {
-		if p.S3.SecretKey != MaskedSecret {
+		secretKey := strings.TrimSpace(p.S3.SecretKey)
+		if secretKey != "" && secretKey != MaskedSecret {
 			continue
 		}
 		if cur, ok := currentByID[p.ID]; ok {

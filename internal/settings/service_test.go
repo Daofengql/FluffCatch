@@ -82,6 +82,56 @@ func TestUpdateStoragePoliciesGeneratesMissingPolicyID(t *testing.T) {
 	}
 }
 
+func TestUpdateStoragePoliciesKeepsUnchangedSecretKey(t *testing.T) {
+	for _, incomingSecret := range []string{"", MaskedSecret} {
+		t.Run("incoming="+incomingSecret, func(t *testing.T) {
+			service := NewService(NewStore(nil, RuntimeSettings{
+				StoragePolicies: StoragePoliciesSettings{
+					ActivePolicyID: "minio",
+					Policies: []StoragePolicy{
+						{
+							ID:     "minio",
+							Name:   "MinIO",
+							Driver: "minio",
+							S3: S3Settings{
+								Endpoint:  "http://127.0.0.1:9000",
+								Bucket:    "fluffcatch",
+								Region:    "us-east-1",
+								AccessKey: "access",
+								SecretKey: "persisted-secret",
+							},
+						},
+					},
+				},
+			}))
+
+			updated, err := service.UpdateStoragePolicies(context.Background(), StoragePoliciesSettings{
+				ActivePolicyID: "minio",
+				Policies: []StoragePolicy{
+					{
+						ID:     "minio",
+						Name:   "MinIO updated",
+						Driver: "minio",
+						S3: S3Settings{
+							Endpoint:  "http://127.0.0.1:9000",
+							Bucket:    "fluffcatch",
+							Region:    "us-east-1",
+							AccessKey: "access",
+							SecretKey: incomingSecret,
+						},
+					},
+				},
+			})
+			if err != nil {
+				t.Fatalf("UpdateStoragePolicies() returned error: %v", err)
+			}
+			if got := updated.Policies[0].S3.SecretKey; got != "persisted-secret" {
+				t.Fatalf("expected persisted secret to be preserved, got %q", got)
+			}
+		})
+	}
+}
+
 func TestUpdateSiteAllowsEmptyHomeMarkdown(t *testing.T) {
 	service := NewService(NewStore(nil, RuntimeSettings{}))
 

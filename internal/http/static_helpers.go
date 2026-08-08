@@ -456,7 +456,7 @@ func (server *Server) seoPageName(r *stdhttp.Request) string {
 	case cleanPath == "/login":
 		return "登录"
 	case cleanPath == "/admin" || cleanPath == "/admin/events" || cleanPath == "/admin/dashboard":
-		return "兽聚管理"
+		return "活动管理"
 	case cleanPath == "/admin/settings":
 		return "系统设置"
 	case strings.HasPrefix(cleanPath, "/admin/settings/"):
@@ -465,7 +465,7 @@ func (server *Server) seoPageName(r *stdhttp.Request) string {
 		if title := server.eventTitleForSEO(r, strings.TrimPrefix(cleanPath, "/events/")); title != "" {
 			return title
 		}
-		return "兽聚详情"
+		return "活动详情"
 	default:
 		return ""
 	}

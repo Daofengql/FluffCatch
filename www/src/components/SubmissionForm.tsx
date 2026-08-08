@@ -419,7 +419,7 @@ export function SubmissionForm({ event, footer, initialPhotographerName = '', in
         ))}
         {!queue.length && (
           <Paper sx={{ bgcolor: 'action.hover', p: 3, textAlign: 'center' }} variant="outlined">
-            <Typography color="text.secondary">还没有选择图片或视频。点上面的按钮一次选多个文件，毛毛们排队进审核池。</Typography>
+            <Typography color="text.secondary">还没有选择图片或视频。点上面的按钮一次选多个文件，文件会排队进入审核池。</Typography>
           </Paper>
         )}
       </Stack>

@@ -133,7 +133,7 @@ export function SubmissionReviewDialog({ event, onChanged, onClose, open }: Subm
               审核返图
             </Typography>
             <Typography color="text.secondary" variant="body2">
-              {event?.title || '全部兽聚'} / 当前待审核 {submissions.length} 个
+              {event?.title || '全部活动'} / 当前待审核 {submissions.length} 个
             </Typography>
           </Box>
           <Stack direction="row" sx={{ gap: 1 }}>
@@ -208,7 +208,7 @@ export function SubmissionReviewDialog({ event, onChanged, onClose, open }: Subm
             {!submissions.length && (
               <Grid size={{ xs: 12 }}>
                 <Box sx={{ p: 4, textAlign: 'center' }}>
-                  <Typography color="text.secondary">当前兽聚暂无待审核投稿。</Typography>
+                  <Typography color="text.secondary">当前活动暂无待审核投稿。</Typography>
                 </Box>
               </Grid>
             )}
@@ -263,7 +263,7 @@ export function SubmissionReviewDialog({ event, onChanged, onClose, open }: Subm
                   <TableRow>
                     <TableCell align="center" colSpan={6}>
                       <Typography color="text.secondary" sx={{ py: 4 }}>
-                        当前兽聚暂无待审核投稿。
+                        当前活动暂无待审核投稿。
                       </Typography>
                     </TableCell>
                   </TableRow>

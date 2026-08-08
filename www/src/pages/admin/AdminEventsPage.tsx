@@ -83,7 +83,7 @@ export function AdminEventsPage() {
   }
 
   function handleEventSaved(eventId: number) {
-    setMessage('兽聚已保存。');
+    setMessage('活动已保存。');
     setMode(null);
     setSelectedId(null);
     refresh(eventId);
@@ -95,7 +95,7 @@ export function AdminEventsPage() {
     setDeleteTarget(null);
     try {
       await deleteEvent(deleteTarget.event.id, headers);
-      setMessage('兽聚已删除。');
+      setMessage('活动已删除。');
       refresh(null);
     } catch (err) {
       setError(err instanceof Error ? err.message : '删除失败');
@@ -105,16 +105,16 @@ export function AdminEventsPage() {
   return (
     <Stack sx={{ gap: 3 }}>
       <PageHeader
-        actions={<Button onClick={startCreate} variant="contained">新建兽聚</Button>}
-        subtitle="后台负责系统级总览与兽聚列表；单个兽聚的内容管理可以进入前台页面完成"
-        title="兽聚管理"
+        actions={<Button onClick={startCreate} variant="contained">新建活动</Button>}
+        subtitle="后台负责系统级总览与活动列表；单个活动的内容管理可以进入前台页面完成"
+        title="活动管理"
       />
       {message && <Alert onClose={() => setMessage('')} severity="success">{message}</Alert>}
       {error && <Alert onClose={() => setError('')} severity="error">{error}</Alert>}
 
       <Grid container spacing={2}>
         {[
-          ['兽聚数量', stats.events || 0],
+          ['活动数量', stats.events || 0],
           ['正式图片', stats.photos || 0],
           ['待审投稿', stats.pendingSubmissions || 0],
           ['图片容量', formatBytes(stats.photoBytes || 0)]
@@ -181,7 +181,7 @@ export function AdminEventsPage() {
               <TableRow>
                 <TableCell align="center" colSpan={4}>
                   <Typography color="text.secondary" sx={{ py: 4 }}>
-                    还没有兽聚，点击右上角新建一个吧。
+                    还没有活动，点击右上角新建一个吧。
                   </Typography>
                 </TableCell>
               </TableRow>
@@ -203,7 +203,7 @@ export function AdminEventsPage() {
         onConfirm={handleDeleteConfirm}
         open={Boolean(deleteTarget)}
         subtitle={deleteTarget ? `确定删除「${deleteTarget.event.title}」吗？相关投稿和图片记录会一起删除。` : ''}
-        title="删除兽聚"
+        title="删除活动"
       />
     </Stack>
   );

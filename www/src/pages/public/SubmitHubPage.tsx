@@ -64,7 +64,7 @@ export function SubmitHubPage() {
               上传返图
             </Typography>
             <Typography color="text.secondary" sx={{ mt: 1 }}>
-              通过管理员生成的限时投稿链接上传图片，系统会按队列逐张提交审核。
+              通过管理员生成的限时投稿链接上传图片或视频，系统会按队列逐个提交审核。
             </Typography>
           </Box>
           {loading && (
@@ -87,8 +87,8 @@ export function SubmitHubPage() {
           {!loading && !error && (
             <>
               <FormControl fullWidth>
-                <InputLabel>选择兽聚</InputLabel>
-                <Select label="选择兽聚" onChange={(event) => setSelectedEventId(event.target.value)} value={selectedEventId}>
+                <InputLabel>选择活动</InputLabel>
+                <Select label="选择活动" onChange={(event) => setSelectedEventId(event.target.value)} value={selectedEventId}>
                   {events.map((event) => (
                     <MenuItem key={event.id} value={String(event.id)}>
                       {event.title} / {formatEventLocation(event)}
@@ -97,7 +97,7 @@ export function SubmitHubPage() {
                 </Select>
               </FormControl>
               {!events.length ? (
-                <Alert severity="info">目前没有开放投稿的公开兽聚。</Alert>
+                <Alert severity="info">目前没有开放投稿的公开活动。</Alert>
               ) : !tokenFromUrl ? (
                 <Alert severity="warning">请使用管理员生成的限时投稿链接进入上传页。</Alert>
               ) : tokenError ? (

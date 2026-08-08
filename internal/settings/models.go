@@ -129,12 +129,12 @@ func FromConfig(cfg config.Config) RuntimeSettings {
 		},
 		Site: SiteSettings{
 			Name:               cfg.App.Name,
-			Subtitle:           "兽聚返图收集与画廊",
+			Subtitle:           "活动返图收集与画廊",
 			HomeMarkdown:       DefaultHomeMarkdown,
 			ThemeMode:          "system",
 			ThemePreset:        "blue",
 			ThemePrimaryColor:  "#2563eb",
-			FooterSections:     defaultFooterSections(cfg.App.Name, "兽聚返图收集与画廊"),
+			FooterSections:     defaultFooterSections(cfg.App.Name, "活动返图收集与画廊"),
 			ContactWidgetTitle: "联系我",
 		},
 		Upload: UploadSettings{
@@ -152,7 +152,7 @@ func defaultFooterSections(siteName string, subtitle string) []FooterSection {
 		siteName = "FluffCatch"
 	}
 	if subtitle == "" {
-		subtitle = "兽聚返图收集与画廊"
+		subtitle = "活动返图收集与画廊"
 	}
 
 	return []FooterSection{
